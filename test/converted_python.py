@@ -698,7 +698,7 @@ def run_complete_acfc_algorithm(data_path: str = "data_in", output_dir: str = "o
         computation_stats['capital_calcs'] = len(external_results) * 10 * max_years
 
         # PHASE 5: FINAL INTEGRATION
-        results_df = final_integration_and_output(external_results, reserve_results, capital_results, hurdle_rate)
+        results_df = final_integration(external_results, reserve_results, capital_results, hurdle_rate)
 
         # ANALYSIS
         analysis = analyze_and_summarize_results(results_df)
