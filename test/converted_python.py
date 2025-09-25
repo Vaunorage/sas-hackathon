@@ -634,13 +634,6 @@ def run_complete_acfc_algorithm(data_path: str = "data_in", output_dir: str = "o
                                 capital_shock: float = 0.35) -> Tuple[pd.DataFrame, Dict]:
     """
     Main execution function for the complete ACFC algorithm
-
-    This implements the three-tier nested stochastic structure:
-    - TIER 1: External economic scenarios
-    - TIER 2: Internal reserve calculations
-    - TIER 3: Internal capital calculations with stress testing
-
-    Returns: (results_dataframe, analysis_dictionary)
     """
 
     start_time = time.time()
@@ -663,7 +656,6 @@ def run_complete_acfc_algorithm(data_path: str = "data_in", output_dir: str = "o
             if scenario_type == 'EXTERNE':
                 external_scenarios.add(scenario)
 
-        # If no external scenarios found, use all available scenarios
         if not external_scenarios:
             logger.warning("No 'EXTERNE' scenarios found, using all available scenarios")
             for (year, scenario, scenario_type) in lookup_tables[0].keys():
@@ -684,12 +676,23 @@ def run_complete_acfc_algorithm(data_path: str = "data_in", output_dir: str = "o
 
         # TIER 2: RESERVE CALCULATIONS
         reserve_results = internal_reserve_calculations(external_results, population, lookup_tables, max_years)
-        computation_stats['reserve_calcs'] = len(external_results) * 10 * max_years  # Approximate
+        computation_stats['reserve_calcs'] = len(external_results) * 10 * max_years
 
-        # TIER 3: CAPITAL CALCULATIONS
-        capital_results = internal_capital_calculations(external_results, population, lookup_tables, capital_shock,
-                                                        max_years)
-        computation_stats['capital_calcs'] = len(external_results) * 10 * max_years  # Approximate
+        # TIER 3: CAPITAL CALCULATIONS - FIX THE PARAMETER ORDER
+        # Make sure all parameters are correctly positioned
+        logger.info("Starting TIER 3: Capital calculations...")
+        logger.info(f"external_results type: {type(external_results)}")
+        logger.info(f"population type: {type(population)}")
+        logger.info(f"lookup_tables type: {type(lookup_tables)}")
+
+        capital_results = internal_capital_calculations(
+            external_results=external_results,
+            population=population,
+            lookup_tables=lookup_tables,
+            capital_shock=capital_shock,
+            max_years=max_years
+        )
+        computation_stats['capital_calcs'] = len(external_results) * 10 * max_years
 
         # PHASE 5: FINAL INTEGRATION
         results_df = final_integration_and_output(external_results, reserve_results, capital_results, hurdle_rate)
@@ -722,8 +725,9 @@ def run_complete_acfc_algorithm(data_path: str = "data_in", output_dir: str = "o
 
     except Exception as e:
         logger.error(f"Error in ACFC algorithm execution: {str(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         raise
-
 
 def main():
     """Main execution function"""
