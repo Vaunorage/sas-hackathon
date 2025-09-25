@@ -350,7 +350,7 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
                     internal_scenarios_sum = []
 
                     # *** INTERNAL SCENARIOS *** - do scn_eval_int = 1 to &NB_SC_INT.
-                    for for scn_eval_int in range(1, NB_SC_INT + 1):  # Limit for performance
+                    for scn_eval_int in range(1, NB_SC_INT + 1):  # Limit for performance
 
                         # Prepare row with accumulated values from external projection
                         internal_input_row = account_row.copy()
