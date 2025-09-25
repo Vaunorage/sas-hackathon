@@ -66,19 +66,18 @@ def prepare_gpu_data(population: pd.DataFrame, rendement: pd.DataFrame, tx_deces
     Converts all Pandas DataFrames and lookup tables into GPU-ready arrays.
     """
     # 1. Convert lookup tables (hash tables) to arrays for direct indexing
-    # Max age is assumed to be less than 150 for array initialization
     max_age = int(tx_deces['AGE'].max()) + 1 if not tx_deces.empty else 150
     h_mortality = np.zeros(max_age, dtype=np.float64)
-    # FIX: Convert the 'AGE' column (which is a float Series) to an integer array for indexing
     h_mortality[tx_deces['AGE'].astype(int)] = tx_deces['QX']
 
     max_proj_years = max(NB_AN_PROJECTION, int(tx_retrait['an_proj'].max() if not tx_retrait.empty else 0)) + 1
     g_lapse = np.zeros(max_proj_years, dtype=np.float64)
-    # FIX: Convert 'an_proj' to integer for indexing
     g_lapse[tx_retrait['an_proj'].astype(int)] = tx_retrait['WX']
 
-    # Max scenario numbers + 1 for 1-based indexing
-    max_sc = max(NB_SC, NB_SC_INT) + 1
+    # --- FIX IS ON THE NEXT LINE ---
+    # Ensure the array is large enough for both simulation parameters AND the input data's max scenario.
+    max_sc = max(NB_SC, NB_SC_INT, int(rendement['scn_proj'].max() if not rendement.empty else 0)) + 1
+
     max_an = max(NB_AN_PROJECTION, int(rendement['an_proj'].max() if not rendement.empty else 0)) + 1
     z_rendement = np.zeros((max_sc, max_an, 2), dtype=np.float64)
 
@@ -88,17 +87,16 @@ def prepare_gpu_data(population: pd.DataFrame, rendement: pd.DataFrame, tx_deces
         an = int(row['an_proj'])
         type_idx = type_map.get(str(row['TYPE']), -1)
         if type_idx != -1:
+            # This line will now work correctly
             z_rendement[scn, an, type_idx] = float(row['RENDEMENT'])
 
     max_discount_years = max(NB_AN_PROJECTION, int(tx_interet['an_proj'].max() if not tx_interet.empty else 0)) + 1
     a_discount_ext = np.ones(max_discount_years, dtype=np.float64)
-    # FIX: Convert 'an_proj' to integer for indexing
     a_discount_ext[tx_interet['an_proj'].astype(int)] = tx_interet['TX_ACTU']
 
     max_int_discount_years = max(NB_AN_PROJECTION,
                                  int(tx_interet_int['an_eval'].max() if not tx_interet_int.empty else 0)) + 1
     b_discount_int = np.ones(max_int_discount_years, dtype=np.float64)
-    # FIX: Convert 'an_eval' to integer for indexing
     b_discount_int[tx_interet_int['an_eval'].astype(int)] = tx_interet_int['TX_ACTU_INT']
 
     # 2. Transfer lookup arrays to the target device (GPU or CPU)
@@ -112,7 +110,6 @@ def prepare_gpu_data(population: pd.DataFrame, rendement: pd.DataFrame, tx_deces
 
     logger.info("Lookup tables converted to arrays and moved to target device.")
     return data
-
 
 def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, params: Dict, xp) -> pd.DataFrame:
     """
