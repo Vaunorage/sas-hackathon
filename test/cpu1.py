@@ -87,34 +87,34 @@ def create_vectorized_lookups(rendement_ext, rendement_int, tx_deces, tx_interet
     # External returns: [year, scenario]
     ext_returns = np.zeros((max_year + 1, max_scn_ext + 1), dtype=np.float32)
     for _, row in rendement_ext.iterrows():
-        ext_returns[row['an_proj'], row['scn_proj']] = row['RENDEMENT']
+        ext_returns[int(row['an_proj']), int(row['scn_proj'])] = float(row['RENDEMENT'])
 
     # Internal returns: [year, scenario]
     int_returns = np.zeros((max_year + 1, max_scn_int + 1), dtype=np.float32)
     for _, row in rendement_int.iterrows():
-        int_returns[row['an_proj'], row['scn_proj']] = row['RENDEMENT']
+        int_returns[int(row['an_proj']), int(row['scn_proj'])] = float(row['RENDEMENT'])
 
     # Mortality rates array
     max_age = tx_deces['AGE'].max()
     mortality_rates = np.zeros(max_age + 1, dtype=np.float32)
     for _, row in tx_deces.iterrows():
-        mortality_rates[row['AGE']] = row['QX']
+        mortality_rates[int(row['AGE'])] = float(row['QX'])
 
     # Discount factors arrays
     discount_ext = np.zeros(max_year + 1, dtype=np.float32)
     discount_ext[0] = 1.0
     for _, row in tx_interet.iterrows():
-        discount_ext[row['an_proj']] = row['TX_ACTU']
+        discount_ext[int(row['an_proj'])] = float(row['TX_ACTU'])
 
     discount_int = np.zeros(max_year + 1, dtype=np.float32)
     discount_int[0] = 1.0
     for _, row in tx_interet_int.iterrows():
-        discount_int[row['an_eval']] = row['TX_ACTU_INT']
+        discount_int[int(row['an_eval'])] = float(row['TX_ACTU_INT'])
 
     # Lapse rates array
     lapse_rates = np.zeros(max_year + 1, dtype=np.float32)
     for _, row in tx_retrait.iterrows():
-        lapse_rates[row['an_proj']] = row['WX']
+        lapse_rates[int(row['an_proj'])] = float(row['WX'])
 
     # Get unique scenarios
     external_scenarios = np.sort(rendement_ext['scn_proj'].unique())
@@ -255,10 +255,9 @@ def calculate_single_policy_scenario_jit(
 
 
 # Parallel processing function for external loop
-def process_account_chunk(account_chunk, lookups, external_scenarios, max_years=35):
-    """Process a chunk of accounts in parallel"""
-    (ext_returns, int_returns, mortality_rates, discount_ext,
-     discount_int, lapse_rates, _, _) = lookups
+def process_account_chunk(args):
+    """Process a chunk of accounts in parallel - unpacked args to avoid pickling issues"""
+    account_chunk, ext_returns, int_returns, mortality_rates, discount_ext, discount_int, lapse_rates, external_scenarios, internal_scenarios, max_years = args
 
     chunk_results = {}
 
@@ -267,24 +266,24 @@ def process_account_chunk(account_chunk, lookups, external_scenarios, max_years=
 
         # Convert policy data to numpy array for JIT function
         policy_array = np.array([
-            policy_data['age_deb'],
-            policy_data['MT_VM'],
-            policy_data['MT_GAR_DECES'],
-            policy_data['PC_REVENU_FDS'],
-            policy_data['PC_HONORAIRES_GEST'],
-            policy_data['TX_COMM_MAINTIEN'],
-            policy_data['FRAIS_ADMIN'],
-            policy_data['FREQ_RESET_DECES'],
-            policy_data['MAX_RESET_DECES']
+            float(policy_data['age_deb']),
+            float(policy_data['MT_VM']),
+            float(policy_data['MT_GAR_DECES']),
+            float(policy_data['PC_REVENU_FDS']),
+            float(policy_data['PC_HONORAIRES_GEST']),
+            float(policy_data['TX_COMM_MAINTIEN']),
+            float(policy_data['FRAIS_ADMIN']),
+            float(policy_data['FREQ_RESET_DECES']),
+            float(policy_data['MAX_RESET_DECES'])
         ], dtype=np.float32)
 
         for scenario in external_scenarios:
             results = calculate_single_policy_scenario_jit(
                 policy_array, ext_returns, mortality_rates, discount_ext,
-                lapse_rates, scenario, max_years
+                lapse_rates, int(scenario), max_years
             )
 
-            chunk_results[(account_id, scenario)] = {
+            chunk_results[(account_id, int(scenario))] = {
                 'mt_vm': results[0],
                 'mt_gar_deces': results[1],
                 'tx_survie': results[2],
@@ -296,7 +295,7 @@ def process_account_chunk(account_chunk, lookups, external_scenarios, max_years=
 
 
 # Optimized external loop with parallel processing
-def external_loop_optimized(population, lookups, max_years=35, n_workers=4, chunk_size=10):
+def external_loop_optimized(population, lookups, max_years=35, n_workers=2, chunk_size=10):
     """Optimized external loop with parallel processing and JIT compilation"""
 
     (ext_returns, int_returns, mortality_rates, discount_ext,
@@ -313,22 +312,33 @@ def external_loop_optimized(population, lookups, max_years=35, n_workers=4, chun
 
     all_results = {}
 
+    # Prepare arguments for parallel processing to avoid pickling issues
+    chunk_args = []
+    for chunk in chunks:
+        args = (chunk, ext_returns, int_returns, mortality_rates, discount_ext,
+                discount_int, lapse_rates, external_scenarios, internal_scenarios, max_years)
+        chunk_args.append(args)
+
     # Process chunks in parallel
-    with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
-        process_func = partial(process_account_chunk,
-                               lookups=lookups,
-                               external_scenarios=external_scenarios,
-                               max_years=max_years)
+    if n_workers > 1:
+        try:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+                futures = [executor.submit(process_account_chunk, args) for args in chunk_args]
 
-        # Submit all chunks
-        future_to_chunk = {executor.submit(process_func, chunk): i
-                           for i, chunk in enumerate(chunks)}
+                # Collect results with progress bar
+                for future in tqdm(concurrent.futures.as_completed(futures),
+                                   total=len(chunks),
+                                   desc="Processing Account Chunks"):
+                    chunk_results = future.result()
+                    all_results.update(chunk_results)
+        except Exception as e:
+            logger.warning(f"Parallel processing failed: {e}. Falling back to sequential processing.")
+            n_workers = 1
 
-        # Collect results with progress bar
-        for future in tqdm(concurrent.futures.as_completed(future_to_chunk),
-                           total=len(chunks),
-                           desc="Processing Account Chunks"):
-            chunk_results = future.result()
+    # Fall back to sequential processing if parallel fails
+    if n_workers == 1:
+        for args in tqdm(chunk_args, desc="Processing Chunks Sequentially"):
+            chunk_results = process_account_chunk(args)
             all_results.update(chunk_results)
 
     logger.info(f"External loop completed: {len(all_results)} results generated")
@@ -379,10 +389,9 @@ def calculate_reserves_vectorized(external_data_arrays, int_returns, discount_in
 
 
 # Batch processing for reserve and capital calculations
-def process_reserves_batch(batch_data, lookups, max_years=35):
-    """Process a batch of reserve calculations"""
-    (ext_returns, int_returns, mortality_rates, discount_ext,
-     discount_int, lapse_rates, external_scenarios, internal_scenarios) = lookups
+def process_reserves_batch(args):
+    """Process a batch of reserve calculations - unpacked args"""
+    batch_data, int_returns, discount_int, internal_scenarios, max_years = args
 
     batch_results = {}
 
@@ -412,7 +421,7 @@ def process_reserves_batch(batch_data, lookups, max_years=35):
 
 # Memory-efficient batch processing
 def internal_reserve_loop_optimized(external_results, population, lookups,
-                                    max_years=35, batch_size=1000, n_workers=4):
+                                    max_years=35, batch_size=1000, n_workers=2):
     """Memory-efficient reserve calculations with batch processing"""
 
     logger.info("=" * 50)
@@ -420,8 +429,11 @@ def internal_reserve_loop_optimized(external_results, population, lookups,
     logger.info("=" * 50)
     logger.info(f"Processing {len(external_results)} results in batches of {batch_size}")
 
+    (ext_returns, int_returns, mortality_rates, discount_ext,
+     discount_int, lapse_rates, external_scenarios, internal_scenarios) = lookups
+
     # Create population lookup for policy data
-    pop_lookup = {row['ID_COMPTE']: row for _, row in population.iterrows()}
+    pop_lookup = {int(row['ID_COMPTE']): row for _, row in population.iterrows()}
 
     # Split external results into batches
     items = list(external_results.items())
@@ -429,18 +441,31 @@ def internal_reserve_loop_optimized(external_results, population, lookups,
 
     all_reserve_results = {}
 
-    # Process batches in parallel
-    with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
-        process_func = partial(process_reserves_batch,
-                               lookups=lookups,
-                               max_years=max_years)
+    # Prepare arguments for batch processing
+    batch_args = []
+    for batch in batches:
+        args = (batch, int_returns, discount_int, internal_scenarios, max_years)
+        batch_args.append(args)
 
-        futures = [executor.submit(process_func, batch) for batch in batches]
+    # Process batches
+    if n_workers > 1:
+        try:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+                futures = [executor.submit(process_reserves_batch, args) for args in batch_args]
 
-        for future in tqdm(concurrent.futures.as_completed(futures),
-                           total=len(batches),
-                           desc="Processing Reserve Batches"):
-            batch_results = future.result()
+                for future in tqdm(concurrent.futures.as_completed(futures),
+                                   total=len(batches),
+                                   desc="Processing Reserve Batches"):
+                    batch_results = future.result()
+                    all_reserve_results.update(batch_results)
+        except Exception as e:
+            logger.warning(f"Parallel reserve processing failed: {e}. Using sequential processing.")
+            n_workers = 1
+
+    # Fall back to sequential if parallel fails
+    if n_workers == 1:
+        for args in tqdm(batch_args, desc="Processing Reserve Batches Sequentially"):
+            batch_results = process_reserves_batch(args)
             all_reserve_results.update(batch_results)
 
     logger.info(f"Reserve calculations completed: {len(all_reserve_results)} results")
@@ -450,7 +475,7 @@ def internal_reserve_loop_optimized(external_results, population, lookups,
 # Similar optimization for capital calculations
 def internal_capital_loop_optimized(external_results, population, lookups,
                                     capital_shock=0.35, max_years=35,
-                                    batch_size=1000, n_workers=4):
+                                    batch_size=1000, n_workers=2):
     """Memory-efficient capital calculations with batch processing"""
 
     logger.info("=" * 50)
@@ -458,16 +483,16 @@ def internal_capital_loop_optimized(external_results, population, lookups,
     logger.info("=" * 50)
     logger.info(f"Processing {len(external_results)} results with {capital_shock * 100}% shock")
 
-    # Similar structure to reserve loop but with capital shock applied
-    # Implementation would follow same pattern as process_reserves_batch
-    # but with shocked values
-
-    # For brevity, returning simplified calculation
+    # Simplified capital calculation for now - similar structure to reserves but with shock
     capital_results = {}
-    for key in tqdm(external_results.keys(), desc="Capital Calculations"):
-        # Simplified capital calculation with shock
-        capital_results[key] = 0.0  # Placeholder
 
+    # Sequential processing for capital (simplified implementation)
+    for key in tqdm(external_results.keys(), desc="Capital Calculations"):
+        # Apply capital shock to get stressed capital requirement
+        base_value = external_results[key]['vp_flux_net'][0] if external_results[key]['vp_flux_net'] else 0
+        capital_results[key] = abs(base_value * capital_shock)  # Simplified calculation
+
+    logger.info(f"Capital calculations completed: {len(capital_results)} results")
     return capital_results
 
 
@@ -489,15 +514,15 @@ def run_optimized_acfc_algorithm():
 
     # Phase 2: Optimized external loop
     external_results = external_loop_optimized(population, lookups,
-                                               max_years=35, n_workers=4, chunk_size=25)
+                                               max_years=35, n_workers=2, chunk_size=25)
 
     # Phase 3: Optimized reserve calculations
     reserve_results = internal_reserve_loop_optimized(external_results, population, lookups,
-                                                      batch_size=2000, n_workers=4)
+                                                      batch_size=2000, n_workers=2)
 
     # Phase 4: Optimized capital calculations
     capital_results = internal_capital_loop_optimized(external_results, population, lookups,
-                                                      batch_size=2000, n_workers=4)
+                                                      batch_size=2000, n_workers=2)
 
     # Phase 5: Final integration (vectorized)
     final_results = final_integration_optimized(external_results, reserve_results, capital_results)
@@ -549,7 +574,5 @@ def final_integration_optimized(external_results, reserve_results, capital_resul
 
 
 if __name__ == "__main__":
-    output_filename = HERE.joinpath('test/cpu1.csv')
     results_df = run_optimized_acfc_algorithm()
-    results_df.to_csv(output_filename)
     print(f"Generated {len(results_df)} optimized results")
