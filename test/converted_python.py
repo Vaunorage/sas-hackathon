@@ -527,7 +527,7 @@ def run_faithful_acfc(data_path: str = "data_in", output_dir: str = "output"):
         output_path = Path(output_dir)
         output_path.mkdir(exist_ok=True)
 
-        results_file = output_path / "faithful_acfc_results.csv"
+        results_file = output_path / "acfc_results.csv"
         results_df.to_csv(results_file, index=False)
         logger.info(f"Results saved to {results_file}")
 
