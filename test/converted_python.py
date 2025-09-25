@@ -17,7 +17,7 @@ def load_input_files():
     """Load all input CSV files and return as dictionaries for fast lookup"""
 
     # Load population data
-    population = pd.read_csv(HERE.joinpath('data_in/population.csv')).head(2)
+    population = pd.read_csv(HERE.joinpath('data_in/population.csv'))
 
     # Load rendement (investment returns) data
     rendement = pd.read_csv(HERE.joinpath('data_in/rendement.csv'))
