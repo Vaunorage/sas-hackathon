@@ -20,7 +20,7 @@ def load_input_files_optimized():
     """Load all input CSV files with optimized data types and pre-processing"""
 
     # Load population data with optimized dtypes
-    population = pd.read_csv(HERE.joinpath('data_in/population.csv')).head(2)
+    population = pd.read_csv(HERE.joinpath('data_in/population.csv'))
     population = population.astype({
         'ID_COMPTE': 'int32',
         'age_deb': 'int16',
