@@ -38,7 +38,7 @@ HURDLE_RT = 0.10
 
 
 def load_input_files(data_path: str) -> Tuple[pd.DataFrame, ...]:
-    """Load all input CSV files exactly as SAS does (Unchanged from original)"""
+    """Load all input CSV files exactly as SAS does"""
     try:
         population = pd.read_csv(f"{data_path}/population.csv").head(NBCPT)
         rendement = pd.read_csv(f"{data_path}/rendement.csv")
@@ -59,11 +59,12 @@ def load_input_files(data_path: str) -> Tuple[pd.DataFrame, ...]:
         raise
 
 
-def prepare_gpu_data(population: pd.DataFrame, rendement: pd.DataFrame, tx_deces: pd.DataFrame,
+def prepare_gpu_data(rendement: pd.DataFrame, tx_deces: pd.DataFrame,
                      tx_interet: pd.DataFrame, tx_interet_int: pd.DataFrame, tx_retrait: pd.DataFrame,
                      xp) -> Dict:
     """
     Converts all Pandas DataFrames and lookup tables into GPU-ready arrays.
+    (Corrected: removed unused 'population' parameter)
     """
     # 1. Convert lookup tables (hash tables) to arrays for direct indexing
     max_age = int(tx_deces['AGE'].max()) + 1 if not tx_deces.empty else 150
@@ -74,10 +75,8 @@ def prepare_gpu_data(population: pd.DataFrame, rendement: pd.DataFrame, tx_deces
     g_lapse = np.zeros(max_proj_years, dtype=np.float64)
     g_lapse[tx_retrait['an_proj'].astype(int)] = tx_retrait['WX']
 
-    # --- FIX IS ON THE NEXT LINE ---
-    # Ensure the array is large enough for both simulation parameters AND the input data's max scenario.
+    # Ensure array is large enough for sim params AND input data's max scenario.
     max_sc = max(NB_SC, NB_SC_INT, int(rendement['scn_proj'].max() if not rendement.empty else 0)) + 1
-
     max_an = max(NB_AN_PROJECTION, int(rendement['an_proj'].max() if not rendement.empty else 0)) + 1
     z_rendement = np.zeros((max_sc, max_an, 2), dtype=np.float64)
 
@@ -87,7 +86,6 @@ def prepare_gpu_data(population: pd.DataFrame, rendement: pd.DataFrame, tx_deces
         an = int(row['an_proj'])
         type_idx = type_map.get(str(row['TYPE']), -1)
         if type_idx != -1:
-            # This line will now work correctly
             z_rendement[scn, an, type_idx] = float(row['RENDEMENT'])
 
     max_discount_years = max(NB_AN_PROJECTION, int(tx_interet['an_proj'].max() if not tx_interet.empty else 0)) + 1
@@ -110,6 +108,7 @@ def prepare_gpu_data(population: pd.DataFrame, rendement: pd.DataFrame, tx_deces
 
     logger.info("Lookup tables converted to arrays and moved to target device.")
     return data
+
 
 def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, params: Dict, xp) -> pd.DataFrame:
     """
@@ -395,7 +394,8 @@ def run_gpu_acfc(data_path: str = "data_in", output_dir: str = "output"):
 
     try:
         population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait = load_input_files(data_path)
-        lookup_data = prepare_gpu_data(population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait, xp)
+        # Corrected call:
+        lookup_data = prepare_gpu_data(rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait, xp)
 
         logger.info(f"Configuration:")
         logger.info(f"  Accounts: {min(NBCPT, len(population))}")
