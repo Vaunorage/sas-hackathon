@@ -618,12 +618,12 @@ def main():
         print_results_summary(results_df, analysis)
 
         # Save results to CSV
-        output_filename = 'acfc_results_proper_loops.csv'
+        output_filename = HERE.joinpath('test/converted_python.csv')
         results_df.to_csv(output_filename, index=False)
         logger.info(f"Results saved to {output_filename}")
 
         # Save analysis summary
-        analysis_filename = 'acfc_analysis_proper_loops.txt'
+        analysis_filename = HERE.joinpath('test/converted_python.txt')
         with open(analysis_filename, 'w') as f:
             f.write("ACFC Algorithm Analysis Summary (Proper Nested Loops)\n")
             f.write("=" * 50 + "\n")

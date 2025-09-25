@@ -896,6 +896,6 @@ if __name__ == "__main__":
     logger.info(f"GPU-accelerated algorithm completed: {len(results_df)} results generated")
 
     # Save results
-    output_filename = 'acfc_results_gpu_optimized.csv'
+    output_filename = HERE.joinpath('test/gpu1.csv')
     results_df.to_csv(output_filename, index=False)
     logger.info(f"Results saved to {output_filename}")
