@@ -7,8 +7,6 @@ from pathlib import Path
 from tqdm import tqdm
 import warnings
 
-from paths import HERE
-
 warnings.filterwarnings('ignore')
 
 # Configure logging
@@ -300,11 +298,23 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
 
     logger.info("Starting faithful nested loop calculations...")
 
+    # Calculate total expected operations for progress tracking
+    total_accounts = min(NBCPT, len(population))
+    total_ext_scenarios = min(NB_SC, 20)  # Limited for performance
+    total_int_scenarios = min(NB_SC_INT, 10)
+
+    logger.info(
+        f"Expected operations: {total_accounts} accounts × {total_ext_scenarios} ext scenarios × 2 types × {total_int_scenarios} int scenarios")
+    logger.info(
+        f"Estimated total internal calculations: ~{total_accounts * total_ext_scenarios * 2 * total_int_scenarios * 50:,}")
+
     # ***************************
     # *** OUTER ACCOUNT LOOP ***  - %do j = 1 %to &NBCPT.
     # ***************************
 
-    for j in tqdm(range(1, min(NBCPT + 1, len(population) + 1)), desc="Accounts"):
+    account_progress = tqdm(range(1, total_accounts + 1), desc="Processing Accounts", unit="account", position=0)
+
+    for j in account_progress:
 
         # Get account data
         account_data = population[population['ID_COMPTE'] == j]
@@ -313,11 +323,23 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
 
         account_row = account_data.iloc[0]
 
+        # Update account progress description
+        account_progress.set_postfix({
+            'Account': f'{j}/{total_accounts}',
+            'Completed': f'{len(calculs_sommaire)} combinations'
+        })
+
         # ***************************
         # *** EXTERNAL SCENARIOS *** - do scn_eval = 1 to &NB_SC.
         # ***************************
 
-        for scn_eval in range(1, min(NB_SC + 1, 21)):  # Limit scenarios for performance
+        for scn_eval in external_progress:
+
+            # Update external progress description
+            external_progress.set_postfix({
+                'ExtScenario': f'{scn_eval}/{total_ext_scenarios}',
+                'Account': f'{j}/{total_accounts}'
+            })
 
             # Calculate external cash flows
             external_results = faithful_cash_flow_calculation(
@@ -336,21 +358,52 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
             reserve_results = []
             capital_results = []
 
+            # Count years that need internal calculations
+            valid_years = [row for _, row in external_results.iterrows() if int(row['an_eval']) > 0]
+
             # Loop through external years for internal calculations
-            for _, ext_row in external_results.iterrows():
+            year_progress = tqdm(valid_years,
+                                 desc=f"    Years (Acc{j},Scn{scn_eval})",
+                                 unit="year", position=2, leave=False)
+
+            for ext_row in year_progress:
                 an_eval = int(ext_row['an_eval'])
 
-                if an_eval == 0:
-                    continue  # Skip year 0 for internal calculations
+                year_progress.set_postfix({
+                    'Year': f'{an_eval}',
+                    'ExtScn': f'{scn_eval}',
+                    'Acc': f'{j}'
+                })
 
                 # *** TYPE2 LOOP *** - %do m = 1 %to 2 (RESERVE and CAPITAL)
-                for m in range(1, 3):
+                type_progress = tqdm(range(1, 3),
+                                     desc=f"      Types (Y{an_eval})",
+                                     unit="type", position=3, leave=False)
+
+                for m in type_progress:
                     type2 = "RESERVE" if m == 1 else "CAPITAL"
+
+                    type_progress.set_postfix({
+                        'Type': type2,
+                        'Year': f'{an_eval}',
+                        'Acc': f'{j}'
+                    })
 
                     internal_scenarios_sum = []
 
                     # *** INTERNAL SCENARIOS *** - do scn_eval_int = 1 to &NB_SC_INT.
-                    for scn_eval_int in range(1, min(NB_SC_INT + 1, 11)):  # Limit for performance
+                    internal_progress = tqdm(range(1, total_int_scenarios + 1),
+                                             desc=f"        IntScn ({type2})",
+                                             unit="intscn", position=4, leave=False)
+
+                    for scn_eval_int in internal_progress:
+
+                        internal_progress.set_postfix({
+                            'IntScn': f'{scn_eval_int}/{total_int_scenarios}',
+                            'Type': type2[:3],
+                            'Y': f'{an_eval}',
+                            'A': f'{j}'
+                        })
 
                         # Prepare row with accumulated values from external projection
                         internal_input_row = account_row.copy()
@@ -373,6 +426,9 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
                             total_vp = internal_results['VP_FLUX_NET'].sum()
                             internal_scenarios_sum.append(total_vp)
 
+                    # Close internal progress bar
+                    internal_progress.close()
+
                     # Calculate mean across internal scenarios (matching SAS proc summary)
                     if internal_scenarios_sum:
                         mean_vp = np.mean(internal_scenarios_sum)
@@ -390,6 +446,12 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
                         else:
                             capital_results.append(result_entry)
 
+                # Close type progress bar
+                type_progress.close()
+
+            # Close year progress bar
+            year_progress.close()
+
             # ***********************************
             # *** MERGE WITH EXTERNAL RESULTS ***
             # ***********************************
@@ -404,8 +466,18 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
             enhanced_external['CAPITAL'] = 0.0
 
             # Hash join logic as in SAS
-            for idx, row in enhanced_external.iterrows():
+            merge_progress = tqdm(enhanced_external.iterrows(),
+                                  desc=f"    Merging (Acc{j},Scn{scn_eval})",
+                                  total=len(enhanced_external), unit="row", position=2, leave=False)
+
+            for idx, row in merge_progress:
                 an_eval = int(row['an_eval'])
+
+                merge_progress.set_postfix({
+                    'Year': f'{an_eval}',
+                    'Reserves': len(reserve_df),
+                    'Capital': len(capital_df)
+                })
 
                 # Find matching reserve
                 reserve_match = reserve_df[
@@ -427,6 +499,8 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
                 if not capital_match.empty:
                     capital_value = capital_match.iloc[0]['VP_FLUX_NET'] - enhanced_external.loc[idx, 'RESERVE']
                     enhanced_external.loc[idx, 'CAPITAL'] = capital_value
+
+            merge_progress.close()
 
             # *******************************************
             # *** PROFIT AND DISTRIBUTABLE CALCULATION ***
@@ -477,7 +551,24 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
 
             calculs_sommaire = pd.concat([calculs_sommaire, summary_row], ignore_index=True)
 
+        # Close external progress bar
+        external_progress.close()
+
+        # Update main progress with current totals
+        account_progress.set_postfix({
+            'Account': f'{j}/{total_accounts}',
+            'Total_Results': f'{len(calculs_sommaire)}',
+            'Avg_VP': f'${calculs_sommaire["VP_FLUX_DISTRIBUABLES"].mean():,.0f}' if len(
+                calculs_sommaire) > 0 else 'N/A'
+        })
+
+    # Close account progress bar
+    account_progress.close()
+
     logger.info(f"Faithful calculations complete. Results: {len(calculs_sommaire)} combinations")
+    logger.info(f"Average VP_FLUX_DISTRIBUABLES: ${calculs_sommaire['VP_FLUX_DISTRIBUABLES'].mean():,.2f}")
+    logger.info(f"Profitable combinations: {len(calculs_sommaire[calculs_sommaire['VP_FLUX_DISTRIBUABLES'] > 0])}")
+
     return calculs_sommaire
 
 
