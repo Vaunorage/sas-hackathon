@@ -7,6 +7,8 @@ from pathlib import Path
 from tqdm import tqdm
 import warnings
 
+from paths import HERE
+
 warnings.filterwarnings('ignore')
 
 # Configure logging
