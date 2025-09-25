@@ -61,7 +61,6 @@ def prepare_gpu_data(population_df, rendement_df, tx_deces_df, tx_interet_df, tx
     max_age = 200  # A reasonable upper bound for age
     mortality_lookup = cp.zeros(max_age + 1, dtype=cp.float32)
 
-    # --- FIX IS HERE ---
     # Convert ages to integer type before using them as indices.
     ages = tx_deces_df['AGE'].values.astype(int)
 
@@ -87,13 +86,15 @@ def prepare_gpu_data(population_df, rendement_df, tx_deces_df, tx_interet_df, tx
     discount_int_lookup = create_dense_lookup(tx_interet_int_df, 'TX_ACTU_INT', max_years)
     lapse_lookup = create_dense_lookup(tx_retrait_df, 'WX', max_years)
 
-    # Get scenario lists
-    external_scenarios = cp.unique(cp.array(rendement_df[rendement_df['TYPE'] == 'EXTERNE']['scn_proj'].values))
-    internal_scenarios = cp.unique(cp.array(rendement_df[rendement_df['TYPE'] == 'INTERNE']['scn_proj'].values))
+    # --- FIX IS HERE ---
+    # Get scenario lists and ensure they are integer type for indexing.
+    external_scenarios = cp.unique(cp.array(rendement_df[rendement_df['TYPE'] == 'EXTERNE']['scn_proj'].values)).astype(
+        cp.int32)
+    internal_scenarios = cp.unique(cp.array(rendement_df[rendement_df['TYPE'] == 'INTERNE']['scn_proj'].values)).astype(
+        cp.int32)
 
     logger.info("GPU data prepared successfully.")
     return population_gpu, rendement_lookup, mortality_lookup, discount_ext_lookup, discount_int_lookup, lapse_lookup, external_scenarios, internal_scenarios
-
 
 def external_loop_gpu(population_gpu, lookups, external_scenarios, max_years=35):
     """
