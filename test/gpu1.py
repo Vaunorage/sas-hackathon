@@ -60,7 +60,11 @@ def prepare_gpu_data(population_df, rendement_df, tx_deces_df, tx_interet_df, tx
     # Mortality: Create a dense 1D array. Pre-calculate interpolation/extrapolation.
     max_age = 200  # A reasonable upper bound for age
     mortality_lookup = cp.zeros(max_age + 1, dtype=cp.float32)
-    ages = tx_deces_df['AGE'].values
+
+    # --- FIX IS HERE ---
+    # Convert ages to integer type before using them as indices.
+    ages = tx_deces_df['AGE'].values.astype(int)
+
     rates = tx_deces_df['QX'].values
     mortality_lookup[ages] = rates
     # Simple forward fill for missing values
@@ -89,7 +93,6 @@ def prepare_gpu_data(population_df, rendement_df, tx_deces_df, tx_interet_df, tx
 
     logger.info("GPU data prepared successfully.")
     return population_gpu, rendement_lookup, mortality_lookup, discount_ext_lookup, discount_int_lookup, lapse_lookup, external_scenarios, internal_scenarios
-
 
 def external_loop_gpu(population_gpu, lookups, external_scenarios, max_years=35):
     """
