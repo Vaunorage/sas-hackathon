@@ -317,14 +317,17 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
         # *** EXTERNAL SCENARIOS *** - do scn_eval = 1 to &NB_SC.
         # ***************************
 
-        for scn_eval in range(1, NB_SC + 1):  # Limit scenarios for performance
+        for scn_eval in tqdm(range(1, NB_SC + 1), desc="External senarios"):  # Limit scenarios for performance
 
             # Calculate external cash flows
+            logger.info("calculating external scenario")
             external_results = faithful_cash_flow_calculation(
                 account_row, hash_tables,
                 scenario_type="EXTERNE",
                 scn_eval=scn_eval
             )
+
+            logger.info(f"There is {external_results.shape[0]} external scenarios")
 
             if external_results.empty:
                 continue
@@ -337,7 +340,7 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
             capital_results = []
 
             # Loop through external years for internal calculations
-            for _, ext_row in external_results.iterrows():
+            for _, ext_row in tqdm(external_results.iterrows(), desc="Internal scenarios"):
                 an_eval = int(ext_row['an_eval'])
 
                 if an_eval == 0:
