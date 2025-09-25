@@ -579,7 +579,7 @@ def final_integration_optimized(external_results, reserve_results, capital_resul
 
 if __name__ == "__main__":
     results_df = run_optimized_acfc_algorithm()
-    results_df = results_df.sort_values(by=['ID_COMPTE', 'scn_val'])
+    results_df = results_df.sort_values(by=['ID_COMPTE', 'scn_eval'])
     output_filename = HERE.joinpath('test/cpu1.csv')
     results_df.to_csv(output_filename)
     print(f"Generated {len(results_df)} optimized results")
