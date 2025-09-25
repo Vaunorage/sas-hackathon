@@ -7,21 +7,17 @@ from pathlib import Path
 from tqdm import tqdm
 import warnings
 
-warnings.filterwarnings('ignore')
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 # Attempt to import CuPy and set the backend
 try:
     import cupy as cp
 
     GPU_ENABLED = True
+    logger = logging.getLogger(__name__)
     logger.info("CuPy found. Running on GPU.")
 except ImportError:
     cp = np
     GPU_ENABLED = False
+    logger = logging.getLogger(__name__)
     logger.warning("CuPy not found. Running on CPU with NumPy.")
 
 from paths import HERE
@@ -30,7 +26,6 @@ warnings.filterwarnings('ignore')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Global parameters matching SAS macro variables
 NBCPT = 4
@@ -71,16 +66,21 @@ def prepare_gpu_data(population: pd.DataFrame, rendement: pd.DataFrame, tx_deces
     Converts all Pandas DataFrames and lookup tables into GPU-ready arrays.
     """
     # 1. Convert lookup tables (hash tables) to arrays for direct indexing
-    h_mortality = np.zeros(150, dtype=np.float64)  # Max age
-    h_mortality[tx_deces['AGE']] = tx_deces['QX']
+    # Max age is assumed to be less than 150 for array initialization
+    max_age = int(tx_deces['AGE'].max()) + 1 if not tx_deces.empty else 150
+    h_mortality = np.zeros(max_age, dtype=np.float64)
+    # FIX: Convert the 'AGE' column (which is a float Series) to an integer array for indexing
+    h_mortality[tx_deces['AGE'].astype(int)] = tx_deces['QX']
 
-    g_lapse = np.zeros(NB_AN_PROJECTION + 1, dtype=np.float64)
-    g_lapse[tx_retrait['an_proj']] = tx_retrait['WX']
+    max_proj_years = max(NB_AN_PROJECTION, int(tx_retrait['an_proj'].max() if not tx_retrait.empty else 0)) + 1
+    g_lapse = np.zeros(max_proj_years, dtype=np.float64)
+    # FIX: Convert 'an_proj' to integer for indexing
+    g_lapse[tx_retrait['an_proj'].astype(int)] = tx_retrait['WX']
 
     # Max scenario numbers + 1 for 1-based indexing
     max_sc = max(NB_SC, NB_SC_INT) + 1
-    max_an = NB_AN_PROJECTION + 1
-    z_rendement = np.zeros((max_sc, max_an, 2), dtype=np.float64)  # 0: EXTERNE, 1: INTERNE
+    max_an = max(NB_AN_PROJECTION, int(rendement['an_proj'].max() if not rendement.empty else 0)) + 1
+    z_rendement = np.zeros((max_sc, max_an, 2), dtype=np.float64)
 
     type_map = {'EXTERNE': 0, 'INTERNE': 1}
     for _, row in rendement.iterrows():
@@ -90,11 +90,16 @@ def prepare_gpu_data(population: pd.DataFrame, rendement: pd.DataFrame, tx_deces
         if type_idx != -1:
             z_rendement[scn, an, type_idx] = float(row['RENDEMENT'])
 
-    a_discount_ext = np.ones(max_an, dtype=np.float64)
-    a_discount_ext[tx_interet['an_proj']] = tx_interet['TX_ACTU']
+    max_discount_years = max(NB_AN_PROJECTION, int(tx_interet['an_proj'].max() if not tx_interet.empty else 0)) + 1
+    a_discount_ext = np.ones(max_discount_years, dtype=np.float64)
+    # FIX: Convert 'an_proj' to integer for indexing
+    a_discount_ext[tx_interet['an_proj'].astype(int)] = tx_interet['TX_ACTU']
 
-    b_discount_int = np.ones(max_an, dtype=np.float64)
-    b_discount_int[tx_interet_int['an_eval']] = tx_interet_int['TX_ACTU_INT']
+    max_int_discount_years = max(NB_AN_PROJECTION,
+                                 int(tx_interet_int['an_eval'].max() if not tx_interet_int.empty else 0)) + 1
+    b_discount_int = np.ones(max_int_discount_years, dtype=np.float64)
+    # FIX: Convert 'an_eval' to integer for indexing
+    b_discount_int[tx_interet_int['an_eval'].astype(int)] = tx_interet_int['TX_ACTU_INT']
 
     # 2. Transfer lookup arrays to the target device (GPU or CPU)
     data = {
@@ -136,7 +141,7 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
     max_reset_deces = initial_state['max_reset_deces']
 
     # Pre-allocate results array on the GPU
-    num_outputs = 16  # Number of columns to save
+    num_outputs = 13
     results_batch = xp.zeros((max_years + 1, batch_size, num_outputs), dtype=xp.float64)
 
     # The time loop remains sequential, but all calculations inside are parallel
@@ -214,7 +219,7 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
         results_batch[current_year, :, 9] = frais_gen
         results_batch[current_year, :, 10] = pmt_garantie
         results_batch[current_year, :, 11] = flux_net
-        results_batch[current_year, :, 12] = vp_flux_net  # Only VP_FLUX_NET is needed for aggregation
+        results_batch[current_year, :, 12] = vp_flux_net
 
     # Transfer data from GPU to CPU and reshape
     results_cpu = cp.asnumpy(results_batch) if GPU_ENABLED else results_batch
@@ -224,12 +229,9 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
 
     # Create final DataFrame
     df = pd.DataFrame(results_flat, columns=[
-                                                'an_proj', 'AGE', 'MT_VM_PROJ', 'MT_GAR_DECES_PROJ', 'TX_SURVIE',
-                                                'TX_SURVIE_DEB',
-                                                'REVENUS', 'FRAIS_GEST', 'COMMISSIONS', 'FRAIS_GEN', 'PMT_GARANTIE',
-                                                'FLUX_NET', 'VP_FLUX_NET'
-                                            ] + [f'unused_{i}' for i in range(3)])
-    df.drop(columns=[c for c in df.columns if 'unused' in c], inplace=True)
+        'an_proj', 'AGE', 'MT_VM_PROJ', 'MT_GAR_DECES_PROJ', 'TX_SURVIE', 'TX_SURVIE_DEB',
+        'REVENUS', 'FRAIS_GEST', 'COMMISSIONS', 'FRAIS_GEN', 'PMT_GARANTIE', 'FLUX_NET', 'VP_FLUX_NET'
+    ])
 
     return df
 
