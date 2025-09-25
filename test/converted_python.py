@@ -676,17 +676,18 @@ def run_complete_acfc_algorithm(data_path: str = "data_in", output_dir: str = "o
         external_results = external_projection_loop(population, external_scenarios, lookup_tables, max_years)
         computation_stats['external_calcs'] = len(population) * len(external_scenarios) * max_years
 
+        logger.info(f"external_results type: {type(external_results)}")
+        logger.info(f"population type: {type(population)}")
+        logger.info(f"lookup_tables type: {type(lookup_tables)}")
+
         # TIER 2: RESERVE CALCULATIONS
+        logger.info("Starting TIER 2: Reserve calculations...")
         reserve_results = internal_reserve_calculations(external_results, population, lookup_tables, max_years)
         computation_stats['reserve_calcs'] = len(external_results) * 10 * max_years
 
         # TIER 3: CAPITAL CALCULATIONS - FIX THE PARAMETER ORDER
         # Make sure all parameters are correctly positioned
         logger.info("Starting TIER 3: Capital calculations...")
-        logger.info(f"external_results type: {type(external_results)}")
-        logger.info(f"population type: {type(population)}")
-        logger.info(f"lookup_tables type: {type(lookup_tables)}")
-
         capital_results = capital_results = internal_capital_calculations(
                 external_results=external_results,
                 reserve_results=reserve_results,  # Add this line
