@@ -489,7 +489,11 @@ def internal_capital_loop_optimized(external_results, population, lookups,
     # Sequential processing for capital (simplified implementation)
     for key in tqdm(external_results.keys(), desc="Capital Calculations"):
         # Apply capital shock to get stressed capital requirement
-        base_value = external_results[key]['vp_flux_net'][0] if external_results[key]['vp_flux_net'] else 0
+        vp_flux_net = external_results[key]['vp_flux_net']
+        if len(vp_flux_net) > 0 and vp_flux_net[0] != 0:
+            base_value = float(vp_flux_net[0])
+        else:
+            base_value = 0.0
         capital_results[key] = abs(base_value * capital_shock)  # Simplified calculation
 
     logger.info(f"Capital calculations completed: {len(capital_results)} results")
