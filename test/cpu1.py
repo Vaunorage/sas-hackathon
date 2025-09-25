@@ -15,26 +15,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# Optimized data loading with efficient data types
 def load_input_files_optimized():
-    """Load all input CSV files with optimized data types and pre-processing"""
+    """Load all input CSV files with optimized data types but maintain precision"""
 
-    # Load population data with optimized dtypes
+    # Load population data - keep float64 for precision in calculations
     population = pd.read_csv(HERE.joinpath('data_in/population.csv'))
     population = population.astype({
         'ID_COMPTE': 'int32',
         'age_deb': 'int16',
-        'MT_VM': 'float32',
-        'MT_GAR_DECES': 'float32',
-        'PC_REVENU_FDS': 'float32',
-        'PC_HONORAIRES_GEST': 'float32',
-        'TX_COMM_MAINTIEN': 'float32',
-        'FRAIS_ADMIN': 'float32',
-        'FREQ_RESET_DECES': 'float32',
+        'FREQ_RESET_DECES': 'float64',
         'MAX_RESET_DECES': 'int16'
     })
 
-    # Load and optimize rendement data
+    # Load rendement data
     rendement = pd.read_csv(HERE.joinpath('data_in/rendement.csv'))
     if 'TYPE' in rendement.columns:
         rendement['TYPE'] = rendement['TYPE'].apply(
@@ -42,132 +35,155 @@ def load_input_files_optimized():
         )
     rendement = rendement.astype({
         'an_proj': 'int16',
-        'scn_proj': 'int16',
-        'RENDEMENT': 'float32'
+        'scn_proj': 'int16'
     })
 
-    # Create separate external/internal dataframes for faster filtering
-    rendement_ext = rendement[rendement['TYPE'] == 'EXTERNE'].copy()
-    rendement_int = rendement[rendement['TYPE'] == 'INTERNE'].copy()
-
-    # Load other data with optimized dtypes
+    # Load other data with optimized integer types but keep float64 for rates
     tx_deces = pd.read_csv(HERE.joinpath('data_in/tx_deces.csv')).astype({
-        'AGE': 'int16',
-        'QX': 'float32'
+        'AGE': 'int16'
     })
 
     tx_interet = pd.read_csv(HERE.joinpath('data_in/tx_interet.csv')).astype({
-        'an_proj': 'int16',
-        'TX_ACTU': 'float32'
+        'an_proj': 'int16'
     })
 
     tx_interet_int = pd.read_csv(HERE.joinpath('data_in/tx_interet_int.csv')).astype({
-        'an_eval': 'int16',
-        'TX_ACTU_INT': 'float32'
+        'an_eval': 'int16'
     })
 
     tx_retrait = pd.read_csv(HERE.joinpath('data_in/tx_retrait.csv')).astype({
-        'an_proj': 'int16',
-        'WX': 'float32'
+        'an_proj': 'int16'
     })
 
     logger.info("All input files loaded and optimized successfully")
-    return population, rendement_ext, rendement_int, tx_deces, tx_interet, tx_interet_int, tx_retrait
+    logger.info(f"Population: {len(population)} accounts")
+    logger.info(f"Rendement scenarios: {len(rendement.groupby(['an_proj', 'scn_proj']))} combinations")
+    logger.info(f"Mortality table: ages {tx_deces['AGE'].min()}-{tx_deces['AGE'].max()}")
+    logger.info(f"Lapse rates: {len(tx_retrait)} durations")
+
+    return population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait
 
 
-# Vectorized lookup creation using numpy arrays
-def create_vectorized_lookups(rendement_ext, rendement_int, tx_deces, tx_interet, tx_interet_int, tx_retrait):
-    """Create numpy-based lookup arrays for O(1) access"""
+def create_optimized_lookup_tables(rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait):
+    """Create optimized lookup tables - same logic as original but with numpy arrays"""
 
-    # Create 3D arrays for rendement lookups: [year, scenario, return_value]
-    max_year = max(rendement_ext['an_proj'].max(), rendement_int['an_proj'].max())
-    max_scn_ext = rendement_ext['scn_proj'].max()
-    max_scn_int = rendement_int['scn_proj'].max()
+    # Investment returns lookup: use dictionary for exact matching like original
+    rendement_lookup = {}
+    for _, row in rendement.iterrows():
+        key = (int(row['an_proj']), int(row['scn_proj']), row['TYPE'])
+        rendement_lookup[key] = row['RENDEMENT']
 
-    # External returns: [year, scenario]
-    ext_returns = np.zeros((max_year + 1, max_scn_ext + 1), dtype=np.float32)
-    for _, row in rendement_ext.iterrows():
-        ext_returns[int(row['an_proj']), int(row['scn_proj'])] = float(row['RENDEMENT'])
-
-    # Internal returns: [year, scenario]
-    int_returns = np.zeros((max_year + 1, max_scn_int + 1), dtype=np.float32)
-    for _, row in rendement_int.iterrows():
-        int_returns[int(row['an_proj']), int(row['scn_proj'])] = float(row['RENDEMENT'])
-
-    # Mortality rates array
-    max_age = tx_deces['AGE'].max()
-    mortality_rates = np.zeros(max_age + 1, dtype=np.float32)
+    # Mortality rates - convert to numpy array for faster access
+    mortality_array = np.zeros(tx_deces['AGE'].max() + 1)
     for _, row in tx_deces.iterrows():
-        mortality_rates[int(row['AGE'])] = float(row['QX'])
+        mortality_array[int(row['AGE'])] = row['QX']
 
-    # Discount factors arrays
-    discount_ext = np.zeros(max_year + 1, dtype=np.float32)
-    discount_ext[0] = 1.0
+    # Discount rates - convert to numpy arrays
+    max_year_ext = tx_interet['an_proj'].max()
+    discount_ext_array = np.zeros(max_year_ext + 1)
     for _, row in tx_interet.iterrows():
-        discount_ext[int(row['an_proj'])] = float(row['TX_ACTU'])
+        discount_ext_array[int(row['an_proj'])] = row['TX_ACTU']
 
-    discount_int = np.zeros(max_year + 1, dtype=np.float32)
-    discount_int[0] = 1.0
+    max_year_int = tx_interet_int['an_eval'].max()
+    discount_int_array = np.zeros(max_year_int + 1)
     for _, row in tx_interet_int.iterrows():
-        discount_int[int(row['an_eval'])] = float(row['TX_ACTU_INT'])
+        discount_int_array[int(row['an_eval'])] = row['TX_ACTU_INT']
 
-    # Lapse rates array
-    lapse_rates = np.zeros(max_year + 1, dtype=np.float32)
+    # Lapse rates - convert to numpy array
+    max_year_lapse = tx_retrait['an_proj'].max()
+    lapse_array = np.zeros(max_year_lapse + 1)
     for _, row in tx_retrait.iterrows():
-        lapse_rates[int(row['an_proj'])] = float(row['WX'])
+        lapse_array[int(row['an_proj'])] = row['WX']
 
-    # Get unique scenarios
-    external_scenarios = np.sort(rendement_ext['scn_proj'].unique())
-    internal_scenarios = np.sort(rendement_int['scn_proj'].unique())
-
-    logger.info("Vectorized lookup arrays created")
-    return (ext_returns, int_returns, mortality_rates, discount_ext,
-            discount_int, lapse_rates, external_scenarios, internal_scenarios)
+    logger.info("Optimized lookup tables created successfully")
+    return (rendement_lookup, mortality_array, discount_ext_array,
+            discount_int_array, lapse_array)
 
 
-# JIT-compiled helper functions for core calculations
 @njit
-def get_mortality_rate_jit(mortality_rates, age):
-    """JIT-compiled mortality rate lookup with extrapolation"""
-    if age < len(mortality_rates):
-        return mortality_rates[age]
+def get_investment_return_jit(rendement_dict_keys, rendement_dict_values, year, scenario, scenario_type_code):
+    """JIT-compiled investment return lookup"""
+    # We'll pass pre-filtered arrays for external/internal scenarios
+    for i in range(len(rendement_dict_keys)):
+        if (rendement_dict_keys[i][0] == year and
+                rendement_dict_keys[i][1] == scenario and
+                rendement_dict_keys[i][2] == scenario_type_code):
+            return rendement_dict_values[i]
+    return 0.0
+
+
+@njit
+def get_mortality_rate_optimized(mortality_array, age):
+    """JIT-compiled mortality rate lookup with extrapolation - same logic as original"""
+    if age < len(mortality_array) and age >= 0:
+        return mortality_array[age]
+    elif age < 0:
+        return mortality_array[0] if len(mortality_array) > 0 else 0.01
     else:
-        # Simple extrapolation for ages beyond table
-        max_rate = mortality_rates[-1]
-        excess_years = age - (len(mortality_rates) - 1)
-        return min(0.5, max_rate * (1.08 ** excess_years))
+        # Extrapolate using exponential growth - same as original
+        if len(mortality_array) > 0:
+            max_rate = mortality_array[-1]
+            return min(0.5, max_rate * (1.08 ** (age - len(mortality_array) + 1)))
+        else:
+            return 0.01
 
 
 @njit
-def get_lapse_rate_jit(lapse_rates, year):
-    """JIT-compiled lapse rate lookup"""
-    if year < len(lapse_rates):
-        return lapse_rates[year]
+def get_lapse_rate_optimized(lapse_array, year):
+    """JIT-compiled lapse rate lookup - same logic as original"""
+    if year < len(lapse_array) and year >= 0:
+        return lapse_array[year]
+    elif year <= 0:
+        return 0.0
     else:
-        return lapse_rates[-1] if len(lapse_rates) > 0 else 0.05
+        # Use last available rate for years beyond the table - same as original
+        return lapse_array[-1] if len(lapse_array) > 0 else 0.05
 
 
 @njit
-def get_discount_factor_jit(discount_rates, year):
-    """JIT-compiled discount factor lookup"""
-    if year < len(discount_rates):
-        return discount_rates[year]
+def get_discount_factor_optimized(discount_array, year):
+    """JIT-compiled discount factor lookup - same logic as original"""
+    if year < len(discount_array) and year >= 0:
+        return discount_array[year]
+    elif year <= 0:
+        return 1.0
     else:
-        # Extrapolate with 5% discount rate
-        max_year = len(discount_rates) - 1
-        max_factor = discount_rates[max_year]
-        return max_factor * ((1.0 / 1.05) ** (year - max_year))
+        # Extrapolate using compound discount - same as original
+        if len(discount_array) > 0:
+            max_factor = discount_array[-1]
+            return max_factor * ((1.0 / 1.05) ** (year - len(discount_array) + 1))
+        else:
+            return (1.0 / 1.05) ** year
 
 
-# Vectorized external loop calculation
+def prepare_rendement_arrays(rendement_lookup):
+    """Prepare arrays for JIT compilation"""
+    ext_keys = []
+    ext_values = []
+    int_keys = []
+    int_values = []
+
+    for key, value in rendement_lookup.items():
+        year, scenario, scenario_type = key
+        if scenario_type == 'EXTERNE':
+            ext_keys.append((year, scenario, 1))  # 1 for EXTERNE
+            ext_values.append(value)
+        else:  # INTERNE
+            int_keys.append((year, scenario, 0))  # 0 for INTERNE
+            int_values.append(value)
+
+    return (np.array(ext_keys), np.array(ext_values),
+            np.array(int_keys), np.array(int_values))
+
+
 @njit
-def calculate_single_policy_scenario_jit(
-        policy_data, ext_returns, mortality_rates, discount_ext, lapse_rates,
-        scenario, max_years
+def calculate_single_policy_scenario_optimized(
+        policy_data, ext_keys, ext_values, mortality_array, discount_ext_array,
+        lapse_array, scenario, max_years
 ):
-    """JIT-compiled single policy-scenario calculation"""
+    """JIT-compiled single policy-scenario calculation - maintains original logic exactly"""
 
-    # Extract policy data (passed as array)
+    # Extract policy data
     current_age = int(policy_data[0])  # age_deb
     mt_vm = policy_data[1]  # MT_VM
     mt_gar_deces = policy_data[2]  # MT_GAR_DECES
@@ -181,11 +197,11 @@ def calculate_single_policy_scenario_jit(
     tx_survie = 1.0
 
     # Pre-allocate result arrays
-    mt_vm_results = np.zeros(max_years + 1, dtype=np.float32)
-    mt_gar_deces_results = np.zeros(max_years + 1, dtype=np.float32)
-    tx_survie_results = np.zeros(max_years + 1, dtype=np.float32)
-    flux_net_results = np.zeros(max_years + 1, dtype=np.float32)
-    vp_flux_net_results = np.zeros(max_years + 1, dtype=np.float32)
+    mt_vm_results = np.zeros(max_years + 1)
+    mt_gar_deces_results = np.zeros(max_years + 1)
+    tx_survie_results = np.zeros(max_years + 1)
+    flux_net_results = np.zeros(max_years + 1)
+    vp_flux_net_results = np.zeros(max_years + 1)
 
     # Initial values
     mt_vm_results[0] = mt_vm
@@ -194,30 +210,31 @@ def calculate_single_policy_scenario_jit(
 
     for year in range(1, max_years + 1):
         if tx_survie > 1e-6 and mt_vm > 0:
-            # Get investment return
-            if year < ext_returns.shape[0] and scenario < ext_returns.shape[1]:
-                rendement = ext_returns[year, scenario]
-            else:
-                rendement = 0.0
+            # Get investment return - same logic as original
+            rendement = 0.0
+            for i in range(len(ext_keys)):
+                if ext_keys[i][0] == year and ext_keys[i][1] == scenario:
+                    rendement = ext_values[i]
+                    break
 
             mt_vm_deb = mt_vm
             rendement_amount = mt_vm * rendement
 
-            # Apply fees
+            # Apply fees - exact same logic as original
             frais_adj = -(mt_vm_deb + rendement_amount / 2) * pc_revenu_fds
             mt_vm = max(0.0, mt_vm + rendement_amount + frais_adj)
 
-            # Death benefit guarantee mechanism
+            # Death benefit guarantee mechanism - exact same logic as original
             if freq_reset_deces == 1.0 and current_age <= max_reset_deces:
                 mt_gar_deces = max(mt_gar_deces, mt_vm)
 
-            # Survival probability
-            qx = get_mortality_rate_jit(mortality_rates, current_age)
-            wx = get_lapse_rate_jit(lapse_rates, year)
+            # Survival probability - exact same logic as original
+            qx = get_mortality_rate_optimized(mortality_array, current_age)
+            wx = get_lapse_rate_optimized(lapse_array, year)
             tx_survie_previous = tx_survie
             tx_survie = tx_survie * (1 - qx) * (1 - wx)
 
-            # Cash flow components
+            # Cash flow components - exact same logic as original
             frais_t = -(mt_vm_deb + rendement_amount / 2) * pc_revenu_fds
             revenus = -frais_t * tx_survie_previous
             frais_gest = -(mt_vm_deb + rendement_amount / 2) * pc_honoraires_gest * tx_survie_previous
@@ -229,8 +246,8 @@ def calculate_single_policy_scenario_jit(
 
             flux_net = revenus + frais_gest + commissions + frais_gen + pmt_garantie
 
-            # Present value
-            tx_actu = get_discount_factor_jit(discount_ext, year)
+            # Present value - exact same logic as original
+            tx_actu = get_discount_factor_optimized(discount_ext_array, year)
             vp_flux_net = flux_net * tx_actu
 
             # Store results
@@ -243,7 +260,7 @@ def calculate_single_policy_scenario_jit(
             current_age += 1
 
         else:
-            # Policy terminated
+            # Policy terminated - same as original
             mt_vm_results[year] = 0.0
             mt_gar_deces_results[year] = 0.0
             tx_survie_results[year] = 0.0
@@ -254,17 +271,32 @@ def calculate_single_policy_scenario_jit(
             flux_net_results, vp_flux_net_results)
 
 
-# Parallel processing function for external loop
-def process_account_chunk(args):
-    """Process a chunk of accounts in parallel - unpacked args to avoid pickling issues"""
-    account_chunk, ext_returns, int_returns, mortality_rates, discount_ext, discount_int, lapse_rates, external_scenarios, internal_scenarios, max_years = args
+def external_loop_optimized(population, external_scenarios, lookup_tables, max_years=35):
+    """Optimized external loop maintaining exact original logic"""
 
-    chunk_results = {}
+    (rendement_lookup, mortality_array, discount_ext_array,
+     discount_int_array, lapse_array) = lookup_tables
 
-    for _, policy_data in account_chunk.iterrows():
+    # Prepare arrays for JIT
+    ext_keys, ext_values, int_keys, int_values = prepare_rendement_arrays(rendement_lookup)
+
+    external_results = {}
+    total_external_calculations = 0
+
+    logger.info("=" * 50)
+    logger.info("OPTIMIZED TIER 1: EXTERNAL LOOP PROCESSING")
+    logger.info("=" * 50)
+    logger.info(f"Processing {len(population)} accounts × {len(external_scenarios)} scenarios × {max_years} years")
+    logger.info(f"Total external calculations: {len(population) * len(external_scenarios) * max_years:,}")
+
+    # Account Loop with progress bar
+    for account_idx, (_, policy_data) in enumerate(tqdm(population.iterrows(),
+                                                        desc="Processing Accounts",
+                                                        total=len(population),
+                                                        unit="account")):
         account_id = int(policy_data['ID_COMPTE'])
 
-        # Convert policy data to numpy array for JIT function
+        # Convert policy data to numpy array for JIT
         policy_array = np.array([
             float(policy_data['age_deb']),
             float(policy_data['MT_VM']),
@@ -275,15 +307,22 @@ def process_account_chunk(args):
             float(policy_data['FRAIS_ADMIN']),
             float(policy_data['FREQ_RESET_DECES']),
             float(policy_data['MAX_RESET_DECES'])
-        ], dtype=np.float32)
+        ])
 
-        for scenario in external_scenarios:
-            results = calculate_single_policy_scenario_jit(
-                policy_array, ext_returns, mortality_rates, discount_ext,
-                lapse_rates, int(scenario), max_years
+        # Scenario Loop
+        for scenario in tqdm(external_scenarios,
+                             desc=f"Account {account_id} Scenarios",
+                             leave=False,
+                             unit="scenario"):
+            total_external_calculations += max_years
+
+            # Use JIT-compiled function
+            results = calculate_single_policy_scenario_optimized(
+                policy_array, ext_keys, ext_values, mortality_array,
+                discount_ext_array, lapse_array, int(scenario), max_years
             )
 
-            chunk_results[(account_id, int(scenario))] = {
+            external_results[(account_id, scenario)] = {
                 'mt_vm': results[0],
                 'mt_gar_deces': results[1],
                 'tx_survie': results[2],
@@ -291,295 +330,399 @@ def process_account_chunk(args):
                 'vp_flux_net': results[4]
             }
 
-    return chunk_results
+    logger.info(f"TIER 1 COMPLETE: {total_external_calculations:,} external calculations performed")
+    return external_results
 
 
-# Optimized external loop with parallel processing
-def external_loop_optimized(population, lookups, max_years=35, n_workers=2, chunk_size=10):
-    """Optimized external loop with parallel processing and JIT compilation"""
+def internal_reserve_loop_optimized(external_results, population, lookup_tables, max_years=35):
+    """Optimized reserve calculations maintaining exact original nested loop logic"""
 
-    (ext_returns, int_returns, mortality_rates, discount_ext,
-     discount_int, lapse_rates, external_scenarios, internal_scenarios) = lookups
+    (rendement_lookup, mortality_array, discount_ext_array,
+     discount_int_array, lapse_array) = lookup_tables
 
-    logger.info("=" * 50)
-    logger.info("OPTIMIZED TIER 1: EXTERNAL LOOP PROCESSING")
-    logger.info("=" * 50)
-    logger.info(f"Processing {len(population)} accounts × {len(external_scenarios)} scenarios")
-    logger.info(f"Using {n_workers} workers with chunk size {chunk_size}")
+    # Get internal scenarios - same as original
+    internal_scenarios = set()
+    for key in rendement_lookup.keys():
+        year, scenario, scenario_type = key
+        if scenario_type == 'INTERNE':
+            internal_scenarios.add(scenario)
+    internal_scenarios = sorted(list(internal_scenarios))
 
-    # Split population into chunks for parallel processing
-    chunks = [population.iloc[i:i + chunk_size] for i in range(0, len(population), chunk_size)]
+    # Prepare internal scenario arrays for JIT
+    _, _, int_keys, int_values = prepare_rendement_arrays(rendement_lookup)
 
-    all_results = {}
-
-    # Prepare arguments for parallel processing to avoid pickling issues
-    chunk_args = []
-    for chunk in chunks:
-        args = (chunk, ext_returns, int_returns, mortality_rates, discount_ext,
-                discount_int, lapse_rates, external_scenarios, internal_scenarios, max_years)
-        chunk_args.append(args)
-
-    # Process chunks in parallel
-    if n_workers > 1:
-        try:
-            with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
-                futures = [executor.submit(process_account_chunk, args) for args in chunk_args]
-
-                # Collect results with progress bar
-                for future in tqdm(concurrent.futures.as_completed(futures),
-                                   total=len(chunks),
-                                   desc="Processing Account Chunks"):
-                    chunk_results = future.result()
-                    all_results.update(chunk_results)
-        except Exception as e:
-            logger.warning(f"Parallel processing failed: {e}. Falling back to sequential processing.")
-            n_workers = 1
-
-    # Fall back to sequential processing if parallel fails
-    if n_workers == 1:
-        for args in tqdm(chunk_args, desc="Processing Chunks Sequentially"):
-            chunk_results = process_account_chunk(args)
-            all_results.update(chunk_results)
-
-    logger.info(f"External loop completed: {len(all_results)} results generated")
-    return all_results
-
-
-# Vectorized reserve calculations
-@njit
-def calculate_reserves_vectorized(external_data_arrays, int_returns, discount_int,
-                                  policy_coefficients, internal_scenarios, max_years):
-    """Vectorized reserve calculations using numpy arrays"""
-
-    n_scenarios = len(internal_scenarios)
-    scenario_results = np.zeros(n_scenarios, dtype=np.float32)
-
-    mt_vm_array = external_data_arrays[0]
-    tx_survie_array = external_data_arrays[2]
-    pc_revenu_fds = policy_coefficients[0]
-
-    for s_idx, scenario in enumerate(internal_scenarios):
-        pv_total = 0.0
-
-        for year in range(1, min(len(tx_survie_array), max_years + 1)):
-            if tx_survie_array[year] > 1e-6:
-                # Get internal return
-                if year < int_returns.shape[0] and scenario < int_returns.shape[1]:
-                    internal_return = int_returns[year, scenario]
-                else:
-                    internal_return = 0.0
-
-                # Simplified reserve calculation
-                base_fund_value = mt_vm_array[year] if year < len(mt_vm_array) else 0.0
-                survival = tx_survie_array[year]
-                internal_cf = base_fund_value * pc_revenu_fds * survival
-
-                # Present value
-                if year < len(discount_int):
-                    tx_actu_int = discount_int[year]
-                else:
-                    tx_actu_int = discount_int[-1] * ((1.0 / 1.05) ** (year - len(discount_int) + 1))
-
-                internal_pv = internal_cf * tx_actu_int
-                pv_total += internal_pv
-
-        scenario_results[s_idx] = pv_total
-
-    return np.mean(scenario_results)
-
-
-# Batch processing for reserve and capital calculations
-def process_reserves_batch(args):
-    """Process a batch of reserve calculations - unpacked args"""
-    batch_data, int_returns, discount_int, internal_scenarios, max_years = args
-
-    batch_results = {}
-
-    for (account_id, external_scenario), external_data in batch_data:
-        # Convert external data to numpy arrays
-        external_arrays = [
-            np.array(external_data['mt_vm'], dtype=np.float32),
-            np.array(external_data['mt_gar_deces'], dtype=np.float32),
-            np.array(external_data['tx_survie'], dtype=np.float32),
-            np.array(external_data['flux_net'], dtype=np.float32),
-            np.array(external_data['vp_flux_net'], dtype=np.float32)
-        ]
-
-        # Get policy coefficients (simplified - would need to pass from population data)
-        policy_coeffs = np.array([0.015], dtype=np.float32)  # Example PC_REVENU_FDS
-
-        # Calculate reserves
-        mean_reserve = calculate_reserves_vectorized(
-            external_arrays, int_returns, discount_int,
-            policy_coeffs, internal_scenarios, max_years
-        )
-
-        batch_results[(account_id, external_scenario)] = mean_reserve
-
-    return batch_results
-
-
-# Memory-efficient batch processing
-def internal_reserve_loop_optimized(external_results, population, lookups,
-                                    max_years=35, batch_size=1000, n_workers=2):
-    """Memory-efficient reserve calculations with batch processing"""
+    reserve_results = {}
+    total_reserve_calculations = 0
 
     logger.info("=" * 50)
-    logger.info("OPTIMIZED TIER 2: INTERNAL RESERVE LOOP")
+    logger.info("OPTIMIZED TIER 2: INTERNAL RESERVE LOOP PROCESSING")
     logger.info("=" * 50)
-    logger.info(f"Processing {len(external_results)} results in batches of {batch_size}")
+    logger.info(f"Processing {len(external_results)} external results")
+    logger.info(f"Each with {len(internal_scenarios)} internal scenarios × {max_years} years")
+    logger.info(f"Total reserve calculations: {len(external_results) * len(internal_scenarios) * max_years:,}")
 
-    (ext_returns, int_returns, mortality_rates, discount_ext,
-     discount_int, lapse_rates, external_scenarios, internal_scenarios) = lookups
-
-    # Create population lookup for policy data
+    # Create population lookup
     pop_lookup = {int(row['ID_COMPTE']): row for _, row in population.iterrows()}
 
-    # Split external results into batches
-    items = list(external_results.items())
-    batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+    # For each external result
+    for (account_id, external_scenario), external_data in tqdm(external_results.items(),
+                                                               desc="Processing External Results for Reserves",
+                                                               unit="result"):
 
-    all_reserve_results = {}
+        # Get policy data for this account
+        policy_data = pop_lookup[account_id]
 
-    # Prepare arguments for batch processing
-    batch_args = []
-    for batch in batches:
-        args = (batch, int_returns, discount_int, internal_scenarios, max_years)
-        batch_args.append(args)
+        internal_scenario_results = []
 
-    # Process batches
-    if n_workers > 1:
-        try:
-            with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
-                futures = [executor.submit(process_reserves_batch, args) for args in batch_args]
+        # Internal Scenario Loop - EXACT same structure as original
+        for internal_scenario in tqdm(internal_scenarios,
+                                      desc=f"Acc {account_id} Scn {external_scenario} Reserves",
+                                      leave=False,
+                                      unit="int_scn"):
 
-                for future in tqdm(concurrent.futures.as_completed(futures),
-                                   total=len(batches),
-                                   desc="Processing Reserve Batches"):
-                    batch_results = future.result()
-                    all_reserve_results.update(batch_results)
-        except Exception as e:
-            logger.warning(f"Parallel reserve processing failed: {e}. Using sequential processing.")
-            n_workers = 1
+            scenario_pv_total = 0.0
 
-    # Fall back to sequential if parallel fails
-    if n_workers == 1:
-        for args in tqdm(batch_args, desc="Processing Reserve Batches Sequentially"):
-            batch_results = process_reserves_batch(args)
-            all_reserve_results.update(batch_results)
+            # Internal Year Loop - EXACT same logic as original
+            for year in range(1, min(len(external_data['tx_survie']), max_years + 1)):
+                total_reserve_calculations += 1
 
-    logger.info(f"Reserve calculations completed: {len(all_reserve_results)} results")
-    return all_reserve_results
+                if (year < len(external_data['tx_survie']) and
+                        external_data['tx_survie'][year] > 1e-6):
+
+                    # Get internal scenario return - same as original
+                    internal_return = 0.0
+                    for i in range(len(int_keys)):
+                        if int_keys[i][0] == year and int_keys[i][1] == internal_scenario:
+                            internal_return = int_values[i]
+                            break
+
+                    # Use external projection as foundation - same as original
+                    base_fund_value = external_data['mt_vm'][year] if year < len(external_data['mt_vm']) else 0
+                    survival = external_data['tx_survie'][year]
+
+                    # Run same projection logic as external loop but with internal return
+                    internal_cf = base_fund_value * policy_data['PC_REVENU_FDS'] * survival
+
+                    # Present value using internal discount rates - same as original
+                    tx_actu_int = get_discount_factor_optimized(discount_int_array, year)
+                    internal_pv = internal_cf * tx_actu_int
+                    scenario_pv_total += internal_pv
+
+            internal_scenario_results.append(scenario_pv_total)
+
+        # Aggregate Results: MEAN across scenarios - same as original
+        mean_reserve = np.mean(internal_scenario_results) if internal_scenario_results else 0.0
+        reserve_results[(account_id, external_scenario)] = mean_reserve
+
+    logger.info(f"TIER 2 COMPLETE: {total_reserve_calculations:,} reserve calculations performed")
+    return reserve_results
 
 
-# Similar optimization for capital calculations
-def internal_capital_loop_optimized(external_results, population, lookups,
-                                    capital_shock=0.35, max_years=35,
-                                    batch_size=1000, n_workers=2):
-    """Memory-efficient capital calculations with batch processing"""
+def internal_capital_loop_optimized(external_results, population, lookup_tables,
+                                    capital_shock=0.35, max_years=35):
+    """Optimized capital calculations maintaining exact original nested loop logic"""
 
-    logger.info("=" * 50)
-    logger.info("OPTIMIZED TIER 3: INTERNAL CAPITAL LOOP")
-    logger.info("=" * 50)
-    logger.info(f"Processing {len(external_results)} results with {capital_shock * 100}% shock")
+    (rendement_lookup, mortality_array, discount_ext_array,
+     discount_int_array, lapse_array) = lookup_tables
 
-    # Simplified capital calculation for now - similar structure to reserves but with shock
+    # Get internal scenarios - same as original
+    internal_scenarios = set()
+    for key in rendement_lookup.keys():
+        year, scenario, scenario_type = key
+        if scenario_type == 'INTERNE':
+            internal_scenarios.add(scenario)
+    internal_scenarios = sorted(list(internal_scenarios))
+
+    # Prepare internal scenario arrays for JIT
+    _, _, int_keys, int_values = prepare_rendement_arrays(rendement_lookup)
+
     capital_results = {}
+    total_capital_calculations = 0
 
-    # Sequential processing for capital (simplified implementation)
-    for key in tqdm(external_results.keys(), desc="Capital Calculations"):
-        # Apply capital shock to get stressed capital requirement
-        vp_flux_net = external_results[key]['vp_flux_net']
-        if len(vp_flux_net) > 0 and vp_flux_net[0] != 0:
-            base_value = float(vp_flux_net[0])
-        else:
-            base_value = 0.0
-        capital_results[key] = abs(base_value * capital_shock)  # Simplified calculation
+    logger.info("=" * 50)
+    logger.info("OPTIMIZED TIER 3: INTERNAL CAPITAL LOOP PROCESSING")
+    logger.info("=" * 50)
+    logger.info(f"Processing {len(external_results)} external results with {capital_shock * 100}% capital shock")
+    logger.info(f"Each with {len(internal_scenarios)} internal scenarios × {max_years} years")
+    logger.info(f"Total capital calculations: {len(external_results) * len(internal_scenarios) * max_years:,}")
 
-    logger.info(f"Capital calculations completed: {len(capital_results)} results")
+    # Create population lookup
+    pop_lookup = {int(row['ID_COMPTE']): row for _, row in population.iterrows()}
+
+    # For each external result - EXACT same structure as original
+    for (account_id, external_scenario), external_data in tqdm(external_results.items(),
+                                                               desc="Processing External Results for Capital",
+                                                               unit="result"):
+
+        # Get policy data for this account
+        policy_data = pop_lookup[account_id]
+
+        internal_scenario_results = []
+
+        # Internal Scenario Loop - EXACT same structure as original
+        for internal_scenario in tqdm(internal_scenarios,
+                                      desc=f"Acc {account_id} Scn {external_scenario} Capital",
+                                      leave=False,
+                                      unit="int_scn"):
+
+            scenario_pv_total = 0.0
+
+            # Internal Year Loop - EXACT same logic as original
+            for year in range(1, min(len(external_data['tx_survie']), max_years + 1)):
+                total_capital_calculations += 1
+
+                if (year < len(external_data['tx_survie']) and
+                        external_data['tx_survie'][year] > 1e-6):
+
+                    # Apply shock to fund value - same as original
+                    base_fund_value = external_data['mt_vm'][year] if year < len(external_data['mt_vm']) else 0
+                    shocked_fund_value = base_fund_value * (1 - capital_shock)
+                    survival = external_data['tx_survie'][year]
+
+                    # Get internal return
+                    internal_return = 0.0
+                    for i in range(len(int_keys)):
+                        if int_keys[i][0] == year and int_keys[i][1] == internal_scenario:
+                            internal_return = int_values[i]
+                            break
+
+                    # Stressed Assumptions - same as original
+                    stressed_return = internal_return * 0.7  # Additional stress factor
+
+                    # Run same projection logic but with shocked values - same as original
+                    stressed_cf = shocked_fund_value * policy_data['PC_REVENU_FDS'] * survival * 0.6
+
+                    # Present value using internal discount rates - same as original
+                    tx_actu_int = get_discount_factor_optimized(discount_int_array, year)
+                    internal_pv = stressed_cf * tx_actu_int
+                    scenario_pv_total += internal_pv
+
+            internal_scenario_results.append(scenario_pv_total)
+
+        # Aggregate Results: MEAN across scenarios - same as original
+        mean_capital = np.mean(internal_scenario_results) if internal_scenario_results else 0.0
+        capital_results[(account_id, external_scenario)] = mean_capital
+
+    logger.info(f"TIER 3 COMPLETE: {total_capital_calculations:,} capital calculations performed")
     return capital_results
 
 
-# Main optimized algorithm
-def run_optimized_acfc_algorithm():
-    """Main optimized algorithm with parallel processing and JIT compilation"""
+def final_integration_optimized(external_results, reserve_results, capital_results, hurdle_rate=0.10):
+    """Optimized final integration maintaining exact original logic"""
 
-    logger.info("=" * 60)
-    logger.info("OPTIMIZED ACTUARIAL CASH FLOW CALCULATION (ACFC)")
-    logger.info("With Parallel Processing and JIT Compilation")
-    logger.info("=" * 60)
-    start_time = time.time()
-
-    # Phase 1: Load and optimize data
-    logger.info("PHASE 1: OPTIMIZED DATA LOADING")
-    population, rendement_ext, rendement_int, tx_deces, tx_interet, tx_interet_int, tx_retrait = load_input_files_optimized()
-    lookups = create_vectorized_lookups(rendement_ext, rendement_int, tx_deces,
-                                        tx_interet, tx_interet_int, tx_retrait)
-
-    # Phase 2: Optimized external loop
-    external_results = external_loop_optimized(population, lookups,
-                                               max_years=35, n_workers=2, chunk_size=25)
-
-    # Phase 3: Optimized reserve calculations
-    reserve_results = internal_reserve_loop_optimized(external_results, population, lookups,
-                                                      batch_size=2000, n_workers=2)
-
-    # Phase 4: Optimized capital calculations
-    capital_results = internal_capital_loop_optimized(external_results, population, lookups,
-                                                      batch_size=2000, n_workers=2)
-
-    # Phase 5: Final integration (vectorized)
-    final_results = final_integration_optimized(external_results, reserve_results, capital_results)
-
-    elapsed_time = time.time() - start_time
-    logger.info("=" * 60)
-    logger.info(f"OPTIMIZED ACFC COMPLETED in {elapsed_time:.2f} seconds")
-    logger.info("=" * 60)
-
-    return pd.DataFrame(final_results)
-
-
-# Vectorized final integration
-def final_integration_optimized(external_results, reserve_results, capital_results,
-                                hurdle_rate=0.10):
-    """Vectorized final integration with numpy operations"""
-
+    logger.info("=" * 50)
     logger.info("PHASE 5: OPTIMIZED FINAL INTEGRATION")
+    logger.info("=" * 50)
+    logger.info("Calculating distributable cash flows and present values")
 
     final_results = []
 
-    # Vectorize discount factor calculation
-    max_years = max(len(data['flux_net']) for data in external_results.values())
-    discount_factors = np.array([(1 + hurdle_rate) ** -year for year in range(max_years)])
-
+    # Process each result - same logic as original
     for (account_id, scenario), external_data in tqdm(external_results.items(),
-                                                      desc="Final Integration"):
+                                                      desc="Final Integration",
+                                                      unit="result"):
+
         reserve_req = reserve_results.get((account_id, scenario), 0.0)
         capital_req = capital_results.get((account_id, scenario), 0.0)
 
-        # Convert to numpy arrays for vectorized operations
-        flux_net = np.array(external_data['flux_net'])
+        total_pv_distributable = 0.0
+        previous_reserve = 0.0
+        previous_capital = 0.0
 
-        # Simplified distributable cash flow calculation
-        distributable_flows = flux_net + reserve_req + capital_req
+        # Calculate distributable cash flows by year - EXACT same logic as original
+        for year in range(1, len(external_data['flux_net'])):
+            # Calculate Profit: external_cash_flow + (reserve_current - reserve_previous)
+            external_cf = external_data['flux_net'][year]
+            reserve_change = reserve_req - previous_reserve  # Simplified: constant reserve
+            profit = external_cf + reserve_change
 
-        # Vectorized present value calculation
-        valid_years = min(len(distributable_flows), len(discount_factors))
-        pv_total = np.sum(distributable_flows[1:valid_years] * discount_factors[1:valid_years])
+            # Calculate Distributable: profit + (capital_current - capital_previous)
+            capital_change = capital_req - previous_capital  # Simplified: constant capital
+            distributable_amount = profit + capital_change
 
+            # Present value to evaluation date using hurdle rate - same as original
+            pv_distributable = distributable_amount / ((1 + hurdle_rate) ** year)
+            total_pv_distributable += pv_distributable
+
+            previous_reserve = reserve_req
+            previous_capital = capital_req
+
+        # Aggregate by Account-Scenario: SUM across all years - same as original
         final_results.append({
             'ID_COMPTE': account_id,
             'scn_eval': scenario,
-            'VP_FLUX_DISTRIBUABLES': pv_total
+            'VP_FLUX_DISTRIBUABLES': total_pv_distributable
         })
 
-    logger.info(f"Final integration completed: {len(final_results)} results")
+    logger.info(f"Generated {len(final_results)} final results")
     return final_results
 
 
+def run_optimized_acfc_algorithm_fixed():
+    """
+    Main function implementing properly optimized three-tier nested loop architecture.
+    Maintains EXACT same logic as original but with performance optimizations.
+    """
+
+    logger.info("=" * 60)
+    logger.info("PROPERLY OPTIMIZED ACTUARIAL CASH FLOW CALCULATION (ACFC)")
+    logger.info("Maintains Original Logic with Performance Improvements")
+    logger.info("=" * 60)
+    start_time = time.time()
+
+    # Phase 1: Initialization - optimized data loading
+    logger.info("PHASE 1: OPTIMIZED INITIALIZATION")
+    population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait = load_input_files_optimized()
+    lookup_tables = create_optimized_lookup_tables(rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait)
+
+    # Get external scenarios - same as original
+    external_scenarios = set()
+    for key in lookup_tables[0].keys():  # rendement_lookup
+        year, scenario, scenario_type = key
+        if scenario_type == 'EXTERNE':
+            external_scenarios.add(scenario)
+    external_scenarios = sorted(list(external_scenarios))
+
+    logger.info(f"Found {len(external_scenarios)} external scenarios")
+    logger.info(f"Processing {len(population)} accounts")
+
+    # TIER 1: External Loop - optimized but maintains exact logic
+    external_results = external_loop_optimized(population, external_scenarios, lookup_tables)
+
+    # TIER 2: Reserve Calculations - optimized but maintains exact nested logic
+    reserve_results = internal_reserve_loop_optimized(external_results, population, lookup_tables)
+
+    # TIER 3: Capital Calculations - optimized but maintains exact nested logic
+    capital_results = internal_capital_loop_optimized(external_results, population, lookup_tables)
+
+    # Phase 5: Final Integration - optimized but maintains exact logic
+    final_results = final_integration_optimized(external_results, reserve_results, capital_results)
+
+    # Create results DataFrame
+    results_df = pd.DataFrame(final_results)
+
+    elapsed_time = time.time() - start_time
+    logger.info("=" * 60)
+    logger.info(f"OPTIMIZED ACFC ALGORITHM COMPLETED in {elapsed_time:.2f} seconds")
+    logger.info(f"Final output: {len(results_df)} results (Account × Scenario combinations)")
+
+    # Calculate total computational scale - same as original
+    total_external = len(population) * len(external_scenarios) * 35  # max_years
+    total_reserve = len(external_results) * 10 * 35  # Assuming 10 internal scenarios
+    total_capital = len(external_results) * 10 * 35
+    total_calculations = total_external + total_reserve + total_capital
+
+    logger.info(f"Computational Scale Summary:")
+    logger.info(f"  External calculations: {total_external:,}")
+    logger.info(f"  Reserve calculations: {total_reserve:,}")
+    logger.info(f"  Capital calculations: {total_capital:,}")
+    logger.info(f"  TOTAL: {total_calculations:,} individual projections")
+    logger.info("=" * 60)
+
+    return results_df
+
+
+def analyze_results(results_df):
+    """Analyze results and provide summary statistics - same as original"""
+
+    total_combinations = len(results_df)
+    profitable = len(results_df[results_df['VP_FLUX_DISTRIBUABLES'] > 0])
+    losses = len(results_df[results_df['VP_FLUX_DISTRIBUABLES'] <= 0])
+
+    analysis = {
+        'total_combinations': total_combinations,
+        'profitable_combinations': profitable,
+        'loss_combinations': losses,
+        'profitability_rate': profitable / total_combinations * 100 if total_combinations > 0 else 0,
+        'mean_pv': results_df['VP_FLUX_DISTRIBUABLES'].mean(),
+        'median_pv': results_df['VP_FLUX_DISTRIBUABLES'].median(),
+        'std_pv': results_df['VP_FLUX_DISTRIBUABLES'].std(),
+        'min_pv': results_df['VP_FLUX_DISTRIBUABLES'].min(),
+        'max_pv': results_df['VP_FLUX_DISTRIBUABLES'].max(),
+        'percentiles': {
+            '5th': results_df['VP_FLUX_DISTRIBUABLES'].quantile(0.05),
+            '25th': results_df['VP_FLUX_DISTRIBUABLES'].quantile(0.25),
+            '75th': results_df['VP_FLUX_DISTRIBUABLES'].quantile(0.75),
+            '95th': results_df['VP_FLUX_DISTRIBUABLES'].quantile(0.95)
+        }
+    }
+
+    return analysis
+
+
+def print_results_summary(results_df, analysis):
+    """Print comprehensive results summary - same as original"""
+
+    print("\n" + "=" * 60)
+    print("OPTIMIZED ACTUARIAL CASH FLOW CALCULATION (ACFC) RESULTS")
+    print("=" * 60)
+
+    print(f"Total account-scenario combinations: {analysis['total_combinations']:,}")
+    print(f"Profitable combinations: {analysis['profitable_combinations']:,} ({analysis['profitability_rate']:.1f}%)")
+    print(
+        f"Loss-making combinations: {analysis['loss_combinations']:,} ({(100 - analysis['profitability_rate']):.1f}%)")
+
+    print(f"\nDistributable Cash Flow Statistics:")
+    print(f"  Mean: ${analysis['mean_pv']:,.2f}")
+    print(f"  Median: ${analysis['median_pv']:,.2f}")
+    print(f"  Standard Deviation: ${analysis['std_pv']:,.2f}")
+    print(f"  Range: ${analysis['min_pv']:,.2f} to ${analysis['max_pv']:,.2f}")
+
+    print(f"\nPercentile Distribution:")
+    for percentile, value in analysis['percentiles'].items():
+        print(f"  {percentile}: ${value:,.2f}")
+
+    # Show top and bottom performing combinations
+    print(f"\nTop 5 Most Profitable Combinations:")
+    top_5 = results_df.nlargest(5, 'VP_FLUX_DISTRIBUABLES')
+    for _, row in top_5.iterrows():
+        print(
+            f"  Account {int(row['ID_COMPTE'])}, Scenario {int(row['scn_eval'])}: ${row['VP_FLUX_DISTRIBUABLES']:,.2f}")
+
+    print(f"\nBottom 5 Combinations (Highest Losses):")
+    bottom_5 = results_df.nsmallest(5, 'VP_FLUX_DISTRIBUABLES')
+    for _, row in bottom_5.iterrows():
+        print(
+            f"  Account {int(row['ID_COMPTE'])}, Scenario {int(row['scn_eval'])}: ${row['VP_FLUX_DISTRIBUABLES']:,.2f}")
+
+
+def main():
+    """Main execution function with properly optimized nested loop structure"""
+
+    try:
+        # Run the optimized algorithm that maintains original logic
+        results_df = run_optimized_acfc_algorithm_fixed()
+
+        # Analyze results
+        analysis = analyze_results(results_df)
+
+        # Print summary
+        print_results_summary(results_df, analysis)
+
+        # Save results to CSV
+        output_filename = HERE.joinpath('test/cpu1.csv')
+        results_df.to_csv(output_filename, index=False)
+        logger.info(f"Results saved to {output_filename}")
+
+        # Save analysis summary
+        analysis_filename = HERE.joinpath('test/cpu1.txt')
+        with open(analysis_filename, 'w') as f:
+            f.write("Optimized ACFC Algorithm Analysis Summary (Maintains Original Logic)\n")
+            f.write("=" * 60 + "\n")
+            f.write(f"Total combinations: {analysis['total_combinations']}\n")
+            f.write(f"Profitable: {analysis['profitable_combinations']} ({analysis['profitability_rate']:.1f}%)\n")
+            f.write(f"Losses: {analysis['loss_combinations']}\n")
+            f.write(f"Mean PV: ${analysis['mean_pv']:.2f}\n")
+            f.write(f"Median PV: ${analysis['median_pv']:.2f}\n")
+            f.write(f"Std Dev: ${analysis['std_pv']:.2f}\n")
+        logger.info(f"Analysis summary saved to {analysis_filename}")
+
+        return results_df, analysis
+
+    except Exception as e:
+        logger.error(f"Error in main execution: {str(e)}")
+        raise
+
+
 if __name__ == "__main__":
-    results_df = run_optimized_acfc_algorithm()
-    results_df = results_df.sort_values(by=['ID_COMPTE', 'scn_eval'])
-    output_filename = HERE.joinpath('test/cpu1.csv')
-    results_df.to_csv(output_filename)
-    print(f"Generated {len(results_df)} optimized results")
+    results_df, analysis = main()
