@@ -317,7 +317,7 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
         # *** EXTERNAL SCENARIOS *** - do scn_eval = 1 to &NB_SC.
         # ***************************
 
-        for scn_eval in range(1, min(NB_SC + 1, 21)):  # Limit scenarios for performance
+        for scn_eval in range(1, NB_SC + 1):  # Limit scenarios for performance
 
             # Calculate external cash flows
             external_results = faithful_cash_flow_calculation(
@@ -350,7 +350,7 @@ def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
                     internal_scenarios_sum = []
 
                     # *** INTERNAL SCENARIOS *** - do scn_eval_int = 1 to &NB_SC_INT.
-                    for scn_eval_int in range(1, min(NB_SC_INT + 1, 11)):  # Limit for performance
+                    for for scn_eval_int in range(1, NB_SC_INT + 1):  # Limit for performance
 
                         # Prepare row with accumulated values from external projection
                         internal_input_row = account_row.copy()
