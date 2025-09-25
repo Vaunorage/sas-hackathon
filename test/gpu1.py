@@ -186,13 +186,13 @@ def external_loop_gpu(population_gpu, lookups, external_scenarios, max_years=35)
         "tx_survie": all_tx_survie
     }
 
-def internal_projection_gpu(base_mt_vm_ts, base_tx_survie_ts, policy_data, lookups, internal_scenarios,
+
+def internal_projection_gpu(base_mt_vm_ts, base_tx_survie_ts, policy_data, discount_int_lookup, internal_scenarios,
                             capital_shock=0.0, max_years=35):
     """
     Reusable GPU function to project all internal scenarios for a SINGLE external result.
     This is the core of Tier 2 and 3.
     """
-    rendement_lookup, _, discount_int_lookup, _, _, _ = lookups
     num_internal_scenarios = len(internal_scenarios)
 
     # State arrays are now 1D for internal scenarios. Shape: (num_internal_scenarios,)
@@ -234,8 +234,10 @@ def run_internal_loops_gpu(external_results, population_gpu, lookups, internal_s
     reserve_results = cp.zeros((num_accounts, num_ext_scenarios), dtype=cp.float32)
     capital_results = cp.zeros((num_accounts, num_ext_scenarios), dtype=cp.float32)
 
-    # Unpack lookups needed for the internal kernel
-    internal_lookups = (lookups[0], lookups[2], lookups[3], lookups[4], lookups[5], lookups[1])
+    # --- FIX IS HERE ---
+    # The 'lookups' list is [rendement, mortality, discount_ext, discount_int, lapse].
+    # We only need 'discount_int_lookup', which is at index 3.
+    discount_int_lookup = lookups[3]
 
     # This loop is on the CPU, but each iteration is a fast, parallel GPU computation.
     total_iterations = num_accounts * num_ext_scenarios
@@ -248,22 +250,21 @@ def run_internal_loops_gpu(external_results, population_gpu, lookups, internal_s
                 base_mt_vm_ts = external_results['mt_vm'][:, acc_idx, scn_idx]
                 base_tx_survie_ts = external_results['tx_survie'][:, acc_idx, scn_idx]
 
-                # TIER 2: Reserve Calculation
+                # TIER 2: Reserve Calculation - Pass the specific lookup table
                 reserve_results[acc_idx, scn_idx] = internal_projection_gpu(
-                    base_mt_vm_ts, base_tx_survie_ts, policy_data, internal_lookups, internal_scenarios,
+                    base_mt_vm_ts, base_tx_survie_ts, policy_data, discount_int_lookup, internal_scenarios,
                     capital_shock=0.0, max_years=max_years
                 )
 
-                # TIER 3: Capital Calculation
+                # TIER 3: Capital Calculation - Pass the specific lookup table
                 capital_results[acc_idx, scn_idx] = internal_projection_gpu(
-                    base_mt_vm_ts, base_tx_survie_ts, policy_data, internal_lookups, internal_scenarios,
+                    base_mt_vm_ts, base_tx_survie_ts, policy_data, discount_int_lookup, internal_scenarios,
                     capital_shock=0.35, max_years=max_years
                 )
                 pbar.update(1)
 
     logger.info("TIER 2 & 3 COMPLETE")
     return reserve_results, capital_results
-
 
 def final_integration_gpu(external_results, reserve_results, capital_results, hurdle_rate=0.10, max_years=35):
     """
