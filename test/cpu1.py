@@ -579,6 +579,6 @@ def final_integration_optimized(external_results, reserve_results, capital_resul
 
 if __name__ == "__main__":
     results_df = run_optimized_acfc_algorithm()
-    output_filename = HERE.joinpath('test/gpu1.csv')
+    output_filename = HERE.joinpath('test/cpu1.csv')
     results_df.to_csv(output_filename)
     print(f"Generated {len(results_df)} optimized results")
