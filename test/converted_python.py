@@ -740,7 +740,7 @@ def main():
         results_df, analysis = run_complete_acfc_algorithm(
             data_path=HERE.joinpath("data_in"),
             output_dir=HERE.joinpath("test"),
-            max_years=35,
+            max_years=100,
             hurdle_rate=0.10,
             capital_shock=0.35
         )
