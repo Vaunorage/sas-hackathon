@@ -405,7 +405,9 @@ def internal_capital_calculations(external_results: Dict, reserve_results: Dict,
         lapse_stress = 1.5
         return_stress = 0.7
 
-        for year in range(len(ext_data['flux_net'])):
+        years_to_process = min(len(ext_data['flux_net']), max_years + 1)
+
+        for year in range(years_to_process):
             external_cf = ext_data['flux_net'][year]
 
             # Apply stress factors to cash flows
@@ -685,13 +687,14 @@ def run_complete_acfc_algorithm(data_path: str = "data_in", output_dir: str = "o
         logger.info(f"population type: {type(population)}")
         logger.info(f"lookup_tables type: {type(lookup_tables)}")
 
-        capital_results = internal_capital_calculations(
-            external_results=external_results,
-            population=population,
-            lookup_tables=lookup_tables,
-            capital_shock=capital_shock,
-            max_years=max_years
-        )
+        capital_results = capital_results = internal_capital_calculations(
+                external_results=external_results,
+                reserve_results=reserve_results,  # Add this line
+                population=population,
+                lookup_tables=lookup_tables,
+                capital_shock=capital_shock,
+                max_years=max_years
+            )
         computation_stats['capital_calcs'] = len(external_results) * 10 * max_years
 
         # PHASE 5: FINAL INTEGRATION
