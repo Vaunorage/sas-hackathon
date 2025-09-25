@@ -94,6 +94,7 @@ def prepare_gpu_data(population_df, rendement_df, tx_deces_df, tx_interet_df, tx
     logger.info("GPU data prepared successfully.")
     return population_gpu, rendement_lookup, mortality_lookup, discount_ext_lookup, discount_int_lookup, lapse_lookup, external_scenarios, internal_scenarios
 
+
 def external_loop_gpu(population_gpu, lookups, external_scenarios, max_years=35):
     """
     TIER 1: Vectorized external loop running entirely on the GPU.
@@ -102,7 +103,10 @@ def external_loop_gpu(population_gpu, lookups, external_scenarios, max_years=35)
     logger.info("TIER 1: EXTERNAL LOOP PROCESSING (GPU)")
     logger.info("=" * 50)
 
-    rendement_lookup, mortality_lookup, _, _, lapse_lookup, discount_ext_lookup = lookups
+    # --- FIX IS HERE ---
+    # Correctly unpack the 5 items from the 'lookups' list.
+    rendement_lookup, mortality_lookup, discount_ext_lookup, _, lapse_lookup = lookups
+
     num_accounts = len(population_gpu['ID_COMPTE'])
     num_scenarios = len(external_scenarios)
 
@@ -180,7 +184,6 @@ def external_loop_gpu(population_gpu, lookups, external_scenarios, max_years=35)
         "mt_vm": all_mt_vm,
         "tx_survie": all_tx_survie
     }
-
 
 def internal_projection_gpu(base_mt_vm_ts, base_tx_survie_ts, policy_data, lookups, internal_scenarios,
                             capital_shock=0.0, max_years=35):
