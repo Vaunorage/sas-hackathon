@@ -9,6 +9,8 @@ import concurrent.futures
 from functools import partial
 import math
 
+from paths import HERE
+
 # GPU Computing Libraries (without RMM dependency)
 try:
     import cupy as cp
@@ -1054,10 +1056,7 @@ def main():
         results_df = calculator.run_complete_gpu_calculation(max_years=35)
 
         # Save results
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        output_dir = Path("results")
-        output_dir.mkdir(exist_ok=True)
-        output_file = output_dir / f"gpu_acfc_results_{timestamp}.csv"
+        output_file = HERE.joinpath('test/gpu1.csv')
 
         results_df.to_csv(output_file, index=False)
         logger.info(f"Results saved to: {output_file}")
