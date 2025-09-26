@@ -225,6 +225,19 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
     # FIXED: Check termination conditions like CPU version
     if states[combination_idx, STATE_TX_SURVIE] == 0 or states[combination_idx, STATE_MT_VM_PROJ] == 0:
         states[combination_idx, STATE_IS_TERMINATED] = 1.0
+        # Still store the result even if terminated
+        nb_years_total = 11
+        result_idx = combination_idx * nb_years_total + year
+        if result_idx < results.shape[0]:
+            results[result_idx, 0] = states[combination_idx, STATE_ACCOUNT_ID]
+            results[result_idx, 1] = states[combination_idx, STATE_SCENARIO]
+            results[result_idx, 2] = year
+            results[result_idx, 3] = states[combination_idx, STATE_AGE]
+            results[result_idx, 4] = 0.0  # Terminated values
+            results[result_idx, 5] = 0.0
+            results[result_idx, 6] = 0.0
+            results[result_idx, 7] = 0.0
+            results[result_idx, 8] = 0.0
         return
 
     # Regular year calculations for year > 0
@@ -593,6 +606,17 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     grouped_reserves = defaultdict(list)
     grouped_capital = defaultdict(list)
 
+    print(f"DEBUG: Processing {len(valid_external_results)} external results")
+    print(f"DEBUG: Reserve results shape: {len(reserve_results)}")
+    print(f"DEBUG: Capital results shape: {len(capital_results)}")
+
+    # DEBUG: Check external results distribution
+    external_by_account = defaultdict(int)
+    for i, row in enumerate(valid_external_results):
+        account_id = int(row[0])
+        external_by_account[account_id] += 1
+    print(f"DEBUG: External results per account: {dict(external_by_account)}")
+
     for i, row in enumerate(valid_external_results):
         account_id = int(row[0])
         scenario = int(row[1])
@@ -607,6 +631,19 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
         grouped_reserves[key].append((year, reserve_results[i]))
         grouped_capital[key].append((year, capital_results[i] - reserve_results[i]))  # Capital = shocked - reserve
 
+    print(f"DEBUG: Unique account-scenario combinations: {len(grouped_external)}")
+    print(f"DEBUG: Sample keys: {list(grouped_external.keys())[:10]}")
+
+    # DEBUG: Check for missing scenarios
+    for account_id in [1, 2, 3, 4]:
+        scenarios_found = []
+        for key in grouped_external.keys():
+            if key.startswith(f"{account_id}_"):
+                scenario = int(key.split('_')[1])
+                scenarios_found.append(scenario)
+        scenarios_found.sort()
+        print(f"DEBUG: Account {account_id} scenarios found: {scenarios_found}")
+
     for key in grouped_external:
         account_id, scenario = key.split('_')
         account_id = int(account_id)
@@ -616,6 +653,8 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
         external_data = sorted(grouped_external[key], key=lambda x: x['year'])
         reserve_data = dict(sorted(grouped_reserves[key], key=lambda x: x[0]))
         capital_data = dict(sorted(grouped_capital[key], key=lambda x: x[0]))
+
+        print(f"DEBUG: Processing {key} - {len(external_data)} years of data")
 
         # Calculate distributable flows
         distributable_pvs = []
