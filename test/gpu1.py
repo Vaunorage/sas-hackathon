@@ -150,7 +150,7 @@ def create_hash_tables(rendement: pd.DataFrame, tx_deces: pd.DataFrame,
 
 
 @cuda.jit(device=True)
-def safe_array_access(array, index, default_value=0.0):
+def safe_array_access(array, index, default_value):
     """Safely access array with bounds checking"""
     if 0 <= index < array.shape[0]:
         return array[index]
@@ -232,8 +232,8 @@ def gpu_external_cash_flow_kernel(
         elif tx_survie > 0 and mt_vm_proj > 0:
 
             # Lookup rates using GPU arrays (much faster than hash tables)
-            qx = safe_array_access(mortality_rates, current_age)
-            wx = safe_array_access(lapse_rates, an_proj)
+            qx = safe_array_access(mortality_rates, current_age, 0.0)
+            wx = safe_array_access(lapse_rates, an_proj, 0.0)
 
             # Get investment return rate
             rendement_rate = 0.0
@@ -340,8 +340,8 @@ def gpu_internal_cash_flow_kernel(
             an_proj = an_eval + year
 
             # Get rates
-            qx = safe_array_access(mortality_rates, current_age)
-            wx = safe_array_access(lapse_rates, an_proj)
+            qx = safe_array_access(mortality_rates, current_age, 0.0)
+            wx = safe_array_access(lapse_rates, an_proj, 0.0)
 
             # Investment return for internal scenario
             rendement_rate = 0.0
