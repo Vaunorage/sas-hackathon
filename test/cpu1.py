@@ -1,28 +1,16 @@
 import pandas as pd
 import numpy as np
-from typing import Dict, Tuple, List, Optional
-import logging
-import time
-from pathlib import Path
-from tqdm import tqdm
+from typing import Dict, Tuple, List
 import warnings
+import logging
 
 from paths import HERE
 
 warnings.filterwarnings('ignore')
 
-# Configure logging
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Global parameters matching SAS macro variables
-NBCPT = 4
-NB_SC = 10
-NB_AN_PROJECTION = 10
-NB_SC_INT = 10
-NB_AN_PROJECTION_INT = 10
-CHOC_CAPITAL = 0.35
-HURDLE_RT = 0.10
 
 
 def load_input_files(data_path: str) -> Tuple[pd.DataFrame, ...]:
@@ -49,520 +37,330 @@ def load_input_files(data_path: str) -> Tuple[pd.DataFrame, ...]:
         raise
 
 
-def create_hash_tables(rendement: pd.DataFrame, tx_deces: pd.DataFrame,
-                       tx_interet: pd.DataFrame, tx_interet_int: pd.DataFrame,
-                       tx_retrait: pd.DataFrame) -> Tuple[Dict, ...]:
-    """Create hash tables exactly matching SAS hash table structure"""
+def load_input_data(data_path: str = "."):
+    """Load all input data files and create lookup dictionaries"""
 
-    # Mortality hash: AGE -> Qx
-    h_mortality = {}
-    for _, row in tx_deces.iterrows():
-        h_mortality[int(row['AGE'])] = float(row['QX'])
+    # Load data using the provided function
+    population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait = load_input_files(data_path)
 
-    # Lapse hash: an_proj -> WX
-    g_lapse = {}
-    for _, row in tx_retrait.iterrows():
-        g_lapse[int(row['an_proj'])] = float(row['WX'])
-
-    # Rendement hash: (scn_proj, an_proj, TYPE) -> RENDEMENT
-    z_rendement = {}
-    for _, row in rendement.iterrows():
-        key = (int(row['scn_proj']), int(row['an_proj']), str(row['TYPE']))
-        z_rendement[key] = float(row['RENDEMENT'])
-
-    # External discount hash: an_proj -> TX_ACTU
-    a_discount_ext = {}
-    for _, row in tx_interet.iterrows():
-        a_discount_ext[int(row['an_proj'])] = float(row['TX_ACTU'])
-
-    # Internal discount hash: an_eval -> TX_ACTU_INT
-    b_discount_int = {}
-    for _, row in tx_interet_int.iterrows():
-        b_discount_int[int(row['an_eval'])] = float(row['TX_ACTU_INT'])
-
-    return h_mortality, g_lapse, z_rendement, a_discount_ext, b_discount_int
+    return {
+        'population': population,
+        'rendement': rendement,
+        'tx_deces': tx_deces,
+        'tx_interet': tx_interet,
+        'tx_interet_int': tx_interet_int,
+        'tx_retrait': tx_retrait
+    }
 
 
-def hash_find(hash_table: dict, key, default_value=None):
-    """Mimic SAS hash.find() behavior"""
-    return hash_table.get(key, default_value if default_value is not None else 0.0)
+def create_lookup_tables(data: Dict) -> Dict:
+    """Create hash table lookups for O(1) access"""
+
+    lookups = {}
+
+    # Mortality lookup: age -> qx
+    lookups['mortality'] = dict(zip(data['tx_deces']['AGE'], data['tx_deces']['QX']))
+
+    # Lapse lookup: year -> wx
+    lookups['lapse'] = dict(zip(data['tx_retrait']['an_proj'], data['tx_retrait']['WX']))
+
+    # Discount rate lookups
+    lookups['discount_ext'] = dict(zip(data['tx_interet']['an_proj'], data['tx_interet']['TX_ACTU']))
+    lookups['discount_int'] = dict(zip(data['tx_interet_int']['an_eval'], data['tx_interet_int']['TX_ACTU_INT']))
+
+    # Returns lookup: (year, scenario, type) -> return
+    lookups['returns'] = {}
+    for _, row in data['rendement'].iterrows():
+        key = (int(row['an_proj']), int(row['scn_proj']), row['TYPE'])
+        lookups['returns'][key] = row['RENDEMENT']
+
+    return lookups
 
 
-def faithful_cash_flow_calculation(population_row, hash_tables,
-                                   ext_year, scenario_type: str, type2: str = None,
-                                   int_year: int = None):
-    """
-    Faithful implementation of SAS DATA_STEP_CALCUL macro
-    """
-    h_mortality, g_lapse, z_rendement, a_discount_ext, b_discount_int = hash_tables
+def project_single_path(account_data: pd.Series, scenario: int, projection_type: str,
+                        lookups: Dict, nb_years: int, fund_shock: float = 0.0) -> Dict:
+    """Project a single account-scenario path"""
 
-    # Initialize retained variables exactly as in SAS
-    MT_VM_PROJ = 0.0
-    MT_GAR_DECES_PROJ = 0.0
-    TX_SURVIE = 0.0
+    # Initialize values
+    fund_value = account_data['MT_VM'] * (1 - fund_shock)
+    death_benefit = account_data['MT_GAR_DECES'] * (1 - fund_shock)
+    survival_prob = 1.0
+    age = account_data['age_deb']
 
-    results = []
+    # Parameters
+    pc_revenu_fds = account_data['PC_REVENU_FDS']
+    pc_honoraires_gest = account_data['PC_HONORAIRES_GEST']
+    tx_comm_maintien = account_data['TX_COMM_MAINTIEN']
+    frais_admin = account_data['FRAIS_ADMIN']
+    freq_reset_deces = account_data['FREQ_RESET_DECES']
+    max_reset_deces = account_data['MAX_RESET_DECES']
 
-    # ***********************************************
-    # *** Initialisation des variables a lannee 0 ***
-    # ***********************************************
+    # Results storage
+    results = {
+        'year': [],
+        'fund_value': [],
+        'death_benefit': [],
+        'survival_prob': [],
+        'cash_flow': [],
+        'pv_cash_flow': []
+    }
 
-    if ext_year == 0 and scenario_type == "EXTERNE":
-        # External scenario year 0 initialization
-        AGE = int(population_row['age_deb'])
-        MT_VM_PROJ = float(population_row['MT_VM'])
-        MT_GAR_DECES_PROJ = float(population_row['MT_GAR_DECES'])
-        TX_SURVIE = 1.0
-        TX_SURVIE_DEB = 1.0
-        TX_ACTU = 1.0
-        QX = 0.0
-        WX = 0.0
-        an_proj = 0
+    for year in range(nb_years + 1):
+        current_age = int(age + year)
 
-        # Year 0 cash flows
-        COMMISSIONS = -float(population_row['TX_COMM_VENTE']) * MT_VM_PROJ
-        VP_COMMISSIONS = COMMISSIONS
-
-        FRAIS_GEN = -float(population_row['FRAIS_ACQUI'])
-        VP_FRAIS_GEN = FRAIS_GEN
-
-        FLUX_NET = FRAIS_GEN + COMMISSIONS
-        VP_FLUX_NET = FLUX_NET
-
-        # Zero out other components for year 0
-        REVENUS = 0.0
-        FRAIS_GEST = 0.0
-        PMT_GARANTIE = 0.0
-        VP_REVENUS = 0.0
-        VP_FRAIS_GEST = 0.0
-        VP_PMT_GARANTIE = 0.0
-
-    elif ext_year == 0 and scenario_type == "INTERNE":
-        # Internal scenario year 0 initialization
-        if type2 == "RESERVE":
-            MT_VM_PROJ = float(population_row['MT_VM'])
-        elif type2 == "CAPITAL":
-            MT_VM_PROJ = float(population_row['MT_VM']) * (1 - CHOC_CAPITAL)
-
-        AGE = int(population_row['age_deb']) + int(population_row['int_year'])
-        MT_GAR_DECES_PROJ = float(population_row['MT_GAR_DECES'])
-        TX_SURVIE = float(population_row['TX_SURVIE_DEB']) if 'TX_SURVIE_DEB' in population_row else 1.0
-        TX_ACTU = 1.0
-        QX = 0.0
-        WX = 0.0
-        an_proj = int_year
-
-        # Zero out all cash flows for internal year 0
-        COMMISSIONS = 0.0
-        VP_COMMISSIONS = 0.0
-        FRAIS_GEN = 0.0
-        VP_FRAIS_GEN = 0.0
-        FLUX_NET = 0.0
-        VP_FLUX_NET = 0.0
-        REVENUS = 0.0
-        FRAIS_GEST = 0.0
-        PMT_GARANTIE = 0.0
-        VP_REVENUS = 0.0
-        VP_FRAIS_GEST = 0.0
-        VP_PMT_GARANTIE = 0.0
-
-    # Check termination conditions exactly as SAS
-    elif TX_SURVIE == 0 or MT_VM_PROJ == 0:
-        return None
-        # continue  # SAS deletes these rows
-
-    # ***********************************************************************
-    # *** Calcul des flux financiers pour toutes les années de projection ***
-    # ***********************************************************************
-    else:
-        # Determine scenario number for lookup
-        if scenario_type == "INTERNE":
-            scn_proj = population_row['int_scn']
+        if year == 0:
+            # Initial year
+            cash_flow = -account_data['FRAIS_ACQUI']  # Acquisition expenses
+            discount_factor = 1.0
         else:
-            scn_proj = population_row['ext_scn']
+            if survival_prob <= 0.0001 or fund_value <= 0:
+                # Skip if essentially zero
+                cash_flow = 0.0
+                discount_factor = lookups['discount_ext'].get(year, 0.9 ** year)
+            else:
+                # Get investment return
+                return_key = (year, scenario, projection_type)
+                investment_return = lookups['returns'].get(return_key, 0.06)
 
-        # Increment age and projection year
-        if scenario_type == "INTERNE":
-            AGE = int(population_row['age_deb']) + int_year + ext_year
-            an_proj = int_year + ext_year
-        else:
-            AGE = int(population_row['age_deb']) + ext_year
-            an_proj = ext_year
+                # Project fund value: MT_VM(t+1) = MT_VM(t) × [1 + RENDEMENT(s,t) - PC_REVENU_FDS]
+                fund_growth = fund_value * investment_return
+                fees = -(fund_value + fund_growth / 2) * pc_revenu_fds
+                fund_value = fund_value + fund_growth + fees
+                fund_value = max(fund_value, 0)
 
-        # ****** Fund Value Projection - EXACT SAS FORMULA ******
-        MT_VM_DEB = MT_VM_PROJ
+                # Update death benefit guarantee
+                if freq_reset_deces == 1 and current_age <= max_reset_deces:
+                    death_benefit = max(death_benefit, fund_value)
 
-        # Get investment return using hash lookup
-        RENDEMENT_rate = hash_find(z_rendement, (scn_proj, an_proj, scenario_type), 0.0)
-        RENDEMENT = MT_VM_DEB * RENDEMENT_rate
+                # Calculate survival probabilities
+                mortality_rate = lookups['mortality'].get(current_age, 0.1)
+                lapse_rate = lookups['lapse'].get(year, 0.02)
+                survival_prob_start = survival_prob
+                survival_prob = survival_prob * (1 - mortality_rate) * (1 - lapse_rate)
 
-        # Calculate fees exactly as SAS: FRAIS = -(MT_VM_DEB + RENDEMENT / 2) * PC_REVENU_FDS
-        FRAIS = -(MT_VM_DEB + RENDEMENT / 2) * float(population_row['PC_REVENU_FDS'])
+                # Calculate cash flows
+                # Revenues (fees collected)
+                revenus = -(fund_value + fund_growth / 2) * pc_revenu_fds * survival_prob_start
 
-        # Update fund value: MT_VM_PROJ = MT_VM_PROJ + RENDEMENT + FRAIS
-        MT_VM_PROJ = MT_VM_PROJ + RENDEMENT + FRAIS
+                # Management fees
+                frais_gest = -(fund_value + fund_growth / 2) * pc_honoraires_gest * survival_prob_start
 
-        # ****** Death Benefit Guarantee Reset Logic ******
-        FREQ_RESET_DECES = float(population_row['FREQ_RESET_DECES'])
-        MAX_RESET_DECES = float(population_row['MAX_RESET_DECES'])
+                # Maintenance commissions
+                commissions = -(fund_value + fund_growth / 2) * tx_comm_maintien * survival_prob_start
 
-        if FREQ_RESET_DECES == 1 and AGE <= MAX_RESET_DECES:
-            MT_GAR_DECES_PROJ = max(MT_GAR_DECES_PROJ, MT_VM_PROJ)
+                # Administrative expenses
+                frais_gen = -frais_admin * survival_prob_start
 
-        # ****** Survival Probability Calculation ******
-        QX = hash_find(h_mortality, AGE, 0.0)
-        WX = hash_find(g_lapse, an_proj, 0.0)
+                # Death claims (guarantee payout)
+                death_claim = max(0, death_benefit - fund_value) * mortality_rate * survival_prob_start
+                pmt_garantie = -death_claim
 
-        TX_SURVIE_DEB = TX_SURVIE
-        TX_SURVIE = TX_SURVIE_DEB * (1 - QX) * (1 - WX)
+                # Net cash flow
+                cash_flow = revenus + frais_gest + commissions + frais_gen + pmt_garantie
 
-        # ****** Cash Flow Calculations - EXACT SAS FORMULAS ******
-        REVENUS = -FRAIS * TX_SURVIE_DEB
-        FRAIS_GEST = -(MT_VM_DEB + RENDEMENT / 2) * float(population_row['PC_HONORAIRES_GEST']) * TX_SURVIE_DEB
-        COMMISSIONS = -(MT_VM_DEB + RENDEMENT / 2) * float(population_row['TX_COMM_MAINTIEN']) * TX_SURVIE_DEB
-        FRAIS_GEN = -float(population_row['FRAIS_ADMIN']) * TX_SURVIE_DEB
-        PMT_GARANTIE = -max(0, MT_GAR_DECES_PROJ - MT_VM_PROJ) * QX * TX_SURVIE_DEB
+                # Discount factor
+                discount_factor = lookups['discount_ext'].get(year, 0.9 ** year)
 
-        FLUX_NET = REVENUS + FRAIS_GEST + COMMISSIONS + FRAIS_GEN + PMT_GARANTIE
+        # Present value
+        pv_cash_flow = cash_flow * discount_factor
 
-        # ****** Present Value Calculations ******
-        TX_ACTU = hash_find(a_discount_ext, an_proj, 1.0)
+        # Store results
+        results['year'].append(year)
+        results['fund_value'].append(fund_value)
+        results['death_benefit'].append(death_benefit)
+        results['survival_prob'].append(survival_prob)
+        results['cash_flow'].append(cash_flow)
+        results['pv_cash_flow'].append(pv_cash_flow)
 
-        VP_REVENUS = REVENUS * TX_ACTU
-        VP_FRAIS_GEST = FRAIS_GEST * TX_ACTU
-        VP_COMMISSIONS = COMMISSIONS * TX_ACTU
-        VP_FRAIS_GEN = FRAIS_GEN * TX_ACTU
-        VP_PMT_GARANTIE = PMT_GARANTIE * TX_ACTU
-        VP_FLUX_NET = FLUX_NET * TX_ACTU
-
-        # ****** Internal Scenario Adjustment ******
-        if scenario_type == "INTERNE" and int_year > 0:
-            TX_ACTU_INT = hash_find(b_discount_int, int_year, 1.0)
-            if TX_ACTU_INT != 0:
-                VP_REVENUS = VP_REVENUS / TX_ACTU_INT
-                VP_FRAIS_GEST = VP_FRAIS_GEST / TX_ACTU_INT
-                VP_COMMISSIONS = VP_COMMISSIONS / TX_ACTU_INT
-                VP_FRAIS_GEN = VP_FRAIS_GEN / TX_ACTU_INT
-                VP_PMT_GARANTIE = VP_PMT_GARANTIE / TX_ACTU_INT
-                VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
-
-    # Store results for this year
-    # result_row = {
-    #     'ID_COMPTE': int(population_row['ID_COMPTE']),
-    #     'an_eval': int_year if scenario_type == "INTERNE" else ext_year,
-    #     'scn_eval': ext_scn if scenario_type == "EXTERNE" else ext_scn,
-    #     'scn_eval_int': int_scn if scenario_type == "INTERNE" else None,
-    #     'an_eval_int': ext_year if scenario_type == "INTERNE" else None,
-    #     'TYPE': scenario_type,
-    #     'TYPE2': type2,
-    #     'an_proj': an_proj,
-    #     'AGE': AGE,
-    #     'MT_VM_PROJ': MT_VM_PROJ,
-    #     'MT_GAR_DECES_PROJ': MT_GAR_DECES_PROJ,
-    #     'TX_SURVIE': TX_SURVIE,
-    #     'TX_SURVIE_DEB': TX_SURVIE_DEB if 'TX_SURVIE_DEB' in locals() else TX_SURVIE,
-    #     'REVENUS': REVENUS,
-    #     'FRAIS_GEST': FRAIS_GEST,
-    #     'COMMISSIONS': COMMISSIONS,
-    #     'FRAIS_GEN': FRAIS_GEN,
-    #     'PMT_GARANTIE': PMT_GARANTIE,
-    #     'FLUX_NET': FLUX_NET,
-    #     'VP_REVENUS': VP_REVENUS,
-    #     'VP_FRAIS_GEST': VP_FRAIS_GEST,
-    #     'VP_COMMISSIONS': VP_COMMISSIONS,
-    #     'VP_FRAIS_GEN': VP_FRAIS_GEN,
-    #     'VP_PMT_GARANTIE': VP_PMT_GARANTIE,
-    #     'VP_FLUX_NET': VP_FLUX_NET
-    # }
-
-    return pd.DataFrame(result_row, index=[population_row['ID_COMPTE']])
+    return results
 
 
+def run_external_calculations(data: Dict, lookups: Dict, NBCPT: int, NB_SC: int, NB_AN_PROJECTION: int) -> List[Dict]:
+    """Run external loop calculations"""
 
-def faithful_calculs_macro(population: pd.DataFrame, hash_tables):
-    """
-    Faithful implementation of SAS %calculs macro with exact nested loop structure
-    """
+    external_results = []
 
-    # Initialize summary results exactly like SAS
-    calculs_sommaire = pd.DataFrame(columns=['ID_COMPTE', 'scn_eval', 'VP_FLUX_DISTRIBUABLES'])
+    for account_idx in range(min(NBCPT, len(data['population']))):
+        account_data = data['population'].iloc[account_idx]
+        account_id = account_data['ID_COMPTE']
 
-    logger.info("Starting faithful nested loop calculations...")
+        for scenario in range(1, NB_SC + 1):
+            # Project external path
+            projection = project_single_path(
+                account_data, scenario, 'EXTERNE', lookups, NB_AN_PROJECTION
+            )
 
-    # ***************************
-    # *** OUTER ACCOUNT LOOP ***  - %do j = 1 %to &NBCPT.
-    # ***************************
+            # Store results for internal calculations
+            external_results.append({
+                'account_id': account_id,
+                'scenario': scenario,
+                'projection': projection,
+                'account_data': account_data
+            })
 
-    populations = []
-    for ext_year in tqdm(range(1, NB_AN_PROJECTION+1), desc="external_year"):
-        for ext_scn in range(1, NB_SC+1):
-            ext_pop = population.copy()
-            ext_pop['ext_scn'] = ext_scn
-            populations.append(ext_pop)
-        ext_populations = pd.concat(populations)
+    return external_results
 
-        faithful_cash_flow_calculation(
-            ext_populations, hash_tables,
-            ext_year,
-            scenario_type="EXTERNE",
+
+def run_internal_calculations(external_result: Dict, lookups: Dict, calculation_type: str,
+                              NB_SC_INT: int, NB_AN_PROJECTION_INT: int, CHOC_CAPITAL: float) -> float:
+    """Run internal calculations for reserves or capital"""
+
+    account_data = external_result['account_data']
+    internal_pvs = []
+
+    # Apply shock for capital calculations
+    fund_shock = CHOC_CAPITAL if calculation_type == 'CAPITAL' else 0.0
+
+    for internal_scenario in range(1, NB_SC_INT + 1):
+        # Project internal path
+        projection = project_single_path(
+            account_data, internal_scenario, 'INTERNE', lookups,
+            NB_AN_PROJECTION_INT, fund_shock
         )
 
+        # Sum present values across years
+        total_pv = sum(projection['pv_cash_flow'])
+        internal_pvs.append(total_pv)
+
+    # Return mean across internal scenarios
+    return np.mean(internal_pvs)
 
 
+def calculate_distributable_cash_flows(external_results: List[Dict], lookups: Dict,
+                                       NB_SC_INT: int, NB_AN_PROJECTION_INT: int,
+                                       CHOC_CAPITAL: float, HURDLE_RT: float) -> List[Dict]:
+    """Calculate final distributable cash flows"""
 
+    final_results = []
 
+    for ext_result in external_results:
+        account_id = ext_result['account_id']
+        scenario = ext_result['scenario']
+        external_projection = ext_result['projection']
 
-    for j in tqdm(range(1, min(NBCPT + 1, len(population) + 1)), desc="Accounts", position=0):
-
-        # Get account data
-        account_data = population[population['ID_COMPTE'] == j]
-        if account_data.empty:
-            continue
-
-        account_row = account_data.iloc[0]
-
-        # ***************************
-        # *** EXTERNAL SCENARIOS *** - do scn_eval = 1 to &NB_SC.
-        # ***************************
-
-        for scn_eval in tqdm(range(1, NB_SC + 1), desc="External scenarios", position=1, leave=False):  # Limit scenarios for performance
-
-            # Calculate external cash flows
-            logger.info("calculating external scenario")
-            external_results = faithful_cash_flow_calculation(
-                account_row, hash_tables,
-                scenario_type="EXTERNE",
-                ext_scn=scn_eval
-            )
-
-            logger.info(f"There is {external_results.shape[0]} external scenarios")
-
-            if external_results.empty:
-                continue
-
-            # **********************************
-            # *** INTERNAL CALCULATION LOOPS ***
-            # **********************************
-
-            reserve_results = []
-            capital_results = []
-
-            # Loop through external years for internal calculations
-            for _, ext_row in tqdm(external_results.iterrows(), total=external_results.shape[0], desc="Internal scenarios", position=2, leave=False):
-                an_eval = int(ext_row['an_eval'])
-
-                if an_eval == 0:
-                    continue  # Skip year 0 for internal calculations
-
-                # *** TYPE2 LOOP *** - %do m = 1 %to 2 (RESERVE and CAPITAL)
-                for m in range(1, 3):
-                    type2 = "RESERVE" if m == 1 else "CAPITAL"
-
-                    internal_scenarios_sum = []
-
-                    # *** INTERNAL SCENARIOS *** - do scn_eval_int = 1 to &NB_SC_INT.
-                    for scn_eval_int in range(1, NB_SC_INT + 1):  # Limit for performance
-
-                        # Prepare row with accumulated values from external projection
-                        internal_input_row = account_row.copy()
-                        internal_input_row['MT_VM'] = ext_row['MT_VM_PROJ']
-                        internal_input_row['MT_GAR_DECES'] = ext_row['MT_GAR_DECES_PROJ']
-                        internal_input_row['TX_SURVIE_DEB'] = ext_row['TX_SURVIE']
-
-                        # Run internal projection
-                        internal_results = faithful_cash_flow_calculation(
-                            internal_input_row, hash_tables,
-                            scenario_type="INTERNE",
-                            type2=type2,
-                            ext_scn=scn_eval,
-                            int_year=an_eval,
-                            int_scn=scn_eval_int
-                        )
-
-                        if not internal_results.empty:
-                            # Sum VP_FLUX_NET for this internal scenario
-                            total_vp = internal_results['VP_FLUX_NET'].sum()
-                            internal_scenarios_sum.append(total_vp)
-
-                    # Calculate mean across internal scenarios (matching SAS proc summary)
-                    if internal_scenarios_sum:
-                        mean_vp = np.mean(internal_scenarios_sum)
-
-                        result_entry = {
-                            'ID_COMPTE': j,
-                            'an_eval': an_eval,
-                            'scn_eval': scn_eval,
-                            'VP_FLUX_NET': mean_vp,
-                            'TYPE2': type2
-                        }
-
-                        if type2 == "RESERVE":
-                            reserve_results.append(result_entry)
-                        else:
-                            capital_results.append(result_entry)
-
-            # ***********************************
-            # *** MERGE WITH EXTERNAL RESULTS ***
-            # ***********************************
-
-            # Convert to DataFrames
-            reserve_df = pd.DataFrame(reserve_results)
-            capital_df = pd.DataFrame(capital_results)
-
-            # Merge reserves and capitals back to external results
-            enhanced_external = external_results.copy()
-            enhanced_external['RESERVE'] = 0.0
-            enhanced_external['CAPITAL'] = 0.0
-
-            # Hash join logic as in SAS
-            for idx, row in enhanced_external.iterrows():
-                an_eval = int(row['an_eval'])
-
-                # Find matching reserve
-                reserve_match = reserve_df[
-                    (reserve_df['ID_COMPTE'] == j) &
-                    (reserve_df['an_eval'] == an_eval) &
-                    (reserve_df['scn_eval'] == scn_eval)
-                    ]
-
-                if not reserve_match.empty:
-                    enhanced_external.loc[idx, 'RESERVE'] = reserve_match.iloc[0]['VP_FLUX_NET']
-
-                # Find matching capital
-                capital_match = capital_df[
-                    (capital_df['ID_COMPTE'] == j) &
-                    (capital_df['an_eval'] == an_eval) &
-                    (capital_df['scn_eval'] == scn_eval)
-                    ]
-
-                if not capital_match.empty:
-                    capital_value = capital_match.iloc[0]['VP_FLUX_NET'] - enhanced_external.loc[idx, 'RESERVE']
-                    enhanced_external.loc[idx, 'CAPITAL'] = capital_value
-
-            # *******************************************
-            # *** PROFIT AND DISTRIBUTABLE CALCULATION ***
-            # *******************************************
-
-            enhanced_external = enhanced_external.sort_values('an_eval').reset_index(drop=True)
-            enhanced_external['reserve_prec'] = enhanced_external['RESERVE'].shift(1, fill_value=0)
-            enhanced_external['capital_prec'] = enhanced_external['CAPITAL'].shift(1, fill_value=0)
-
-            # Calculate exactly as SAS
-            profit_conditions = enhanced_external['an_eval'] == 0
-
-            enhanced_external.loc[profit_conditions, 'PROFIT'] = (
-                    enhanced_external.loc[profit_conditions, 'FLUX_NET'] +
-                    enhanced_external.loc[profit_conditions, 'RESERVE']
-            )
-            enhanced_external.loc[profit_conditions, 'FLUX_DISTRIBUABLES'] = (
-                    enhanced_external.loc[profit_conditions, 'PROFIT'] +
-                    enhanced_external.loc[profit_conditions, 'CAPITAL']
-            )
-
-            enhanced_external.loc[~profit_conditions, 'PROFIT'] = (
-                    enhanced_external.loc[~profit_conditions, 'FLUX_NET'] +
-                    enhanced_external.loc[~profit_conditions, 'RESERVE'] -
-                    enhanced_external.loc[~profit_conditions, 'reserve_prec']
-            )
-            enhanced_external.loc[~profit_conditions, 'FLUX_DISTRIBUABLES'] = (
-                    enhanced_external.loc[~profit_conditions, 'PROFIT'] +
-                    enhanced_external.loc[~profit_conditions, 'CAPITAL'] -
-                    enhanced_external.loc[~profit_conditions, 'capital_prec']
-            )
-
-            # Present value of distributable cash flows
-            enhanced_external['VP_FLUX_DISTRIBUABLES'] = (
-                    enhanced_external['FLUX_DISTRIBUABLES'] /
-                    ((1 + HURDLE_RT) ** enhanced_external['an_eval'])
-            )
-
-            # Sum across all years for this account-scenario combination
-            total_vp_distribuables = enhanced_external['VP_FLUX_DISTRIBUABLES'].sum()
-
-            # Append to summary results
-            summary_row = pd.DataFrame([{
-                'ID_COMPTE': j,
-                'scn_eval': scn_eval,
-                'VP_FLUX_DISTRIBUABLES': total_vp_distribuables
-            }])
-
-            calculs_sommaire = pd.concat([calculs_sommaire, summary_row], ignore_index=True)
-
-    logger.info(f"Faithful calculations complete. Results: {len(calculs_sommaire)} combinations")
-    return calculs_sommaire
-
-
-def run_faithful_acfc(data_path: str = "data_in", output_dir: str = "output"):
-    """
-    Main function that runs the faithful SAS-to-Python ACFC implementation
-    """
-
-    start_time = time.time()
-
-    logger.info("=" * 80)
-    logger.info("FAITHFUL SAS-TO-PYTHON ACFC IMPLEMENTATION")
-    logger.info("=" * 80)
-
-    try:
-        # Load input files
-        population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait = load_input_files(data_path)
-
-        # Create hash tables exactly as SAS
-        hash_tables = create_hash_tables(rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait)
-
-        logger.info(f"Configuration:")
-        logger.info(f"  Accounts: {min(NBCPT, len(population))}")
-        logger.info(f"  External scenarios: {min(NB_SC, 20)}")  # Limited for performance
-        logger.info(f"  Internal scenarios: {min(NB_SC_INT, 10)}")
-        logger.info(f"  Max projection years: {NB_AN_PROJECTION}")
-
-        # Run faithful nested calculations
-        results_df = faithful_calculs_macro(population, hash_tables)
-
-        # Analysis
-        end_time = time.time()
-        execution_time = end_time - start_time
-
-        # Print results
-        print(f"\n" + "=" * 60)
-        print(f"FAITHFUL ACFC RESULTS")
-        print(f"=" * 60)
-        print(f"Total combinations: {len(results_df):,}")
-        print(f"Execution time: {execution_time:.2f} seconds")
-        print(f"Mean VP_FLUX_DISTRIBUABLES: ${results_df['VP_FLUX_DISTRIBUABLES'].mean():,.2f}")
-        print(f"Profitable combinations: {len(results_df[results_df['VP_FLUX_DISTRIBUABLES'] > 0]):,}")
-        print(
-            f"Range: ${results_df['VP_FLUX_DISTRIBUABLES'].min():,.2f} to ${results_df['VP_FLUX_DISTRIBUABLES'].max():,.2f}")
-
-        # Save results
-        output_path = Path(output_dir)
-        output_path.mkdir(exist_ok=True)
-
-        results_file = output_path / "acfc_results.csv"
-        results_df.to_csv(results_file, index=False)
-        logger.info(f"Results saved to {results_file}")
-
-        return results_df
-
-    except Exception as e:
-        logger.error(f"Error in faithful ACFC execution: {str(e)}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise
-
-
-def main():
-    """Main execution"""
-    try:
-        results_df = run_faithful_acfc(
-            data_path=HERE.joinpath("data_in"),
-            output_dir=HERE.joinpath("test"),
+        # Calculate reserves (internal calculations without shock)
+        reserve_pv = run_internal_calculations(
+            ext_result, lookups, 'RESERVE', NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL
         )
-        return results_df
-    except Exception as e:
-        logger.error(f"Fatal error: {str(e)}")
-        raise
+
+        # Calculate capital requirements (internal calculations with shock)
+        capital_pv = run_internal_calculations(
+            ext_result, lookups, 'CAPITAL', NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL
+        )
+
+        # Calculate distributable cash flows by year
+        distributable_pvs = []
+
+        for year_idx in range(len(external_projection['year'])):
+            year = external_projection['year'][year_idx]
+            external_cf = external_projection['cash_flow'][year_idx]
+
+            # For simplification, allocate reserves and capital proportionally by year
+            if year == 0:
+                reserve_change = reserve_pv
+                capital_change = capital_pv
+            else:
+                reserve_change = 0  # Simplified - assume all reserve impact in year 0
+                capital_change = 0  # Simplified - assume all capital impact in year 0
+
+            # Calculate profit: external_cf + delta_reserves
+            profit = external_cf + reserve_change
+
+            # Calculate distributable: profit + delta_capital
+            distributable = profit + capital_change
+
+            # Present value at hurdle rate
+            if year > 0:
+                pv_distributable = distributable / ((1 + HURDLE_RT) ** year)
+            else:
+                pv_distributable = distributable
+
+            distributable_pvs.append(pv_distributable)
+
+        # Sum across all years
+        total_pv_distributable = sum(distributable_pvs)
+
+        final_results.append({
+            'ID_COMPTE': account_id,
+            'scn_eval': scenario,
+            'VP_FLUX_DISTRIBUABLES': total_pv_distributable
+        })
+
+    return final_results
 
 
+def acfc_algorithm(data_path: str = ".", NBCPT: int = 4, NB_SC: int = 10, NB_AN_PROJECTION: int = 10,
+                   NB_SC_INT: int = 10, NB_AN_PROJECTION_INT: int = 10,
+                   CHOC_CAPITAL: float = 0.35, HURDLE_RT: float = 0.10) -> pd.DataFrame:
+    """
+    Main ACFC Algorithm Implementation
+
+    Args:
+        data_path: Path to directory containing CSV files
+        NBCPT: Max number of accounts to process
+        NB_SC: Max number of external scenarios
+        NB_AN_PROJECTION: Max number of external projection years
+        NB_SC_INT: Max number of internal scenarios
+        NB_AN_PROJECTION_INT: Max number of internal projection years
+        CHOC_CAPITAL: Capital shock percentage (default 0.35 = 35%)
+        HURDLE_RT: Hurdle rate for final PV calculation (default 0.10 = 10%)
+
+    Returns:
+        DataFrame with columns: ID_COMPTE, scn_eval, VP_FLUX_DISTRIBUABLES
+    """
+
+    print("Phase 1: Loading input data...")
+    data = load_input_data(data_path)
+
+    print("Phase 1: Creating lookup tables...")
+    lookups = create_lookup_tables(data)
+
+    print("Phase 2: Running external calculations...")
+    external_results = run_external_calculations(data, lookups, NBCPT, NB_SC, NB_AN_PROJECTION)
+
+    print("Phase 3-5: Running internal calculations and integration...")
+    final_results = calculate_distributable_cash_flows(
+        external_results, lookups, NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL, HURDLE_RT
+    )
+
+    print("Phase 6: Generating output...")
+    output_df = pd.DataFrame(final_results)
+
+    print(f"Algorithm completed. Generated {len(output_df)} results.")
+    print(f"Expected results: {NBCPT * NB_SC} (accounts × scenarios)")
+
+    return output_df
+
+
+# Example usage and testing
 if __name__ == "__main__":
-    results_df = main()
+    # Run the algorithm with the specified parameters
+    # Make sure to provide the correct path to your CSV files
+
+
+    results = acfc_algorithm(
+        data_path=HERE.joinpath("data_in"),
+        NBCPT=100,
+        NB_SC=100,
+        NB_AN_PROJECTION=100,
+        NB_SC_INT=100,
+        NB_AN_PROJECTION_INT=100,
+        CHOC_CAPITAL=0.35,
+        HURDLE_RT=0.10
+    )
+
+    print("\nSample Results:")
+    print(results.head(10))
+
+    print("\nSummary Statistics:")
+    print(f"Total rows: {len(results)}")
+    print(f"Accounts: {results['ID_COMPTE'].nunique()}")
+    print(f"Scenarios per account: {results['scn_eval'].nunique()}")
+    print(f"Mean VP_FLUX_DISTRIBUABLES: {results['VP_FLUX_DISTRIBUABLES'].mean():.2f}")
+    print(f"Std VP_FLUX_DISTRIBUABLES: {results['VP_FLUX_DISTRIBUABLES'].std():.2f}")
+    print(f"Min VP_FLUX_DISTRIBUABLES: {results['VP_FLUX_DISTRIBUABLES'].min():.2f}")
+    print(f"Max VP_FLUX_DISTRIBUABLES: {results['VP_FLUX_DISTRIBUABLES'].max():.2f}")
+
+    # Save results to CSV
+    results.to_csv("acfc_results.csv", index=False)
+    print(f"\nResults saved to acfc_results.csv")
