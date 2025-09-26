@@ -27,7 +27,9 @@ warnings.filterwarnings('ignore')
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
-# Global parameters matching SAS macro variables
+# --- FIX 1: Synchronized Global Parameters ---
+# These parameters should be identical to the CPU version for a valid comparison.
+# Using smaller values for faster testing and development.
 NBCPT = 4
 NB_SC = 10
 NB_AN_PROJECTION = 10
@@ -64,20 +66,20 @@ def prepare_gpu_data(rendement: pd.DataFrame, tx_deces: pd.DataFrame,
                      xp) -> Dict:
     """
     Converts all Pandas DataFrames and lookup tables into GPU-ready arrays.
-    (Corrected: removed unused 'population' parameter)
     """
-    # 1. Convert lookup tables (hash tables) to arrays for direct indexing
     max_age = int(tx_deces['AGE'].max()) + 1 if not tx_deces.empty else 150
     h_mortality = np.zeros(max_age, dtype=np.float64)
-    h_mortality[tx_deces['AGE'].astype(int)] = tx_deces['QX']
+    if not tx_deces.empty:
+        h_mortality[tx_deces['AGE'].astype(int)] = tx_deces['QX']
 
     max_proj_years = max(NB_AN_PROJECTION, int(tx_retrait['an_proj'].max() if not tx_retrait.empty else 0)) + 1
     g_lapse = np.zeros(max_proj_years, dtype=np.float64)
-    g_lapse[tx_retrait['an_proj'].astype(int)] = tx_retrait['WX']
+    if not tx_retrait.empty:
+        g_lapse[tx_retrait['an_proj'].astype(int)] = tx_retrait['WX']
 
-    # Ensure array is large enough for sim params AND input data's max scenario.
     max_sc = max(NB_SC, NB_SC_INT, int(rendement['scn_proj'].max() if not rendement.empty else 0)) + 1
-    max_an = max(NB_AN_PROJECTION, int(rendement['an_proj'].max() if not rendement.empty else 0)) + 1
+    max_an = max(NB_AN_PROJECTION, NB_AN_PROJECTION_INT,
+                 int(rendement['an_proj'].max() if not rendement.empty else 0)) + 1
     z_rendement = np.zeros((max_sc, max_an, 2), dtype=np.float64)
 
     type_map = {'EXTERNE': 0, 'INTERNE': 1}
@@ -85,19 +87,20 @@ def prepare_gpu_data(rendement: pd.DataFrame, tx_deces: pd.DataFrame,
         scn = int(row['scn_proj'])
         an = int(row['an_proj'])
         type_idx = type_map.get(str(row['TYPE']), -1)
-        if type_idx != -1:
+        if type_idx != -1 and scn < max_sc and an < max_an:
             z_rendement[scn, an, type_idx] = float(row['RENDEMENT'])
 
     max_discount_years = max(NB_AN_PROJECTION, int(tx_interet['an_proj'].max() if not tx_interet.empty else 0)) + 1
     a_discount_ext = np.ones(max_discount_years, dtype=np.float64)
-    a_discount_ext[tx_interet['an_proj'].astype(int)] = tx_interet['TX_ACTU']
+    if not tx_interet.empty:
+        a_discount_ext[tx_interet['an_proj'].astype(int)] = tx_interet['TX_ACTU']
 
-    max_int_discount_years = max(NB_AN_PROJECTION,
+    max_int_discount_years = max(NB_AN_PROJECTION_INT,
                                  int(tx_interet_int['an_eval'].max() if not tx_interet_int.empty else 0)) + 1
     b_discount_int = np.ones(max_int_discount_years, dtype=np.float64)
-    b_discount_int[tx_interet_int['an_eval'].astype(int)] = tx_interet_int['TX_ACTU_INT']
+    if not tx_interet_int.empty:
+        b_discount_int[tx_interet_int['an_eval'].astype(int)] = tx_interet_int['TX_ACTU_INT']
 
-    # 2. Transfer lookup arrays to the target device (GPU or CPU)
     data = {
         'h_mortality': xp.asarray(h_mortality),
         'g_lapse': xp.asarray(g_lapse),
@@ -114,16 +117,13 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
     """
     Vectorized implementation of the cash flow calculation for a batch of simulations.
     """
-    # Unpack parameters
     batch_size = params['batch_size']
     max_years = params['max_years']
     scenario_type = params['scenario_type']
 
-    # Unpack lookup data
     h_mortality, g_lapse, z_rendement = lookup_data['h_mortality'], lookup_data['g_lapse'], lookup_data['z_rendement']
     a_discount_ext, b_discount_int = lookup_data['a_discount_ext'], lookup_data['b_discount_int']
 
-    # Initialize state variables as vectors on the target device
     mt_vm_proj = xp.copy(initial_state['mt_vm'])
     mt_gar_deces_proj = xp.copy(initial_state['mt_gar_deces'])
     tx_survie = xp.copy(initial_state['tx_survie_deb'])
@@ -136,16 +136,19 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
     freq_reset_deces = initial_state['freq_reset_deces']
     max_reset_deces = initial_state['max_reset_deces']
 
-    # Pre-allocate results array on the GPU
     num_outputs = 13
     results_batch = xp.zeros((max_years + 1, batch_size, num_outputs), dtype=xp.float64)
 
-    # The time loop remains sequential, but all calculations inside are parallel
     for current_year in range(max_years + 1):
-        an_proj = initial_state['an_proj_start'] + current_year
-        age = age_deb + an_proj
+        an_proj_relative = current_year
 
-        # --- Year 0 Initialization ---
+        if scenario_type == "INTERNE":
+            an_proj = initial_state['an_eval_start'] + an_proj_relative
+            age = age_deb + an_proj
+        else:  # EXTERNE
+            an_proj = an_proj_relative
+            age = age_deb + an_proj
+
         if current_year == 0:
             if scenario_type == "EXTERNE":
                 tx_survie_deb = xp.ones(batch_size, dtype=xp.float64)
@@ -157,52 +160,50 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
                 tx_survie_deb = xp.copy(tx_survie)
                 commissions, frais_gen, flux_net, revenus, frais_gest, pmt_garantie = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         else:
-            # Stop projection for paths that have ended
-            active_mask = (tx_survie > 0) & (mt_vm_proj > 0)
+            # --- FIX 2: Correct Internal Projection Length ---
+            # The active_mask now correctly stops projections if the policyholder reaches age 100,
+            # mirroring the `99 - age_deb` logic from the CPU version.
+            active_mask = (tx_survie > 0) & (mt_vm_proj > 0) & (age < 100)
 
-            # --- Projections for Year > 0 ---
             mt_vm_deb = mt_vm_proj
             tx_survie_deb = tx_survie
 
-            # Lookups are now vectorized array indexing
             rendement_rate = z_rendement[initial_state['scn_proj'], an_proj, params['type_idx']]
             rendement = mt_vm_deb * rendement_rate
             frais = -(mt_vm_deb + rendement / 2) * pc_revenu_fds
             mt_vm_proj = mt_vm_proj + rendement + frais
 
-            # Reset logic with boolean masking
             reset_mask = (freq_reset_deces == 1) & (age <= max_reset_deces)
             mt_gar_deces_proj[reset_mask] = xp.maximum(mt_gar_deces_proj[reset_mask], mt_vm_proj[reset_mask])
 
-            # Survival probabilities
             qx = h_mortality[age.astype(xp.int32)]
             wx = g_lapse[an_proj.astype(xp.int32)]
             tx_survie = tx_survie_deb * (1 - qx) * (1 - wx)
 
-            # Cash Flow calculations (all vectorized)
             revenus = -frais * tx_survie_deb
             frais_gest = -(mt_vm_deb + rendement / 2) * pc_honoraires_gest * tx_survie_deb
             commissions = -(mt_vm_deb + rendement / 2) * tx_comm_maintien * tx_survie_deb
             frais_gen = -frais_admin * tx_survie_deb
             pmt_garantie = -xp.maximum(0, mt_gar_deces_proj - mt_vm_proj) * qx * tx_survie_deb
-
             flux_net = revenus + frais_gest + commissions + frais_gen + pmt_garantie
 
-            # Apply active mask to zero out cash flows for inactive paths
-            for cf in [revenus, frais_gest, commissions, frais_gen, pmt_garantie, flux_net]:
+            for cf in [revenus, frais_gest, commissions, frais_gen, pmt_garantie, flux_net, mt_vm_proj,
+                       mt_gar_deces_proj, tx_survie]:
                 cf[~active_mask] = 0.0
 
-        # --- Present Value Calculations ---
         tx_actu = a_discount_ext[an_proj.astype(xp.int32)]
+
+        # Calculate all VPs based on external discount rate first
         vp_flux_net = flux_net * tx_actu
 
-        if scenario_type == "INTERNE" and xp.any(initial_state['an_eval'] > 0):
-            tx_actu_int = b_discount_int[initial_state['an_eval'].astype(xp.int32)]
-            # Avoid division by zero
-            inv_tx_actu_int = xp.where(tx_actu_int != 0, 1.0 / tx_actu_int, 0)
-            vp_flux_net *= inv_tx_actu_int
+        if scenario_type == "INTERNE":
+            an_eval = initial_state['an_eval_start']
+            if xp.any(an_eval > 0):
+                tx_actu_int = b_discount_int[an_eval.astype(xp.int32)]
+                inv_tx_actu_int = xp.where(tx_actu_int != 0, 1.0 / tx_actu_int, 0)
+                # Adjust the final VP value
+                vp_flux_net *= inv_tx_actu_int
 
-        # Store results for the current year
         results_batch[current_year, :, 0] = an_proj
         results_batch[current_year, :, 1] = age
         results_batch[current_year, :, 2] = mt_vm_proj
@@ -217,13 +218,9 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
         results_batch[current_year, :, 11] = flux_net
         results_batch[current_year, :, 12] = vp_flux_net
 
-    # Transfer data from GPU to CPU and reshape
     results_cpu = cp.asnumpy(results_batch) if GPU_ENABLED else results_batch
-
-    # Reshape from (years, batch, features) to (years * batch, features)
     results_flat = results_cpu.reshape(-1, num_outputs)
 
-    # Create final DataFrame
     df = pd.DataFrame(results_flat, columns=[
         'an_proj', 'AGE', 'MT_VM_PROJ', 'MT_GAR_DECES_PROJ', 'TX_SURVIE', 'TX_SURVIE_DEB',
         'REVENUS', 'FRAIS_GEST', 'COMMISSIONS', 'FRAIS_GEN', 'PMT_GARANTIE', 'FLUX_NET', 'VP_FLUX_NET'
@@ -237,12 +234,9 @@ def gpu_calculs_macro(population: pd.DataFrame, lookup_data: Dict, xp):
     Main vectorized orchestrator replacing the nested loops.
     """
     num_accounts = len(population)
-
-    # --- 1. EXTERNAL SCENARIOS BATCH ---
     logger.info("Starting vectorized external scenario calculations...")
     batch_size_ext = num_accounts * NB_SC
 
-    # Create flattened input arrays for all (account, scenario) pairs
     id_compte_vec = np.repeat(population['ID_COMPTE'].values, NB_SC)
     scn_eval_vec = np.tile(np.arange(1, NB_SC + 1), num_accounts)
 
@@ -259,101 +253,92 @@ def gpu_calculs_macro(population: pd.DataFrame, lookup_data: Dict, xp):
         'max_reset_deces': xp.asarray(np.repeat(population['MAX_RESET_DECES'].values, NB_SC)),
         'tx_comm_vente': xp.asarray(np.repeat(population['TX_COMM_VENTE'].values, NB_SC)),
         'frais_acqui': xp.asarray(np.repeat(population['FRAIS_ACQUI'].values, NB_SC)),
-        'an_proj_start': xp.zeros(batch_size_ext, dtype=xp.int32),
-        'scn_proj': xp.asarray(scn_eval_vec),
-        'an_eval': xp.zeros(batch_size_ext, dtype=xp.int32)
+        'scn_proj': xp.asarray(scn_eval_vec)
     }
 
     params_ext = {'batch_size': batch_size_ext, 'max_years': NB_AN_PROJECTION, 'scenario_type': 'EXTERNE',
                   'type_idx': 0}
-
     external_results = vectorized_cash_flow_calculation(initial_state_ext, lookup_data, params_ext, xp)
 
-    # Add identifying columns
-    external_results['ID_COMPTE'] = np.repeat(id_compte_vec, NB_AN_PROJECTION + 1)
-    external_results['scn_eval'] = np.repeat(scn_eval_vec, NB_AN_PROJECTION + 1)
-    external_results['an_eval'] = external_results['an_proj']  # For external, an_eval is the projection year
+    # --- FIX 3 (Part 1): Add static policy data to external_results for safe transfer ---
+    # This ensures that when we filter by `an_eval`, we retain all necessary policy-level data.
+    num_years_proj = NB_AN_PROJECTION + 1
+    external_results['ID_COMPTE'] = np.repeat(id_compte_vec, num_years_proj)
+    external_results['scn_eval'] = np.repeat(scn_eval_vec, num_years_proj)
+    external_results['an_eval'] = external_results['an_proj']
+
+    # Carry forward static parameters needed for the internal calculations
+    for key in ['age_deb', 'pc_revenu_fds', 'pc_honoraires_gest', 'tx_comm_maintien', 'frais_admin', 'freq_reset_deces',
+                'max_reset_deces']:
+        external_results[key] = np.repeat(cp.asnumpy(initial_state_ext[key]) if GPU_ENABLED else initial_state_ext[key],
+                                          num_years_proj)
 
     logger.info(f"External calculations complete. Shape: {external_results.shape}")
 
-    # --- 2. INTERNAL SCENARIOS BATCHES (one per year) ---
     logger.info("Starting vectorized internal scenario calculations...")
     reserve_capital_results = []
-
     for an_eval in tqdm(range(1, NB_AN_PROJECTION + 1), desc="Internal Calcs (Years)"):
-        # Get state from external projection at year `an_eval`
         prev_state = external_results[external_results['an_eval'] == an_eval]
         if prev_state.empty: continue
 
-        # Batch size for this year's internal run: (accounts * ext_scenarios) * int_scenarios * 2 (RESERVE/CAPITAL)
         num_paths_this_year = len(prev_state)
-        batch_size_int = num_paths_this_year * NB_SC_INT * 2
-
-        # Expand inputs for all internal scenarios and both types
-        # Repeat each path state for NB_SC_INT * 2 times
         repeats = NB_SC_INT * 2
+        batch_size_int = num_paths_this_year * repeats
 
         mt_vm_int = np.repeat(prev_state['MT_VM_PROJ'].values, repeats)
-        # Apply capital shock
         type2_vec = np.tile(np.repeat(['RESERVE', 'CAPITAL'], NB_SC_INT), num_paths_this_year)
         shock_mask = (type2_vec == 'CAPITAL')
         mt_vm_int[shock_mask] *= (1 - CHOC_CAPITAL)
 
+        # --- FIX 3 (Part 2): Source all data from `prev_state` for guaranteed alignment ---
+        # Instead of rebuilding arrays from the original `population` or `initial_state_ext`,
+        # we use the already-aligned data from the `prev_state` DataFrame.
         initial_state_int = {
             'mt_vm': xp.asarray(mt_vm_int),
             'mt_gar_deces': xp.asarray(np.repeat(prev_state['MT_GAR_DECES_PROJ'].values, repeats)),
             'tx_survie_deb': xp.asarray(np.repeat(prev_state['TX_SURVIE'].values, repeats)),
-            'age_deb': xp.asarray(np.repeat(np.repeat(population['age_deb'].values, NB_SC), repeats)),
-            'an_proj_start': xp.asarray(np.repeat(an_eval, batch_size_int)),
+            'age_deb': xp.asarray(np.repeat(prev_state['age_deb'].values, repeats)),
             'scn_proj': xp.asarray(np.tile(np.arange(1, NB_SC_INT + 1), num_paths_this_year * 2)),
-            'an_eval': xp.asarray(np.repeat(an_eval, batch_size_int)),
+            'an_eval_start': xp.asarray(np.repeat(an_eval, batch_size_int)),
         }
-        # Copy shared parameters from external state, expanded
         for key in ['pc_revenu_fds', 'pc_honoraires_gest', 'tx_comm_maintien', 'frais_admin', 'freq_reset_deces',
                     'max_reset_deces']:
-            initial_state_int[key] = xp.asarray(np.repeat(initial_state_ext[key][:num_paths_this_year], repeats))
+            initial_state_int[key] = xp.asarray(np.repeat(prev_state[key].values, repeats))
 
-        max_years_int = min(NB_AN_PROJECTION_INT, 99 - an_eval)
-        params_int = {'batch_size': batch_size_int, 'max_years': max_years_int, 'scenario_type': 'INTERNE',
+        # The loop runs for the max projection years, the internal mask handles early termination
+        params_int = {'batch_size': batch_size_int, 'max_years': NB_AN_PROJECTION_INT, 'scenario_type': 'INTERNE',
                       'type_idx': 1}
-
         internal_results_df = vectorized_cash_flow_calculation(initial_state_int, lookup_data, params_int, xp)
 
-        # Add identifying columns for aggregation
-        internal_results_df['ID_COMPTE'] = np.repeat(prev_state['ID_COMPTE'].values, repeats * (max_years_int + 1))
-        internal_results_df['scn_eval'] = np.repeat(prev_state['scn_eval'].values, repeats * (max_years_int + 1))
+        max_years_int_proj = NB_AN_PROJECTION_INT + 1
+        internal_results_df['ID_COMPTE'] = np.repeat(prev_state['ID_COMPTE'].values, repeats * max_years_int_proj)
+        internal_results_df['scn_eval'] = np.repeat(prev_state['scn_eval'].values, repeats * max_years_int_proj)
         internal_results_df['scn_eval_int'] = np.tile(np.arange(1, NB_SC_INT + 1),
-                                                      num_paths_this_year * 2 * (max_years_int + 1))
-        internal_results_df['TYPE2'] = np.repeat(type2_vec, (max_years_int + 1))
+                                                      num_paths_this_year * 2 * max_years_int_proj)
+        internal_results_df['TYPE2'] = np.repeat(type2_vec, max_years_int_proj)
         internal_results_df['an_eval'] = an_eval
 
-        # Aggregate: Sum VP_FLUX_NET per scenario, then average
         agg = internal_results_df.groupby(['ID_COMPTE', 'scn_eval', 'an_eval', 'TYPE2', 'scn_eval_int'])[
             'VP_FLUX_NET'].sum().reset_index()
         mean_agg = agg.groupby(['ID_COMPTE', 'scn_eval', 'an_eval', 'TYPE2'])['VP_FLUX_NET'].mean().reset_index()
         reserve_capital_results.append(mean_agg)
 
-    # --- 3. MERGE and FINAL CALCULATIONS (on CPU with Pandas) ---
     logger.info("Merging results and performing final calculations...")
-
     if not reserve_capital_results:
         logger.warning("No internal results generated. Skipping final merge.")
-        return pd.DataFrame()
-
-    rc_df = pd.concat(reserve_capital_results)
-
-    # Pivot to get RESERVE and CAPITAL as columns
-    rc_pivot = rc_df.pivot_table(index=['ID_COMPTE', 'scn_eval', 'an_eval'], columns='TYPE2',
-                                 values='VP_FLUX_NET').reset_index()
-    rc_pivot.rename(columns={'RESERVE': 'RESERVE_val', 'CAPITAL': 'CAPITAL_base'}, inplace=True)
-
-    # Merge back to external results
-    enhanced_external = pd.merge(external_results, rc_pivot, on=['ID_COMPTE', 'scn_eval', 'an_eval'], how='left')
-    enhanced_external[['RESERVE_val', 'CAPITAL_base']] = enhanced_external[['RESERVE_val', 'CAPITAL_base']].fillna(0)
-
-    # Final SAS logic for CAPITAL and PROFIT
-    enhanced_external['RESERVE'] = enhanced_external['RESERVE_val']
-    enhanced_external['CAPITAL'] = enhanced_external['CAPITAL_base'] - enhanced_external['RESERVE']
+        enhanced_external = external_results.copy()
+        enhanced_external['RESERVE'] = 0.0
+        enhanced_external['CAPITAL'] = 0.0
+    else:
+        rc_df = pd.concat(reserve_capital_results)
+        rc_pivot = rc_df.pivot_table(index=['ID_COMPTE', 'scn_eval', 'an_eval'], columns='TYPE2',
+                                     values='VP_FLUX_NET').reset_index()
+        rc_pivot.rename(columns={'RESERVE': 'RESERVE_val', 'CAPITAL': 'CAPITAL_base'}, inplace=True)
+        enhanced_external = pd.merge(external_results, rc_pivot, on=['ID_COMPTE', 'scn_eval', 'an_eval'], how='left')
+        enhanced_external[['RESERVE_val', 'CAPITAL_base']] = enhanced_external[['RESERVE_val', 'CAPITAL_base']].fillna(
+            0)
+        enhanced_external['RESERVE'] = enhanced_external['RESERVE_val']
+        enhanced_external['CAPITAL'] = enhanced_external['CAPITAL_base'] - enhanced_external['RESERVE']
 
     enhanced_external = enhanced_external.sort_values(['ID_COMPTE', 'scn_eval', 'an_eval']).reset_index(drop=True)
     enhanced_external['reserve_prec'] = enhanced_external.groupby(['ID_COMPTE', 'scn_eval'])['RESERVE'].shift(1,
@@ -361,12 +346,10 @@ def gpu_calculs_macro(population: pd.DataFrame, lookup_data: Dict, xp):
     enhanced_external['capital_prec'] = enhanced_external.groupby(['ID_COMPTE', 'scn_eval'])['CAPITAL'].shift(1,
                                                                                                               fill_value=0)
 
-    # Year 0 calculation
     is_year_0 = enhanced_external['an_eval'] == 0
     enhanced_external.loc[is_year_0, 'PROFIT'] = enhanced_external['FLUX_NET'] + enhanced_external['RESERVE']
     enhanced_external.loc[is_year_0, 'FLUX_DISTRIBUABLES'] = enhanced_external['PROFIT'] + enhanced_external['CAPITAL']
 
-    # Year > 0 calculation
     enhanced_external.loc[~is_year_0, 'PROFIT'] = enhanced_external['FLUX_NET'] + enhanced_external['RESERVE'] - \
                                                   enhanced_external['reserve_prec']
     enhanced_external.loc[~is_year_0, 'FLUX_DISTRIBUABLES'] = enhanced_external['PROFIT'] + enhanced_external[
@@ -375,9 +358,7 @@ def gpu_calculs_macro(population: pd.DataFrame, lookup_data: Dict, xp):
     enhanced_external['VP_FLUX_DISTRIBUABLES'] = enhanced_external['FLUX_DISTRIBUABLES'] / (
                 (1 + HURDLE_RT) ** enhanced_external['an_eval'])
 
-    # Final aggregation to match SAS output
     calculs_sommaire = enhanced_external.groupby(['ID_COMPTE', 'scn_eval'])['VP_FLUX_DISTRIBUABLES'].sum().reset_index()
-
     logger.info(f"Vectorized calculations complete. Results: {len(calculs_sommaire)} combinations")
     return calculs_sommaire
 
@@ -394,7 +375,6 @@ def run_gpu_acfc(data_path: str = "data_in", output_dir: str = "output"):
 
     try:
         population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait = load_input_files(data_path)
-        # Corrected call:
         lookup_data = prepare_gpu_data(rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait, xp)
 
         logger.info(f"Configuration:")
@@ -411,12 +391,15 @@ def run_gpu_acfc(data_path: str = "data_in", output_dir: str = "output"):
         print(f"\n" + "=" * 60)
         print(f"VECTORIZED ACFC RESULTS (ON {device})")
         print(f"=" * 60)
-        print(f"Total combinations: {len(results_df):,}")
-        print(f"Execution time: {execution_time:.2f} seconds")
-        print(f"Mean VP_FLUX_DISTRIBUABLES: ${results_df['VP_FLUX_DISTRIBUABLES'].mean():,.2f}")
-        print(f"Profitable combinations: {len(results_df[results_df['VP_FLUX_DISTRIBUABLES'] > 0]):,}")
-        print(
-            f"Range: ${results_df['VP_FLUX_DISTRIBUABLES'].min():,.2f} to ${results_df['VP_FLUX_DISTRIBUABLES'].max():,.2f}")
+        if not results_df.empty:
+            print(f"Total combinations: {len(results_df):,}")
+            print(f"Execution time: {execution_time:.2f} seconds")
+            print(f"Mean VP_FLUX_DISTRIBUABLES: ${results_df['VP_FLUX_DISTRIBUABLES'].mean():,.2f}")
+            print(f"Profitable combinations: {len(results_df[results_df['VP_FLUX_DISTRIBUABLES'] > 0]):,}")
+            print(
+                f"Range: ${results_df['VP_FLUX_DISTRIBUABLES'].min():,.2f} to ${results_df['VP_FLUX_DISTRIBUABLES'].max():,.2f}")
+        else:
+            print("No results were generated.")
 
         output_path = Path(output_dir)
         output_path.mkdir(exist_ok=True)
