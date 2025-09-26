@@ -38,10 +38,12 @@ DATA_MAX_RESET_DECES = 10
 DATA_SIZE = 11
 
 
-def load_input_data(data_path: str = ".") -> Dict:
+def load_input_data(data_path: str = ".", nb_accounts: int = None) -> Dict:
     """Load all input data files"""
     try:
         population = pd.read_csv(f"{data_path}/population.csv")
+        if nb_accounts is not None:
+            population = population.head(nb_accounts)
         rendement = pd.read_csv(f"{data_path}/rendement.csv")
         tx_deces = pd.read_csv(f"{data_path}/tx_deces.csv")
         tx_interet = pd.read_csv(f"{data_path}/tx_interet.csv")
@@ -160,8 +162,9 @@ def prepare_gpu_data(data: Dict, nb_accounts: int, nb_scenarios: int) -> Tuple[n
 @cuda.jit
 def gpu_calculate_year_transition(states, initial_data, lookups_mortality, lookups_lapse,
                                   lookups_discount_ext, lookups_discount_int, lookups_returns_ext,
-                                  lookups_returns_int, results, year, projection_type, fund_shock, start_year):
-    """GPU kernel for year transition calculations - FIXED version"""
+                                  lookups_returns_int, results, year, projection_type, fund_shock, start_year,
+                                  max_years):
+    """GPU kernel for year transition calculations - FIXED version with dynamic years"""
 
     combination_idx = cuda.grid(1)
     if combination_idx >= states.shape[0]:
@@ -210,8 +213,8 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
         states[combination_idx, STATE_TX_SURVIE] = TX_SURVIE
         states[combination_idx, STATE_AGE] = AGE
 
-        # Store results with proper indexing
-        nb_years_total = 11  # 0 to 10 years = 11 total
+        # Store results with DYNAMIC indexing
+        nb_years_total = max_years + 1  # FIXED: Use dynamic max_years parameter
         result_idx = combination_idx * nb_years_total + year
         if result_idx < results.shape[0]:
             results[result_idx, 0] = states[combination_idx, STATE_ACCOUNT_ID]
@@ -232,7 +235,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
     if current_survie <= 0.0 or current_vm <= 0.0:
         states[combination_idx, STATE_IS_TERMINATED] = 1.0
         # Still store terminated results
-        nb_years_total = 11
+        nb_years_total = max_years + 1  # FIXED: Use dynamic max_years parameter
         result_idx = combination_idx * nb_years_total + year
         if result_idx < results.shape[0]:
             results[result_idx, 0] = states[combination_idx, STATE_ACCOUNT_ID]
@@ -328,8 +331,8 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
     if new_TX_SURVIE <= 0.0 or new_MT_VM_PROJ <= 0.0:
         states[combination_idx, STATE_IS_TERMINATED] = 1.0
 
-    # Store results with correct indexing
-    nb_years_total = 11
+    # Store results with DYNAMIC indexing
+    nb_years_total = max_years + 1  # FIXED: Use dynamic max_years parameter
     result_idx = combination_idx * nb_years_total + year
     if result_idx < results.shape[0]:
         results[result_idx, 0] = states[combination_idx, STATE_ACCOUNT_ID]
@@ -379,7 +382,7 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
         gpu_calculate_year_transition[blocks_per_grid, threads_per_block](
             d_states, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
             d_returns_ext, d_returns_int, d_results, year, proj_type_num,
-            fund_shock, start_year
+            fund_shock, start_year, nb_years  # FIXED: Pass dynamic nb_years
         )
         cuda.synchronize()
 
@@ -531,7 +534,7 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     """
 
     print("Phase 1: Loading input data...")
-    data = load_input_data(data_path)
+    data = load_input_data(data_path, nb_accounts)
 
     # DEBUG: Print account information
     print(f"DEBUG: Loaded {len(data['population'])} accounts:")
