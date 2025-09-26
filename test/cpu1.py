@@ -3,6 +3,7 @@ import numpy as np
 from typing import Dict, Tuple, List
 import warnings
 import logging
+from tqdm import tqdm
 
 from paths import HERE
 
@@ -70,7 +71,7 @@ def create_lookup_tables(data: Dict) -> Dict:
 
     # Returns lookup: (year, scenario, type) -> return
     lookups['returns'] = {}
-    for _, row in data['rendement'].iterrows():
+    for _, row in tqdm(data['rendement'].iterrows(), total=len(data['rendement']), desc="Creating returns lookup"):
         key = (int(row['an_proj']), int(row['scn_proj']), row['TYPE'])
         lookups['returns'][key] = row['RENDEMENT']
 
@@ -180,11 +181,11 @@ def run_external_calculations(data: Dict, lookups: Dict, NBCPT: int, NB_SC: int,
 
     external_results = []
 
-    for account_idx in range(min(NBCPT, len(data['population']))):
+    for account_idx in tqdm(range(min(NBCPT, len(data['population']))), desc="Processing accounts"):
         account_data = data['population'].iloc[account_idx]
         account_id = account_data['ID_COMPTE']
 
-        for scenario in range(1, NB_SC + 1):
+        for scenario in tqdm(range(1, NB_SC + 1), desc=f"Scenarios for Account {account_id}", leave=False):
             # Project external path
             projection = project_single_path(
                 account_data, scenario, 'EXTERNE', lookups, NB_AN_PROJECTION
