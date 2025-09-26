@@ -340,7 +340,7 @@ if __name__ == "__main__":
 
     results = acfc_algorithm(
         data_path=HERE.joinpath("data_in"),
-        NBCPT=100,
+        NBCPT=4,
         NB_SC=100,
         NB_AN_PROJECTION=100,
         NB_SC_INT=100,
