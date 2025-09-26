@@ -110,33 +110,18 @@ def create_gpu_lookup_tables(data: Dict, max_age: int = 120, max_year: int = 50,
         scenario = int(row['scn_proj'])
         if year <= max_year and scenario <= max_scenarios:
             if row['TYPE'] == 'EXTERNE':
-            # Store year 0 internal result
-            result_idx = combination_idx * 50 + year
-            if result_idx < results.shape[0]:
-                results[result_idx, 0] = states[combination_idx, STATE_ACCOUNT_ID]
-                results[result_idx, 1] = states[combination_idx, STATE_SCENARIO]
-                results[result_idx, 2] = year
-                results[result_idx, 3] = states[combination_idx, STATE_AGE]
-                results[result_idx, 4] = new_MT_VM
-                results[result_idx, 5] = initial_data[account_idx, DATA_MT_GAR_DECES]
-                results[result_idx, 6] = 1.0
-                results[result_idx, 7] = 0.0  # FLUX_NET
-                results[result_idx, 8] = 0.0  # VP_FLUX_NET
-            returns_ext_array[year, scenario] = float(row['RENDEMENT'])
+                returns_ext_array[year, scenario] = float(row['RENDEMENT'])
             elif row['TYPE'] == 'INTERNE':
-            returns_int_array[year, scenario] = float(row['RENDEMENT'])
+                returns_int_array[year, scenario] = float(row['RENDEMENT'])
 
-
-return {
-    'mortality': mortality_array,
-    'lapse': lapse_array,
-    'discount_ext': discount_ext_array,
-    'discount_int': discount_int_array,
-    'returns_ext': returns_ext_array,
-    'returns_int': returns_int_array
-}
-
-
+    return {
+        'mortality': mortality_array,
+        'lapse': lapse_array,
+        'discount_ext': discount_ext_array,
+        'discount_int': discount_int_array,
+        'returns_ext': returns_ext_array,
+        'returns_int': returns_int_array
+    }
 def prepare_gpu_data(data: Dict, nb_accounts: int, nb_scenarios: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Prepare data for GPU processing"""
 
