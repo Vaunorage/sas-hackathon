@@ -3,6 +3,7 @@ import numpy as np
 from typing import Dict, Tuple, List
 import warnings
 import logging
+import time
 from tqdm import tqdm
 
 from paths import HERE
@@ -10,42 +11,45 @@ from paths import HERE
 warnings.filterwarnings('ignore')
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
 def load_input_files(data_path: str) -> Tuple[pd.DataFrame, ...]:
     """Load all input CSV files exactly as SAS does"""
     try:
-        print("📁 Loading input files...")
-        with tqdm(total=6, desc="Loading CSV files", unit="file") as pbar:
-            population = pd.read_csv(f"{data_path}/population.csv")
-            pbar.update(1)
+        print("\n📁 LOADING INPUT FILES")
+        print("-" * 50)
 
-            rendement = pd.read_csv(f"{data_path}/rendement.csv")
-            pbar.update(1)
+        files_to_load = [
+            ("population.csv", "Population data"),
+            ("rendement.csv", "Returns data"),
+            ("tx_deces.csv", "Mortality rates"),
+            ("tx_interet.csv", "Interest rates"),
+            ("tx_interet_int.csv", "Internal interest rates"),
+            ("tx_retrait.csv", "Lapse rates")
+        ]
 
-            tx_deces = pd.read_csv(f"{data_path}/tx_deces.csv")
-            pbar.update(1)
+        loaded_data = []
+        for filename, description in files_to_load:
+            print(f"Loading {description}...")
+            df = pd.read_csv(f"{data_path}/{filename}")
+            loaded_data.append(df)
+            print(f"  ✓ {description}: {len(df):,} rows")
+            time.sleep(0.1)  # Brief pause for readability
 
-            tx_interet = pd.read_csv(f"{data_path}/tx_interet.csv")
-            pbar.update(1)
-
-            tx_interet_int = pd.read_csv(f"{data_path}/tx_interet_int.csv")
-            pbar.update(1)
-
-            tx_retrait = pd.read_csv(f"{data_path}/tx_retrait.csv")
-            pbar.update(1)
+        population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait = loaded_data
 
         # Handle TYPE column encoding if it exists
         if 'TYPE' in rendement.columns:
             print("🔧 Processing TYPE column encoding...")
-            tqdm.pandas(desc="Processing TYPE column")
-            rendement['TYPE'] = rendement['TYPE'].progress_apply(
+            rendement['TYPE'] = rendement['TYPE'].apply(
                 lambda x: x.decode('utf-8') if isinstance(x, bytes) else str(x)
             )
+            print(f"  ✓ Processed {len(rendement):,} TYPE entries")
 
-        logger.info(f"Input files loaded - Population: {len(population)} accounts")
+        print(f"\n✅ All files loaded successfully!")
+        print(f"📊 Found {len(population)} accounts for processing")
         return population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait
 
     except Exception as e:
@@ -69,32 +73,42 @@ def load_input_data(data_path: str = "."):
 
 def create_lookup_tables(data: Dict) -> Dict:
     """Create hash table lookups for O(1) access"""
-    print("🔍 Creating lookup tables...")
+    print("\n🔍 CREATING LOOKUP TABLES")
+    print("-" * 50)
+
     lookups = {}
 
-    with tqdm(total=5, desc="Building lookup tables", unit="table") as pbar:
-        # Mortality lookup: age -> qx
-        lookups['mortality'] = dict(zip(data['tx_deces']['AGE'], data['tx_deces']['QX']))
-        pbar.update(1)
+    print("Building mortality lookup table...")
+    lookups['mortality'] = dict(zip(data['tx_deces']['AGE'], data['tx_deces']['QX']))
+    print(f"  ✓ {len(lookups['mortality'])} mortality rates loaded")
 
-        # Lapse lookup: year -> wx
-        lookups['lapse'] = dict(zip(data['tx_retrait']['an_proj'], data['tx_retrait']['WX']))
-        pbar.update(1)
+    print("Building lapse lookup table...")
+    lookups['lapse'] = dict(zip(data['tx_retrait']['an_proj'], data['tx_retrait']['WX']))
+    print(f"  ✓ {len(lookups['lapse'])} lapse rates loaded")
 
-        # Discount rate lookups
-        lookups['discount_ext'] = dict(zip(data['tx_interet']['an_proj'], data['tx_interet']['TX_ACTU']))
-        pbar.update(1)
+    print("Building discount rate lookup tables...")
+    lookups['discount_ext'] = dict(zip(data['tx_interet']['an_proj'], data['tx_interet']['TX_ACTU']))
+    lookups['discount_int'] = dict(zip(data['tx_interet_int']['an_eval'], data['tx_interet_int']['TX_ACTU_INT']))
+    print(f"  ✓ {len(lookups['discount_ext'])} external rates, {len(lookups['discount_int'])} internal rates")
 
-        lookups['discount_int'] = dict(zip(data['tx_interet_int']['an_eval'], data['tx_interet_int']['TX_ACTU_INT']))
-        pbar.update(1)
+    print("Building returns lookup table...")
+    lookups['returns'] = {}
 
-        # Returns lookup: (year, scenario, type) -> return
-        lookups['returns'] = {}
-        for _, row in tqdm(data['rendement'].iterrows(), desc="Processing returns",
-                           total=len(data['rendement']), leave=False):
-            key = (int(row['an_proj']), int(row['scn_proj']), row['TYPE'])
-            lookups['returns'][key] = row['RENDEMENT']
-        pbar.update(1)
+    # Show progress only for large datasets
+    if len(data['rendement']) > 5000:
+        iterator = tqdm(data['rendement'].iterrows(),
+                        desc="Processing returns",
+                        total=len(data['rendement']),
+                        unit="rows")
+    else:
+        iterator = data['rendement'].iterrows()
+
+    for _, row in iterator:
+        key = (int(row['an_proj']), int(row['scn_proj']), row['TYPE'])
+        lookups['returns'][key] = row['RENDEMENT']
+
+    print(f"  ✓ {len(lookups['returns'])} return scenarios loaded")
+    print("✅ All lookup tables created successfully!")
 
     return lookups
 
@@ -289,21 +303,21 @@ def project_cash_flows_exact_sas_logic(account_data: pd.Series, scenario: int, p
 def run_internal_calculations_exact(external_projection: List[Dict], account_data: pd.Series,
                                     scenario: int, lookups: Dict, calculation_type: str,
                                     NB_SC_INT: int, NB_AN_PROJECTION_INT: int,
-                                    CHOC_CAPITAL: float) -> Dict:
+                                    CHOC_CAPITAL: float, progress_info: str = "") -> Dict:
     """
     Exact replication of internal calculations matching the second algorithm
     """
 
     year_results = {}
+    valid_years = [ext_data for ext_data in external_projection if ext_data['year'] > 0]
+
+    if valid_years:
+        print(f"    Running {calculation_type} calculations{progress_info}")
+        print(f"      Processing {len(valid_years)} years × {NB_SC_INT} internal scenarios")
 
     # For each year in the external projection, calculate internal scenarios
-    for ext_data in tqdm(external_projection, desc=f"Processing {calculation_type} years", leave=False):
+    for ext_data in valid_years:
         year = ext_data['year']
-
-        if year == 0:
-            # No internal calculations for year 0
-            year_results[year] = 0.0
-            continue
 
         # Get state at this year from external projection
         fund_value = ext_data['MT_VM_PROJ']
@@ -326,10 +340,7 @@ def run_internal_calculations_exact(external_projection: List[Dict], account_dat
         # Run internal scenarios from this year forward
         internal_scenarios_sum = []
 
-        for internal_scenario in tqdm(range(1, NB_SC_INT + 1),
-                                      desc=f"Internal scenarios (Year {year})",
-                                      leave=False):
-
+        for internal_scenario in range(1, NB_SC_INT + 1):
             # Run internal projection exactly as in second algorithm
             internal_results = project_cash_flows_exact_sas_logic(
                 modified_account, internal_scenario, 'INTERNE', lookups,
@@ -347,6 +358,8 @@ def run_internal_calculations_exact(external_projection: List[Dict], account_dat
         else:
             year_results[year] = 0.0
 
+    # Add year 0 result
+    year_results[0] = 0.0
     return year_results
 
 
@@ -359,77 +372,98 @@ def calculate_distributable_flows_exact(external_results: List[Dict], lookups: D
 
     final_results = []
 
-    print("💰 Calculating distributable flows...")
-    for ext_result in tqdm(external_results, desc="Processing accounts×scenarios", unit="calc"):
+    print("\n💰 CALCULATING DISTRIBUTABLE FLOWS")
+    print("-" * 50)
+    print(f"Processing {len(external_results)} account×scenario combinations...")
+
+    # Group by account for better progress tracking
+    account_groups = {}
+    for ext_result in external_results:
         account_id = ext_result['account_id']
-        scenario = ext_result['scenario']
-        external_projection = ext_result['projection']
-        account_data = ext_result['account_data']
+        if account_id not in account_groups:
+            account_groups[account_id] = []
+        account_groups[account_id].append(ext_result)
 
-        # Calculate reserves and capital exactly as second algorithm
-        reserve_by_year = run_internal_calculations_exact(
-            external_projection, account_data, scenario, lookups, 'RESERVE',
-            NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL
-        )
+    account_progress = tqdm(account_groups.items(),
+                            desc="Processing accounts",
+                            unit="account")
 
-        capital_results = run_internal_calculations_exact(
-            external_projection, account_data, scenario, lookups, 'CAPITAL',
-            NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL
-        )
+    for account_id, account_scenarios in account_progress:
+        account_progress.set_postfix({"Account": account_id})
 
-        # Calculate capital as difference from reserves (matching second algorithm)
-        capital_by_year = {}
-        for year in capital_results:
-            reserve_value = reserve_by_year.get(year, 0.0)
-            capital_value = capital_results[year] - reserve_value
-            capital_by_year[year] = capital_value
+        # Process all scenarios for this account
+        for scenario_idx, ext_result in enumerate(account_scenarios, 1):
+            scenario = ext_result['scenario']
+            external_projection = ext_result['projection']
+            account_data = ext_result['account_data']
 
-        # Calculate distributable cash flows with exact same logic as second algorithm
-        distributable_pvs = []
+            progress_info = f" (Account {account_id}, Scenario {scenario}/{len(account_scenarios)})"
 
-        # Track previous year reserves and capital
-        prev_reserve = 0.0
-        prev_capital = 0.0
+            # Calculate reserves and capital exactly as second algorithm
+            reserve_by_year = run_internal_calculations_exact(
+                external_projection, account_data, scenario, lookups, 'RESERVE',
+                NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL, progress_info
+            )
 
-        for ext_data in external_projection:
-            year = ext_data['year']
-            external_cf = ext_data['FLUX_NET']
+            capital_results = run_internal_calculations_exact(
+                external_projection, account_data, scenario, lookups, 'CAPITAL',
+                NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL, progress_info
+            )
 
-            # Get reserves and capital for this year
-            current_reserve = reserve_by_year.get(year, 0.0)
-            current_capital = capital_by_year.get(year, 0.0)
+            # Calculate capital as difference from reserves (matching second algorithm)
+            capital_by_year = {}
+            for year in capital_results:
+                reserve_value = reserve_by_year.get(year, 0.0)
+                capital_value = capital_results[year] - reserve_value
+                capital_by_year[year] = capital_value
 
-            # Calculate profit and distributable exactly as second algorithm
-            if year == 0:
-                # Year 0: Initial establishment
-                profit = external_cf + current_reserve
-                distributable = profit + current_capital
-            else:
-                # Other years: Changes in reserves and capital
-                profit = external_cf + (current_reserve - prev_reserve)
-                distributable = profit + (current_capital - prev_capital)
+            # Calculate distributable cash flows with exact same logic as second algorithm
+            distributable_pvs = []
 
-            # Present value at hurdle rate
-            if year > 0:
-                pv_distributable = distributable / ((1 + HURDLE_RT) ** year)
-            else:
-                pv_distributable = distributable
+            # Track previous year reserves and capital
+            prev_reserve = 0.0
+            prev_capital = 0.0
 
-            distributable_pvs.append(pv_distributable)
+            for ext_data in external_projection:
+                year = ext_data['year']
+                external_cf = ext_data['FLUX_NET']
 
-            # Update previous values
-            prev_reserve = current_reserve
-            prev_capital = current_capital
+                # Get reserves and capital for this year
+                current_reserve = reserve_by_year.get(year, 0.0)
+                current_capital = capital_by_year.get(year, 0.0)
 
-        # Sum across all years
-        total_pv_distributable = sum(distributable_pvs)
+                # Calculate profit and distributable exactly as second algorithm
+                if year == 0:
+                    # Year 0: Initial establishment
+                    profit = external_cf + current_reserve
+                    distributable = profit + current_capital
+                else:
+                    # Other years: Changes in reserves and capital
+                    profit = external_cf + (current_reserve - prev_reserve)
+                    distributable = profit + (current_capital - prev_capital)
 
-        final_results.append({
-            'ID_COMPTE': account_id,
-            'scn_eval': scenario,
-            'VP_FLUX_DISTRIBUABLES': total_pv_distributable
-        })
+                # Present value at hurdle rate
+                if year > 0:
+                    pv_distributable = distributable / ((1 + HURDLE_RT) ** year)
+                else:
+                    pv_distributable = distributable
 
+                distributable_pvs.append(pv_distributable)
+
+                # Update previous values
+                prev_reserve = current_reserve
+                prev_capital = current_capital
+
+            # Sum across all years
+            total_pv_distributable = sum(distributable_pvs)
+
+            final_results.append({
+                'ID_COMPTE': account_id,
+                'scn_eval': scenario,
+                'VP_FLUX_DISTRIBUABLES': total_pv_distributable
+            })
+
+    print(f"✅ Completed {len(final_results)} distributable flow calculations")
     return final_results
 
 
@@ -438,34 +472,42 @@ def run_external_calculations_exact(data: Dict, lookups: Dict, NBCPT: int, NB_SC
     """Run external calculations with exact SAS logic"""
 
     external_results = []
-    total_calculations = min(NBCPT, len(data['population'])) * NB_SC
+    total_accounts = min(NBCPT, len(data['population']))
 
-    print("🌍 Running external calculations...")
-    with tqdm(total=total_calculations, desc="External projections", unit="calc") as pbar:
-        for account_idx in range(min(NBCPT, len(data['population']))):
-            account_data = data['population'].iloc[account_idx]
-            account_id = account_data['ID_COMPTE']
+    print(f"\n🌍 RUNNING EXTERNAL CALCULATIONS")
+    print("-" * 50)
+    print(f"Processing {total_accounts} accounts × {NB_SC} scenarios = {total_accounts * NB_SC:,} projections")
 
-            for scenario in range(1, NB_SC + 1):
-                # Project external path with exact SAS logic
-                projection = project_cash_flows_exact_sas_logic(
-                    account_data, scenario, 'EXTERNE', lookups, NB_AN_PROJECTION
-                )
+    account_progress = tqdm(range(total_accounts), desc="Processing accounts", unit="account")
 
-                # Store results for internal calculations
-                external_results.append({
-                    'account_id': account_id,
-                    'scenario': scenario,
-                    'projection': projection,
-                    'account_data': account_data
-                })
+    for account_idx in account_progress:
+        account_data = data['population'].iloc[account_idx]
+        account_id = account_data['ID_COMPTE']
+        account_progress.set_postfix({"Account": account_id})
 
-                pbar.update(1)
-                pbar.set_postfix({
-                    'Account': f"{account_idx + 1}/{min(NBCPT, len(data['population']))}",
-                    'Scenario': f"{scenario}/{NB_SC}"
-                })
+        print(f"\n  📊 Account {account_id} (Age: {account_data['age_deb']}, Fund: ${account_data['MT_VM']:,.0f})")
 
+        # Progress bar for scenarios within this account
+        scenario_progress = tqdm(range(1, NB_SC + 1),
+                                 desc=f"    Scenarios for {account_id}",
+                                 unit="scenario",
+                                 leave=False)
+
+        for scenario in scenario_progress:
+            # Project external path with exact SAS logic
+            projection = project_cash_flows_exact_sas_logic(
+                account_data, scenario, 'EXTERNE', lookups, NB_AN_PROJECTION
+            )
+
+            # Store results for internal calculations
+            external_results.append({
+                'account_id': account_id,
+                'scenario': scenario,
+                'projection': projection,
+                'account_data': account_data
+            })
+
+    print(f"\n✅ Completed {len(external_results)} external projections")
     return external_results
 
 
@@ -476,29 +518,49 @@ def acfc_algorithm_fully_fixed(data_path: str = ".", NBCPT: int = 4, NB_SC: int 
     Fully Fixed ACFC Algorithm - Exactly matching second algorithm logic
     """
 
-    print("🚀 Starting ACFC Algorithm with Progress Tracking")
-    print(f"📊 Parameters: {NBCPT} accounts, {NB_SC} scenarios, {NB_AN_PROJECTION} years")
+    start_time = time.time()
+
+    print("🚀 ACFC ALGORITHM - ENHANCED TRACKING")
+    print("=" * 60)
+    print(f"📊 Configuration:")
+    print(f"   • Accounts to process: {NBCPT}")
+    print(f"   • External scenarios: {NB_SC}")
+    print(f"   • Projection years: {NB_AN_PROJECTION}")
+    print(f"   • Internal scenarios: {NB_SC_INT}")
+    print(f"   • Internal projection years: {NB_AN_PROJECTION_INT}")
+    print(f"   • Capital shock: {CHOC_CAPITAL:.1%}")
+    print(f"   • Hurdle rate: {HURDLE_RT:.1%}")
     print("=" * 60)
 
-    print("📖 Phase 1: Loading input data...")
+    # Phase 1: Data Loading
     data = load_input_data(data_path)
-
-    print("🔍 Phase 1: Creating lookup tables...")
     lookups = create_lookup_tables(data)
 
-    print("🌍 Phase 2: Running external calculations...")
+    # Phase 2: External Calculations
     external_results = run_external_calculations_exact(data, lookups, NBCPT, NB_SC, NB_AN_PROJECTION)
 
-    print("🏠 Phase 3-5: Running internal calculations...")
+    # Phase 3-5: Internal Calculations
     final_results = calculate_distributable_flows_exact(
         external_results, lookups, NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL, HURDLE_RT
     )
 
-    print("📄 Phase 6: Generating output...")
+    # Phase 6: Output Generation
+    print(f"\n📄 GENERATING OUTPUT")
+    print("-" * 50)
     output_df = pd.DataFrame(final_results)
 
-    print("✅ ACFC Algorithm completed successfully!")
-    print(f"📈 Generated {len(output_df)} results.")
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    print(f"✅ ALGORITHM COMPLETED SUCCESSFULLY!")
+    print("=" * 60)
+    print(f"📈 Results Summary:")
+    print(f"   • Total calculations: {len(output_df):,}")
+    print(f"   • Processing time: {total_time:.1f} seconds")
+    print(f"   • Average time per calculation: {total_time / len(output_df):.3f} seconds")
+    print(f"   • Mean VP_FLUX_DISTRIBUABLES: ${output_df['VP_FLUX_DISTRIBUABLES'].mean():,.2f}")
+    print(
+        f"   • Range: ${output_df['VP_FLUX_DISTRIBUABLES'].min():,.2f} to ${output_df['VP_FLUX_DISTRIBUABLES'].max():,.2f}")
     print("=" * 60)
 
     return output_df
@@ -509,16 +571,14 @@ if __name__ == "__main__":
     results = acfc_algorithm_fully_fixed(
         data_path=HERE.joinpath("data_in"),
         NBCPT=30,
-        NB_SC=50,
-        NB_AN_PROJECTION=50,
-        NB_SC_INT=50,
-        NB_AN_PROJECTION_INT=50,
+        NB_SC=20,
+        NB_AN_PROJECTION=20,
+        NB_SC_INT=10,
+        NB_AN_PROJECTION_INT=10,
         CHOC_CAPITAL=0.35,
         HURDLE_RT=0.10
     )
 
-    print("\n📋 Sample Results:")
+    print(f"\n📋 Sample Results:")
     print(results.head(10))
     results.to_csv(HERE.joinpath('test/acfc_results_fixed.csv'))
-    print(f"\n📊 Mean VP_FLUX_DISTRIBUABLES: {results['VP_FLUX_DISTRIBUABLES'].mean():.2f}")
-    print(f"📊 Range: {results['VP_FLUX_DISTRIBUABLES'].min():.2f} to {results['VP_FLUX_DISTRIBUABLES'].max():.2f}")
