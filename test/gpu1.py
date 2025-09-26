@@ -41,7 +41,7 @@ DATA_SIZE = 11
 def load_input_data(data_path: str = ".") -> Dict:
     """Load all input data files"""
     try:
-        population = pd.read_csv(f"{data_path}/population.csv").head(4)
+        population = pd.read_csv(f"{data_path}/population.csv")
         rendement = pd.read_csv(f"{data_path}/rendement.csv")
         tx_deces = pd.read_csv(f"{data_path}/tx_deces.csv")
         tx_interet = pd.read_csv(f"{data_path}/tx_interet.csv")
