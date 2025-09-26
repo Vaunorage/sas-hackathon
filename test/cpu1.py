@@ -3,6 +3,7 @@ import numpy as np
 from typing import Dict, Tuple, List
 import warnings
 import logging
+from tqdm import tqdm
 
 from paths import HERE
 
@@ -16,16 +17,31 @@ logger = logging.getLogger(__name__)
 def load_input_files(data_path: str) -> Tuple[pd.DataFrame, ...]:
     """Load all input CSV files exactly as SAS does"""
     try:
-        population = pd.read_csv(f"{data_path}/population.csv")
-        rendement = pd.read_csv(f"{data_path}/rendement.csv")
-        tx_deces = pd.read_csv(f"{data_path}/tx_deces.csv")
-        tx_interet = pd.read_csv(f"{data_path}/tx_interet.csv")
-        tx_interet_int = pd.read_csv(f"{data_path}/tx_interet_int.csv")
-        tx_retrait = pd.read_csv(f"{data_path}/tx_retrait.csv")
+        print("📁 Loading input files...")
+        with tqdm(total=6, desc="Loading CSV files", unit="file") as pbar:
+            population = pd.read_csv(f"{data_path}/population.csv")
+            pbar.update(1)
+
+            rendement = pd.read_csv(f"{data_path}/rendement.csv")
+            pbar.update(1)
+
+            tx_deces = pd.read_csv(f"{data_path}/tx_deces.csv")
+            pbar.update(1)
+
+            tx_interet = pd.read_csv(f"{data_path}/tx_interet.csv")
+            pbar.update(1)
+
+            tx_interet_int = pd.read_csv(f"{data_path}/tx_interet_int.csv")
+            pbar.update(1)
+
+            tx_retrait = pd.read_csv(f"{data_path}/tx_retrait.csv")
+            pbar.update(1)
 
         # Handle TYPE column encoding if it exists
         if 'TYPE' in rendement.columns:
-            rendement['TYPE'] = rendement['TYPE'].apply(
+            print("🔧 Processing TYPE column encoding...")
+            tqdm.pandas(desc="Processing TYPE column")
+            rendement['TYPE'] = rendement['TYPE'].progress_apply(
                 lambda x: x.decode('utf-8') if isinstance(x, bytes) else str(x)
             )
 
@@ -53,23 +69,32 @@ def load_input_data(data_path: str = "."):
 
 def create_lookup_tables(data: Dict) -> Dict:
     """Create hash table lookups for O(1) access"""
+    print("🔍 Creating lookup tables...")
     lookups = {}
 
-    # Mortality lookup: age -> qx
-    lookups['mortality'] = dict(zip(data['tx_deces']['AGE'], data['tx_deces']['QX']))
+    with tqdm(total=5, desc="Building lookup tables", unit="table") as pbar:
+        # Mortality lookup: age -> qx
+        lookups['mortality'] = dict(zip(data['tx_deces']['AGE'], data['tx_deces']['QX']))
+        pbar.update(1)
 
-    # Lapse lookup: year -> wx
-    lookups['lapse'] = dict(zip(data['tx_retrait']['an_proj'], data['tx_retrait']['WX']))
+        # Lapse lookup: year -> wx
+        lookups['lapse'] = dict(zip(data['tx_retrait']['an_proj'], data['tx_retrait']['WX']))
+        pbar.update(1)
 
-    # Discount rate lookups
-    lookups['discount_ext'] = dict(zip(data['tx_interet']['an_proj'], data['tx_interet']['TX_ACTU']))
-    lookups['discount_int'] = dict(zip(data['tx_interet_int']['an_eval'], data['tx_interet_int']['TX_ACTU_INT']))
+        # Discount rate lookups
+        lookups['discount_ext'] = dict(zip(data['tx_interet']['an_proj'], data['tx_interet']['TX_ACTU']))
+        pbar.update(1)
 
-    # Returns lookup: (year, scenario, type) -> return
-    lookups['returns'] = {}
-    for _, row in data['rendement'].iterrows():
-        key = (int(row['an_proj']), int(row['scn_proj']), row['TYPE'])
-        lookups['returns'][key] = row['RENDEMENT']
+        lookups['discount_int'] = dict(zip(data['tx_interet_int']['an_eval'], data['tx_interet_int']['TX_ACTU_INT']))
+        pbar.update(1)
+
+        # Returns lookup: (year, scenario, type) -> return
+        lookups['returns'] = {}
+        for _, row in tqdm(data['rendement'].iterrows(), desc="Processing returns",
+                           total=len(data['rendement']), leave=False):
+            key = (int(row['an_proj']), int(row['scn_proj']), row['TYPE'])
+            lookups['returns'][key] = row['RENDEMENT']
+        pbar.update(1)
 
     return lookups
 
@@ -272,7 +297,7 @@ def run_internal_calculations_exact(external_projection: List[Dict], account_dat
     year_results = {}
 
     # For each year in the external projection, calculate internal scenarios
-    for ext_data in external_projection:
+    for ext_data in tqdm(external_projection, desc=f"Processing {calculation_type} years", leave=False):
         year = ext_data['year']
 
         if year == 0:
@@ -301,7 +326,9 @@ def run_internal_calculations_exact(external_projection: List[Dict], account_dat
         # Run internal scenarios from this year forward
         internal_scenarios_sum = []
 
-        for internal_scenario in range(1, NB_SC_INT + 1):
+        for internal_scenario in tqdm(range(1, NB_SC_INT + 1),
+                                      desc=f"Internal scenarios (Year {year})",
+                                      leave=False):
 
             # Run internal projection exactly as in second algorithm
             internal_results = project_cash_flows_exact_sas_logic(
@@ -332,7 +359,8 @@ def calculate_distributable_flows_exact(external_results: List[Dict], lookups: D
 
     final_results = []
 
-    for ext_result in external_results:
+    print("💰 Calculating distributable flows...")
+    for ext_result in tqdm(external_results, desc="Processing accounts×scenarios", unit="calc"):
         account_id = ext_result['account_id']
         scenario = ext_result['scenario']
         external_projection = ext_result['projection']
@@ -410,24 +438,33 @@ def run_external_calculations_exact(data: Dict, lookups: Dict, NBCPT: int, NB_SC
     """Run external calculations with exact SAS logic"""
 
     external_results = []
+    total_calculations = min(NBCPT, len(data['population'])) * NB_SC
 
-    for account_idx in range(min(NBCPT, len(data['population']))):
-        account_data = data['population'].iloc[account_idx]
-        account_id = account_data['ID_COMPTE']
+    print("🌍 Running external calculations...")
+    with tqdm(total=total_calculations, desc="External projections", unit="calc") as pbar:
+        for account_idx in range(min(NBCPT, len(data['population']))):
+            account_data = data['population'].iloc[account_idx]
+            account_id = account_data['ID_COMPTE']
 
-        for scenario in range(1, NB_SC + 1):
-            # Project external path with exact SAS logic
-            projection = project_cash_flows_exact_sas_logic(
-                account_data, scenario, 'EXTERNE', lookups, NB_AN_PROJECTION
-            )
+            for scenario in range(1, NB_SC + 1):
+                # Project external path with exact SAS logic
+                projection = project_cash_flows_exact_sas_logic(
+                    account_data, scenario, 'EXTERNE', lookups, NB_AN_PROJECTION
+                )
 
-            # Store results for internal calculations
-            external_results.append({
-                'account_id': account_id,
-                'scenario': scenario,
-                'projection': projection,
-                'account_data': account_data
-            })
+                # Store results for internal calculations
+                external_results.append({
+                    'account_id': account_id,
+                    'scenario': scenario,
+                    'projection': projection,
+                    'account_data': account_data
+                })
+
+                pbar.update(1)
+                pbar.set_postfix({
+                    'Account': f"{account_idx + 1}/{min(NBCPT, len(data['population']))}",
+                    'Scenario': f"{scenario}/{NB_SC}"
+                })
 
     return external_results
 
@@ -439,24 +476,31 @@ def acfc_algorithm_fully_fixed(data_path: str = ".", NBCPT: int = 4, NB_SC: int 
     Fully Fixed ACFC Algorithm - Exactly matching second algorithm logic
     """
 
-    print("Phase 1: Loading input data...")
+    print("🚀 Starting ACFC Algorithm with Progress Tracking")
+    print(f"📊 Parameters: {NBCPT} accounts, {NB_SC} scenarios, {NB_AN_PROJECTION} years")
+    print("=" * 60)
+
+    print("📖 Phase 1: Loading input data...")
     data = load_input_data(data_path)
 
-    print("Phase 1: Creating lookup tables...")
+    print("🔍 Phase 1: Creating lookup tables...")
     lookups = create_lookup_tables(data)
 
-    print("Phase 2: Running external calculations with exact SAS logic...")
+    print("🌍 Phase 2: Running external calculations...")
     external_results = run_external_calculations_exact(data, lookups, NBCPT, NB_SC, NB_AN_PROJECTION)
 
-    print("Phase 3-5: Running internal calculations with exact matching logic...")
+    print("🏠 Phase 3-5: Running internal calculations...")
     final_results = calculate_distributable_flows_exact(
         external_results, lookups, NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL, HURDLE_RT
     )
 
-    print("Phase 6: Generating output...")
+    print("📄 Phase 6: Generating output...")
     output_df = pd.DataFrame(final_results)
 
-    print(f"Fully Fixed Algorithm completed. Generated {len(output_df)} results.")
+    print("✅ ACFC Algorithm completed successfully!")
+    print(f"📈 Generated {len(output_df)} results.")
+    print("=" * 60)
+
     return output_df
 
 
@@ -473,8 +517,8 @@ if __name__ == "__main__":
         HURDLE_RT=0.10
     )
 
-    print("\nSample Results:")
+    print("\n📋 Sample Results:")
     print(results.head(10))
     results.to_csv(HERE.joinpath('test/acfc_results_fixed.csv'))
-    print(f"\nMean VP_FLUX_DISTRIBUABLES: {results['VP_FLUX_DISTRIBUABLES'].mean():.2f}")
-    print(f"Range: {results['VP_FLUX_DISTRIBUABLES'].min():.2f} to {results['VP_FLUX_DISTRIBUABLES'].max():.2f}")
+    print(f"\n📊 Mean VP_FLUX_DISTRIBUABLES: {results['VP_FLUX_DISTRIBUABLES'].mean():.2f}")
+    print(f"📊 Range: {results['VP_FLUX_DISTRIBUABLES'].min():.2f} to {results['VP_FLUX_DISTRIBUABLES'].max():.2f}")
