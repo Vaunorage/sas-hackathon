@@ -146,7 +146,9 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
             an_proj = initial_state['an_eval_start'] + an_proj_relative
             age = age_deb + an_proj
         else:  # EXTERNE
-            an_proj = an_proj_relative
+            # --- FIX: Ensure an_proj is always a broadcastable array ---
+            # Instead of being a scalar `current_year`, it's now an array of that value.
+            an_proj = xp.full(batch_size, an_proj_relative, dtype=xp.int32)
             age = age_deb + an_proj
 
         if current_year == 0:
@@ -160,9 +162,6 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
                 tx_survie_deb = xp.copy(tx_survie)
                 commissions, frais_gen, flux_net, revenus, frais_gest, pmt_garantie = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         else:
-            # --- FIX 2: Correct Internal Projection Length ---
-            # The active_mask now correctly stops projections if the policyholder reaches age 100,
-            # mirroring the `99 - age_deb` logic from the CPU version.
             active_mask = (tx_survie > 0) & (mt_vm_proj > 0) & (age < 100)
 
             mt_vm_deb = mt_vm_proj
@@ -193,7 +192,6 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
 
         tx_actu = a_discount_ext[an_proj.astype(xp.int32)]
 
-        # Calculate all VPs based on external discount rate first
         vp_flux_net = flux_net * tx_actu
 
         if scenario_type == "INTERNE":
@@ -201,7 +199,6 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
             if xp.any(an_eval > 0):
                 tx_actu_int = b_discount_int[an_eval.astype(xp.int32)]
                 inv_tx_actu_int = xp.where(tx_actu_int != 0, 1.0 / tx_actu_int, 0)
-                # Adjust the final VP value
                 vp_flux_net *= inv_tx_actu_int
 
         results_batch[current_year, :, 0] = an_proj
@@ -227,7 +224,6 @@ def vectorized_cash_flow_calculation(initial_state: Dict, lookup_data: Dict, par
     ])
 
     return df
-
 
 def gpu_calculs_macro(population: pd.DataFrame, lookup_data: Dict, xp):
     """
