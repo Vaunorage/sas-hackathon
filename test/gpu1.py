@@ -208,7 +208,8 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
         states[combination_idx, STATE_AGE] = AGE
 
         # Store results
-        result_idx = combination_idx * 50 + year
+        nb_years_total = 11  # 0 to 10 years = 11 total
+        result_idx = combination_idx * nb_years_total + year
         if result_idx < results.shape[0]:
             results[result_idx, 0] = states[combination_idx, STATE_ACCOUNT_ID]
             results[result_idx, 1] = states[combination_idx, STATE_SCENARIO]
@@ -315,8 +316,12 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
                        fund_shock: float = 0.0, start_year: int = 0) -> np.ndarray:
     """Run projection on GPU"""
     proj_type_num = 0 if projection_type == "EXTERNE" else 1
+
+    # FIXED: Better result array sizing
     max_results = states.shape[0] * (nb_years + 1)
     results = np.zeros((max_results, 9), dtype=np.float64)
+
+    print(f"DEBUG: States shape: {states.shape}, Max results: {max_results}")
 
     # Copy data to GPU
     d_states = cuda.to_device(states)
@@ -335,14 +340,24 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
     threads_per_block = 256
     blocks_per_grid = (states.shape[0] + threads_per_block - 1) // threads_per_block
 
+    print(f"DEBUG: GPU grid: {blocks_per_grid} blocks, {threads_per_block} threads per block")
+
     # Run projection for each year
     for year in range(nb_years + 1):
+        print(f"DEBUG: Processing year {year}")
         gpu_calculate_year_transition[blocks_per_grid, threads_per_block](
             d_states, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
             d_returns_ext, d_returns_int, d_results, year, proj_type_num,
             fund_shock, start_year
         )
         cuda.synchronize()
+
+        # DEBUG: Check intermediate results
+        if year == 0:
+            temp_results = d_results.copy_to_host()
+            year_0_results = temp_results[temp_results[:, 2] == 0]  # year column
+            year_0_accounts = np.unique(year_0_results[:, 0][year_0_results[:, 0] != 0])
+            print(f"DEBUG: Year 0 - Accounts with results: {year_0_accounts}")
 
     # Copy results back to CPU
     results = d_results.copy_to_host()
@@ -487,11 +502,21 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     print("Phase 1: Loading input data...")
     data = load_input_data(data_path)
 
+    # DEBUG: Print account information
+    print(f"DEBUG: Loaded {len(data['population'])} accounts:")
+    for i, row in data['population'].iterrows():
+        print(f"  Account {i}: ID_COMPTE = {row['ID_COMPTE']}")
+
     print("Phase 2: Creating GPU lookup tables...")
     lookups = create_gpu_lookup_tables(data)
 
     print("Phase 3: Preparing GPU data...")
     states, initial_data, account_ids = prepare_gpu_data(data, nb_accounts, nb_scenarios)
+
+    # DEBUG: Print prepared data
+    print(f"DEBUG: Prepared {len(states)} state combinations")
+    print(f"DEBUG: Account IDs in prepared data: {account_ids}")
+    print(f"DEBUG: Unique account IDs in states: {np.unique(states[:, STATE_ACCOUNT_ID])}")
 
     print("Phase 4: Running GPU external projections...")
     external_results, final_states = run_gpu_projection(
@@ -499,8 +524,14 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     )
 
     print("Phase 5: Filtering external results...")
+    print(f"DEBUG: Total external results before filtering: {len(external_results)}")
+    print(f"DEBUG: Non-zero account IDs in results: {np.unique(external_results[:, 0][external_results[:, 0] != 0])}")
+
     valid_mask = external_results[:, 0] != 0
     valid_external_results = external_results[valid_mask]
+
+    print(f"DEBUG: Valid external results after filtering: {len(valid_external_results)}")
+    print(f"DEBUG: Account IDs in valid results: {np.unique(valid_external_results[:, 0])}")
 
     if len(valid_external_results) == 0:
         print("WARNING: No valid external results found!")
