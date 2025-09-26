@@ -28,7 +28,7 @@ HURDLE_RT = 0.10
 def load_input_files(data_path: str) -> Tuple[pd.DataFrame, ...]:
     """Load all input CSV files exactly as SAS does"""
     try:
-        population = pd.read_csv(f"{data_path}/population.csv").head(4)
+        population = pd.read_csv(f"{data_path}/population.csv")
         rendement = pd.read_csv(f"{data_path}/rendement.csv")
         tx_deces = pd.read_csv(f"{data_path}/tx_deces.csv")
         tx_interet = pd.read_csv(f"{data_path}/tx_interet.csv")
