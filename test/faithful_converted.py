@@ -16,11 +16,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Global parameters matching SAS macro variables
-NBCPT = 4
-NB_SC = 10
-NB_AN_PROJECTION = 10
-NB_SC_INT = 10
-NB_AN_PROJECTION_INT = 10
+NBCPT = 30
+NB_SC = 50
+NB_AN_PROJECTION = 50
+NB_SC_INT = 50
+NB_AN_PROJECTION_INT = 50
 CHOC_CAPITAL = 0.35
 HURDLE_RT = 0.10
 
