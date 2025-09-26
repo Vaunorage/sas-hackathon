@@ -735,10 +735,10 @@ if __name__ == "__main__":
     results = gpu_acfc_algorithm_complete(
         data_path=data_path,
         nb_accounts=100,
-        nb_scenarios=10,
-        nb_years=10,
-        nb_sc_int=10,
-        nb_an_projection_int=10,
+        nb_scenarios=100,
+        nb_years=100,
+        nb_sc_int=100,
+        nb_an_projection_int=100,
         choc_capital=0.35,
         hurdle_rt=0.10
     )
