@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Constants for array indexing (same as before)
+# Constants for array indexing
 STATE_ACCOUNT_ID = 0
 STATE_SCENARIO = 1
 STATE_ACCOUNT_IDX = 2
@@ -23,7 +23,7 @@ STATE_AGE = 7
 STATE_IS_TERMINATED = 8
 STATE_SIZE = 9
 
-# Constants for initial data indexing (same as before)
+# Constants for initial data indexing
 DATA_MT_VM = 0
 DATA_MT_GAR_DECES = 1
 DATA_AGE_DEB = 2
@@ -69,7 +69,6 @@ def load_input_data(data_path: str = ".") -> Dict:
 
 def create_gpu_lookup_tables(data: Dict, max_age: int = 120, max_year: int = 50, max_scenarios: int = 1000) -> Dict:
     """Create GPU-friendly lookup tables as NumPy arrays"""
-    # Same as before
     mortality_array = np.zeros(max_age + 1, dtype=np.float64)
     for _, row in data['tx_deces'].iterrows():
         age = int(row['AGE'])
@@ -162,7 +161,7 @@ def prepare_gpu_data(data: Dict, nb_accounts: int, nb_scenarios: int) -> Tuple[n
 def gpu_calculate_year_transition(states, initial_data, lookups_mortality, lookups_lapse,
                                   lookups_discount_ext, lookups_discount_int, lookups_returns_ext,
                                   lookups_returns_int, results, year, projection_type, fund_shock, start_year):
-    """GPU kernel for year transition calculations - FIXED to match CPU version"""
+    """GPU kernel for year transition calculations - FIXED version"""
 
     combination_idx = cuda.grid(1)
     if combination_idx >= states.shape[0]:
@@ -174,7 +173,11 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
     account_idx = int(states[combination_idx, STATE_ACCOUNT_IDX])
     scenario = int(states[combination_idx, STATE_SCENARIO])
 
-    # Handle year 0 special cases - FIXED to match CPU version exactly
+    # FIXED: Add bounds checking for account_idx
+    if account_idx >= initial_data.shape[0] or account_idx < 0:
+        return
+
+    # Handle year 0 special cases
     if year == 0:
         if projection_type == 0:  # EXTERNE
             # Initialize with actual starting values
@@ -195,7 +198,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
                 MT_VM_PROJ = initial_data[account_idx, DATA_MT_VM]
 
             MT_GAR_DECES_PROJ = initial_data[account_idx, DATA_MT_GAR_DECES]
-            TX_SURVIE = 1.0  # FIXED: Should be 1.0 for year 0
+            TX_SURVIE = 1.0
             AGE = initial_data[account_idx, DATA_AGE_DEB] + start_year
 
             FLUX_NET = 0.0
@@ -207,7 +210,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
         states[combination_idx, STATE_TX_SURVIE] = TX_SURVIE
         states[combination_idx, STATE_AGE] = AGE
 
-        # Store results
+        # Store results with proper indexing
         nb_years_total = 11  # 0 to 10 years = 11 total
         result_idx = combination_idx * nb_years_total + year
         if result_idx < results.shape[0]:
@@ -222,10 +225,13 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             results[result_idx, 8] = VP_FLUX_NET
         return
 
-    # FIXED: Check termination conditions like CPU version
-    if states[combination_idx, STATE_TX_SURVIE] == 0 or states[combination_idx, STATE_MT_VM_PROJ] == 0:
+    # FIXED: Check termination conditions with proper floating-point comparison
+    current_survie = states[combination_idx, STATE_TX_SURVIE]
+    current_vm = states[combination_idx, STATE_MT_VM_PROJ]
+
+    if current_survie <= 0.0 or current_vm <= 0.0:
         states[combination_idx, STATE_IS_TERMINATED] = 1.0
-        # Still store the result even if terminated
+        # Still store terminated results
         nb_years_total = 11
         result_idx = combination_idx * nb_years_total + year
         if result_idx < results.shape[0]:
@@ -233,7 +239,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             results[result_idx, 1] = states[combination_idx, STATE_SCENARIO]
             results[result_idx, 2] = year
             results[result_idx, 3] = states[combination_idx, STATE_AGE]
-            results[result_idx, 4] = 0.0  # Terminated values
+            results[result_idx, 4] = 0.0
             results[result_idx, 5] = 0.0
             results[result_idx, 6] = 0.0
             results[result_idx, 7] = 0.0
@@ -248,25 +254,25 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
         new_age = int(initial_data[account_idx, DATA_AGE_DEB] + year)
         an_proj = year
 
-    # Bounds checking
-    if new_age >= lookups_mortality.shape[0] or an_proj >= lookups_returns_ext.shape[0]:
+    # FIXED: Better bounds checking
+    if (new_age >= lookups_mortality.shape[0] or new_age < 0 or
+            an_proj >= lookups_returns_ext.shape[0] or an_proj < 0):
         states[combination_idx, STATE_IS_TERMINATED] = 1.0
         return
 
     # Fund value projection
     MT_VM_DEB = states[combination_idx, STATE_MT_VM_PROJ]
 
-    # Get return rate
+    # FIXED: Get return rate with comprehensive bounds checking
+    RENDEMENT_rate = 0.0
     if projection_type == 0:  # EXTERNE
-        if scenario < lookups_returns_ext.shape[1] and an_proj < lookups_returns_ext.shape[0]:
+        if (scenario >= 0 and scenario < lookups_returns_ext.shape[1] and
+                an_proj >= 0 and an_proj < lookups_returns_ext.shape[0]):
             RENDEMENT_rate = lookups_returns_ext[an_proj, scenario]
-        else:
-            RENDEMENT_rate = 0.0
     else:  # INTERNE
-        if scenario < lookups_returns_int.shape[1] and an_proj < lookups_returns_int.shape[0]:
+        if (scenario >= 0 and scenario < lookups_returns_int.shape[1] and
+                an_proj >= 0 and an_proj < lookups_returns_int.shape[0]):
             RENDEMENT_rate = lookups_returns_int[an_proj, scenario]
-        else:
-            RENDEMENT_rate = 0.0
 
     RENDEMENT = MT_VM_DEB * RENDEMENT_rate
     FRAIS = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[account_idx, DATA_PC_REVENU_FDS]
@@ -278,9 +284,13 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             new_age <= initial_data[account_idx, DATA_MAX_RESET_DECES]):
         new_MT_GAR_DECES_PROJ = max(states[combination_idx, STATE_MT_GAR_DECES_PROJ], new_MT_VM_PROJ)
 
-    # Survival probability calculation
-    QX = lookups_mortality[min(new_age, lookups_mortality.shape[0] - 1)]
-    WX = lookups_lapse[min(an_proj, lookups_lapse.shape[0] - 1)]
+    # FIXED: Survival probability calculation with bounds checking
+    QX = 0.0
+    WX = 0.0
+    if new_age >= 0 and new_age < lookups_mortality.shape[0]:
+        QX = lookups_mortality[new_age]
+    if an_proj >= 0 and an_proj < lookups_lapse.shape[0]:
+        WX = lookups_lapse[an_proj]
 
     TX_SURVIE_DEB = states[combination_idx, STATE_TX_SURVIE]
     new_TX_SURVIE = TX_SURVIE_DEB * (1 - QX) * (1 - WX)
@@ -294,13 +304,17 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
 
     FLUX_NET = REVENUS + FRAIS_GEST + COMMISSIONS + FRAIS_GEN + PMT_GARANTIE
 
-    # Present value calculations
-    TX_ACTU = lookups_discount_ext[min(an_proj, lookups_discount_ext.shape[0] - 1)]
+    # FIXED: Present value calculations with bounds checking
+    TX_ACTU = 1.0
+    if an_proj >= 0 and an_proj < lookups_discount_ext.shape[0]:
+        TX_ACTU = lookups_discount_ext[an_proj]
     VP_FLUX_NET = FLUX_NET * TX_ACTU
 
     # Internal scenario adjustment
     if projection_type == 1 and start_year > 0:  # INTERNE
-        TX_ACTU_INT = lookups_discount_int[min(start_year, lookups_discount_int.shape[0] - 1)]
+        TX_ACTU_INT = 1.0
+        if start_year >= 0 and start_year < lookups_discount_int.shape[0]:
+            TX_ACTU_INT = lookups_discount_int[start_year]
         if TX_ACTU_INT != 0:
             VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
 
@@ -309,10 +323,14 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
     states[combination_idx, STATE_MT_GAR_DECES_PROJ] = new_MT_GAR_DECES_PROJ
     states[combination_idx, STATE_TX_SURVIE] = new_TX_SURVIE
     states[combination_idx, STATE_AGE] = new_age
-    states[combination_idx, STATE_IS_TERMINATED] = 1.0 if (new_TX_SURVIE == 0 or new_MT_VM_PROJ == 0) else 0.0
 
-    # Store results
-    result_idx = combination_idx * 50 + year
+    # FIXED: Proper termination check with floating-point comparison
+    if new_TX_SURVIE <= 0.0 or new_MT_VM_PROJ <= 0.0:
+        states[combination_idx, STATE_IS_TERMINATED] = 1.0
+
+    # Store results with correct indexing
+    nb_years_total = 11
+    result_idx = combination_idx * nb_years_total + year
     if result_idx < results.shape[0]:
         results[result_idx, 0] = states[combination_idx, STATE_ACCOUNT_ID]
         results[result_idx, 1] = states[combination_idx, STATE_SCENARIO]
