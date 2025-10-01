@@ -1,28 +1,51 @@
-Présentation Exécutive : Algorithme de Projection Actuarielle Accéléré par GPU
-Un Levier de Performance pour l'Évaluation des Risques et la Valorisation de Portefeuilles
-Agenda
-La Problématique : Les limites des calculs actuariels traditionnels.
-Notre Solution : L'accélération par la technologie GPU.
-Le Processus de Bout en Bout : Une vue d'ensemble de l'algorithme.
-Architecture de la Solution : La collaboration entre CPU et GPU.
-Au Cœur du Calcul : Comprendre la complexité des projections.
-Le Résultat Final : Comment est calculée la valeur ?
-Bénéfices Clés : Pourquoi cette approche est transformatrice.
-Mise en Pratique : Un lancement simplifié pour des résultats rapides.
-1. La Problématique : Un Défi de Vitesse et de Volume
+# Présentation Exécutive : Algorithme de Projection Actuarielle Accéléré par GPU
+
+**Un Levier de Performance pour l'Évaluation des Risques et la Valorisation de Portefeuilles**
+
+---
+
+## Agenda
+
+- La Problématique : Les limites des calculs actuariels traditionnels
+- Notre Solution : L'accélération par la technologie GPU
+- Le Processus de Bout en Bout : Une vue d'ensemble de l'algorithme
+- Architecture de la Solution : La collaboration entre CPU et GPU
+- Au Cœur du Calcul : Comprendre la complexité des projections
+- Le Résultat Final : Comment est calculée la valeur ?
+- Bénéfices Clés : Pourquoi cette approche est transformatrice
+- Mise en Pratique : Un lancement simplifié pour des résultats rapides
+
+---
+
+## 1. La Problématique : Un Défi de Vitesse et de Volume
+
 L'évaluation précise de nos portefeuilles financiers nous oblige à simuler des milliers de scénarios économiques sur plusieurs décennies.
-Temps de Calculs Extrêmes : Les méthodes traditionnelles sur CPU peuvent prendre des heures, voire des jours.
-Coûts d'Infrastructure Élevés : Maintenir des clusters de calcul puissants est coûteux.
-Agilité Limitée : La lenteur des calculs freine notre capacité à réagir rapidement aux changements de marché ou à tester de nouvelles hypothèses.
-Notre capacité à gérer le risque avec précision est directement contrainte par notre puissance de calcul.
-2. Notre Solution : Une Accélération Massive grâce au GPU
+
+**Temps de Calculs Extrêmes** : Les méthodes traditionnelles sur CPU peuvent prendre des heures, voire des jours.
+
+**Coûts d'Infrastructure Élevés** : Maintenir des clusters de calcul puissants est coûteux.
+
+**Agilité Limitée** : La lenteur des calculs freine notre capacité à réagir rapidement aux changements de marché ou à tester de nouvelles hypothèses.
+
+> Notre capacité à gérer le risque avec précision est directement contrainte par notre puissance de calcul.
+
+---
+
+## 2. Notre Solution : Une Accélération Massive grâce au GPU
+
 Nous avons développé un algorithme qui déporte les calculs les plus intensifs sur des processeurs graphiques (GPU), conçus pour le calcul massivement parallèle.
-L'objectif : Réduire drastiquement les temps de calcul pour passer des heures à quelques minutes.
-Le résultat : L'algorithme calcule la Valeur Actuelle des Flux Distribuables (VP_FLUX_DISTRIBUABLES), un indicateur clé de la rentabilité et de la valeur de nos portefeuilles, avec une rapidité et une précision inégalées.
-3. Le Processus de Bout en Bout
+
+**L'objectif** : Réduire drastiquement les temps de calcul pour passer des heures à quelques minutes.
+
+**Le résultat** : L'algorithme calcule la Valeur Actuelle des Flux Distribuables (VP_FLUX_DISTRIBUABLES), un indicateur clé de la rentabilité et de la valeur de nos portefeuilles, avec une rapidité et une précision inégalées.
+
+---
+
+## 3. Le Processus de Bout en Bout
+
 Notre processus transforme les données brutes en une évaluation de valeur financière en 5 étapes claires. Après une préparation sur le CPU, nous déléguons les calculs les plus intensifs au GPU. Les résultats sont ensuite agrégés pour produire notre indicateur final.
-code
-Mermaid
+
+```mermaid
 graph TD
     subgraph "Monde CPU"
         A[1. Données d'Entrée <br><i>(Population, Scénarios...)</i>]
@@ -45,12 +68,19 @@ graph TD
     C -- Pour chaque point (t) --> D
     D -- Résultats bruts --> E
     E --> F
-4. Architecture de la Solution : CPU vs. GPU
+```
+
+---
+
+## 4. Architecture de la Solution : CPU vs. GPU
+
 Le CPU agit comme le "chef d'orchestre" qui prépare et organise, tandis que le GPU est "l'usine de calcul" qui exécute des millions d'opérations simultanément.
-CPU (Chef d'orchestre) : Charge les données, les transforme dans un format optimal et agrège les résultats finaux.
-GPU (Usine de calcul) : Reçoit les données préparées et exécute des milliers de simulations en parallèle, sans aucune latence.
-code
-Mermaid
+
+**CPU (Chef d'orchestre)** : Charge les données, les transforme dans un format optimal et agrège les résultats finaux.
+
+**GPU (Usine de calcul)** : Reçoit les données préparées et exécute des milliers de simulations en parallèle, sans aucune latence.
+
+```mermaid
 graph TD
     subgraph "Environnement CPU (Chef d'orchestre)"
         DataIn[Fichiers .csv] --> Load[Chargement des données <br><i>(load_input_data)</i>]
@@ -68,10 +98,15 @@ graph TD
     Prep -- Matrice d'états & Tables de consultation --> KernelExt
     KernelExt -- État du portefeuille à chaque année 't' --> KernelInt
     KernelInt -- Valeurs des provisions & capital --> Aggr
-5. Au Cœur du Calcul : La Projection Stochastique-dans-Stochastique
+```
+
+---
+
+## 5. Au Cœur du Calcul : La Projection Stochastique-dans-Stochastique
+
 La puissance de notre modèle réside dans sa capacité à évaluer le risque à chaque instant. Pour chaque année de notre projection principale (la ligne horizontale), nous lançons des milliers de nouvelles simulations internes pour calculer les provisions et le capital requis. C'est cette projection "dans la projection" qui est extrêmement coûteuse en calcul et qui bénéficie le plus de l'accélération GPU.
-code
-Mermaid
+
+```mermaid
 graph LR
     subgraph "Projection Externe (Scénario Économique Principal)"
         direction LR
@@ -93,10 +128,15 @@ graph LR
 
     style Y1 fill:#a7c7e7,stroke:#333
     style Y2 fill:#a7c7e7,stroke:#333
-6. Le Résultat Final : Comment est-il Calculé ?
+```
+
+---
+
+## 6. Le Résultat Final : Comment est-il Calculé ?
+
 Une fois les simulations terminées, nous calculons la valeur pour nos actionnaires. Pour chaque année, le flux distribuable est la somme du profit de l'année (flux nets + variation de provision) et de la variation du capital requis. En actualisant et en sommant ces flux, nous obtenons la valeur actuelle totale du contrat pour un scénario donné.
-code
-Mermaid
+
+```mermaid
 graph TD
     A[Flux Nets Externes]
     B[Variation de Provision <br><i>Provision(t) - Provision(t-1)</i>]
@@ -111,19 +151,31 @@ graph TD
 
     E -- Actualisation --> F[VP du Flux Distribuable]
     F -- Somme sur toutes les années --> G((<b>VP TOTALE DES FLUX DISTRIBUABLES</b>))
-7. Bénéfices Clés de l'Approche
-Performance Exceptionnelle
+```
+
+---
+
+## 7. Bénéfices Clés de l'Approche
+
+### Performance Exceptionnelle
 Gains de vitesse de 100x à 500x par rapport aux solutions CPU.
-Scalabilité et Maîtrise des Coûts
+
+### Scalabilité et Maîtrise des Coûts
 Capacité à analyser des portefeuilles plus larges et plus complexes sans investissement majeur.
-Précision Accrue
+
+### Précision Accrue
 La vitesse permet d'utiliser un très grand nombre de scénarios (>1000), augmentant la fiabilité statistique des résultats.
-Flexibilité et Agilité Stratégique
+
+### Flexibilité et Agilité Stratégique
 Permet des analyses de sensibilité et des tests de résistance ("stress tests") quasi-instantanés.
-8. Mise en Pratique : Un Lancement Simplifié
+
+---
+
+## 8. Mise en Pratique : Un Lancement Simplifié
+
 Malgré sa complexité interne, l'algorithme est simple à utiliser. Un seul appel de fonction lance le processus complet, avec des paramètres clairs pour adapter le calcul à nos besoins.
-code
-Python
+
+```python
 # Lancer le calcul complet avec les paramètres souhaités
 results_df = gpu_acfc_algorithm_complete(
     data_path="data_in",
@@ -138,3 +190,4 @@ results_df = gpu_acfc_algorithm_complete(
 
 # Afficher et sauvegarder les résultats
 print(results_df)
+```
