@@ -41,7 +41,7 @@ df.to_csv("/home/vaunorage/PycharmProjects/sas-hackathon/data_in/population_fixe
 #%%
 
 # Read the CSV file
-df_mortality = pd.read_csv('/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_deces.csv')
+df = pd.read_csv('/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_deces.csv')
 
 # Function to clean percentage columns
 def clean_percentage(value):
@@ -51,17 +51,17 @@ def clean_percentage(value):
     return float(str(value).replace('%', '')) / 100
 
 # Clean the QX column
-df_mortality['QX'] = df_mortality['QX'].apply(clean_percentage)
+df['QX'] = df['QX'].apply(clean_percentage)
 
 # Display the cleaned dataframe
-print(df_mortality.dtypes)
-print("\n", df_mortality.head())
+print(df.dtypes)
+print("\n", df.head())
 
-df_mortality.to_csv("/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_deces_fixed.csv")
+df.to_csv("/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_deces_fixed.csv")
 
 #%%
 # Read the CSV file
-df_discount = pd.read_csv('/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_interet.csv')
+df = pd.read_csv('/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_interet.csv')
 
 # Function to clean percentage columns
 def clean_percentage(value):
@@ -71,17 +71,17 @@ def clean_percentage(value):
     return float(str(value).replace('%', '')) / 100
 
 # Clean the TX_ACTU column
-df_discount['TX_ACTU'] = df_discount['TX_ACTU'].apply(clean_percentage)
+df['TX_ACTU'] = df['TX_ACTU'].apply(clean_percentage)
 
 # Display the cleaned dataframe
-print(df_discount.dtypes)
-print("\n", df_discount.head())
+print(df.dtypes)
+print("\n", df.head())
 
-df_mortality.to_csv("/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_interet_fixed.csv")
+df.to_csv("/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_interet_fixed.csv")
 
 #%%
 # Read the CSV file
-df_discount = pd.read_csv('/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_interet_int.csv')
+df = pd.read_csv('/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_interet_int.csv')
 
 # Function to clean percentage columns
 def clean_percentage(value):
@@ -91,17 +91,17 @@ def clean_percentage(value):
     return float(str(value).replace('%', '')) / 100
 
 # Clean the TX_ACTU column
-df_discount['TX_ACTU_INT'] = df_discount['TX_ACTU_INT'].apply(clean_percentage)
+df['TX_ACTU_INT'] = df['TX_ACTU_INT'].apply(clean_percentage)
 
 # Display the cleaned dataframe
-print(df_discount.dtypes)
-print("\n", df_discount.head())
+print(df.dtypes)
+print("\n", df.head())
 
-df_mortality.to_csv("/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_interet_int_fixed.csv")
+df.to_csv("/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_interet_int_fixed.csv")
 
 #%%
 # Read the CSV file
-df_lapse = pd.read_csv('/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_retrait.csv')
+df = pd.read_csv('/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_retrait.csv')
 
 # Function to clean percentage columns
 def clean_percentage(value):
@@ -111,13 +111,13 @@ def clean_percentage(value):
     return float(str(value).replace('%', '')) / 100
 
 # Clean the WX column
-df_lapse['WX'] = df_lapse['WX'].apply(clean_percentage)
+df['WX'] = df['WX'].apply(clean_percentage)
 
 # Display the cleaned dataframe
-print(df_lapse.dtypes)
-print("\n", df_lapse.head())
+print(df.dtypes)
+print("\n", df.head())
 
-df_lapse.to_csv("/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_retrait_fixed.csv")
+df.to_csv("/home/vaunorage/PycharmProjects/sas-hackathon/data_in/tx_retrait_fixed.csv")
 
 # Now you can perform operations like:
 # df_lapse[df_lapse['an_proj'] == 3]['WX'].values[0]
