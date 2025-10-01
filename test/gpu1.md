@@ -48,25 +48,25 @@ Notre processus transforme les données brutes en une évaluation de valeur fina
 ```mermaid
 graph TD
     subgraph "Monde CPU"
-        A[1. Données d'Entrée <br><i>(Population, Scénarios...)</i>]
-        B[2. Préparation des Données <br><i>(Formatage optimisé)</i>]
+        A["1. Données d'Entrée\n(Population, Scénarios...)"]
+        B["2. Préparation des Données\n(Formatage optimisé)"]
     end
 
     subgraph "Monde GPU"
         style C fill:#9f9,stroke:#333,stroke-width:2px
-        C[3. Projections Externes <br><b>(ACCÉLÉRATION MASSIVE)</b><br><i>Simulation principale sur N années</i>]
-        D[4. Projections Internes <br><b>(ACCÉLÉRATION MASSIVE)</b><br><i>Calcul des provisions et du capital</i>]
+        C["3. Projections Externes\nACCÉLÉRATION MASSIVE\nSimulation principale sur N années"]
+        D["4. Projections Internes\nACCÉLÉRATION MASSIVE\nCalcul des provisions et du capital"]
     end
     
     subgraph "Monde CPU"
-      E[5. Agrégation & Calcul Final <br><i>(Calcul de la VP des flux distribuables)</i>]
-      F((Résultat Final <br><b>VP_FLUX_DISTRIBUABLES</b>))
+      E["5. Agrégation & Calcul Final\n(Calcul de la VP des flux distribuables)"]
+      F(("Résultat Final\nVP_FLUX_DISTRIBUABLES"))
     end
 
     A --> B
-    B -- Données prêtes pour le GPU --> C
-    C -- Pour chaque point (t) --> D
-    D -- Résultats bruts --> E
+    B -- "Données prêtes pour le GPU" --> C
+    C -- "Pour chaque point (t)" --> D
+    D -- "Résultats bruts" --> E
     E --> F
 ```
 
