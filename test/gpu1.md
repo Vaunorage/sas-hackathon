@@ -83,21 +83,25 @@ Le CPU agit comme le "chef d'orchestre" qui prépare et organise, tandis que le 
 ```mermaid
 graph TD
     subgraph "Environnement CPU (Chef d'orchestre)"
-        DataIn[Fichiers .csv] --> Load[Chargement des données <br><i>(load_input_data)</i>]
-        Load --> Prep[Préparation & Formatage <br><i>(prepare_gpu_data)</i>]
+        DataIn[Fichiers .csv] --> Load["Chargement des données
+        (load_input_data)"]
+        Load --> Prep["Préparation & Formatage
+        (prepare_gpu_data)"]
         Aggr[Agrégation des résultats] --> Final[DataFrame Final]
     end
 
     subgraph "Environnement GPU (Usine de calcul)"
         style KernelExt fill:#9f9,stroke:#333,stroke-width:2px
         style KernelInt fill:#9f9,stroke:#333,stroke-width:2px
-        KernelExt[Kernel 1: Projections Externes <br><i>(gpu_calculate_year_transition)</i>]
-        KernelInt[Kernel 2: Projections Internes <br><i>(gpu_calculate_internal_scenarios)</i>]
+        KernelExt["Kernel 1: Projections Externes
+        (gpu_calculate_year_transition)"]
+        KernelInt["Kernel 2: Projections Internes
+        (gpu_calculate_internal_scenarios)"]
     end
 
-    Prep -- Matrice d'états & Tables de consultation --> KernelExt
-    KernelExt -- État du portefeuille à chaque année 't' --> KernelInt
-    KernelInt -- Valeurs des provisions & capital --> Aggr
+    Prep -- "Matrice d'états & Tables de consultation" --> KernelExt
+    KernelExt -- "État du portefeuille à chaque année 't'" --> KernelInt
+    KernelInt -- "Valeurs des provisions & capital" --> Aggr
 ```
 
 ---
@@ -107,27 +111,27 @@ graph TD
 La puissance de notre modèle réside dans sa capacité à évaluer le risque à chaque instant. Pour chaque année de notre projection principale (la ligne horizontale), nous lançons des milliers de nouvelles simulations internes pour calculer les provisions et le capital requis. C'est cette projection "dans la projection" qui est extrêmement coûteuse en calcul et qui bénéficie le plus de l'accélération GPU.
 
 ```mermaid
-graph LR
-    subgraph "Projection Externe (Scénario Économique Principal)"
-        direction LR
-        Y0(An 0) --> Y1(An 1) --> Y2(An 2) --> YN(...)
+graph TD
+    subgraph "Environnement CPU (Chef d'orchestre)"
+        DataIn[Fichiers .csv] --> Load["Chargement des données
+        (load_input_data)"]
+        Load --> Prep["Préparation & Formatage
+        (prepare_gpu_data)"]
+        Aggr[Agrégation des résultats] --> Final[DataFrame Final]
     end
 
-    subgraph "À l'An 1"
-        direction TB
-        Start1[État du contrat] --> Calc1{Lancement de N<br>scénarios internes} --> End1[Calcul Provision & Capital]
+    subgraph "Environnement GPU (Usine de calcul)"
+        style KernelExt fill:#9f9,stroke:#333,stroke-width:2px
+        style KernelInt fill:#9f9,stroke:#333,stroke-width:2px
+        KernelExt["Kernel 1: Projections Externes
+        (gpu_calculate_year_transition)"]
+        KernelInt["Kernel 2: Projections Internes
+        (gpu_calculate_internal_scenarios)"]
     end
 
-    subgraph "À l'An 2"
-        direction TB
-        Start2[État du contrat] --> Calc2{Lancement de N<br>scénarios internes} --> End2[Calcul Provision & Capital]
-    end
-    
-    Y1 -.-> Start1
-    Y2 -.-> Start2
-
-    style Y1 fill:#a7c7e7,stroke:#333
-    style Y2 fill:#a7c7e7,stroke:#333
+    Prep -- "Matrice d'états & Tables de consultation" --> KernelExt
+    KernelExt -- "État du portefeuille à chaque année 't'" --> KernelInt
+    KernelInt -- "Valeurs des provisions & capital" --> Aggr
 ```
 
 ---
@@ -139,8 +143,10 @@ Une fois les simulations terminées, nous calculons la valeur pour nos actionnai
 ```mermaid
 graph TD
     A[Flux Nets Externes]
-    B[Variation de Provision <br><i>Provision(t) - Provision(t-1)</i>]
-    C[Variation de Capital <br><i>Capital(t) - Capital(t-1)</i>]
+    B["Variation de Provision
+    Provision(t) - Provision(t-1)"]
+    C["Variation de Capital
+    Capital(t) - Capital(t-1)"]
     
     subgraph "Pour chaque année de projection"
         A --> D{Profit de l'année}
@@ -150,7 +156,7 @@ graph TD
     end
 
     E -- Actualisation --> F[VP du Flux Distribuable]
-    F -- Somme sur toutes les années --> G((<b>VP TOTALE DES FLUX DISTRIBUABLES</b>))
+    F -- Somme sur toutes les années --> G(("<b>VP TOTALE DES FLUX DISTRIBUABLES</b>"))
 ```
 
 ---
