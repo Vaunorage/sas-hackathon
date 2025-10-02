@@ -1,0 +1,9 @@
+echo "# IDE files
+.idea/
+*.iml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.python-version
