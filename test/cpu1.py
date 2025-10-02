@@ -22,12 +22,12 @@ def load_input_files(data_path: str) -> Tuple[pd.DataFrame, ...]:
         print("-" * 50)
 
         files_to_load = [
-            ("population.csv", "Population data"),
-            ("rendement.csv", "Returns data"),
-            ("tx_deces.csv", "Mortality rates"),
-            ("tx_interet.csv", "Interest rates"),
-            ("tx_interet_int.csv", "Internal interest rates"),
-            ("tx_retrait.csv", "Lapse rates")
+            ("population_fixed.csv", "Population data"),
+            ("rendement1.csv", "Returns data"),
+            ("tx_deces_fixed.csv", "Mortality rates"),
+            ("tx_interet_fixed.csv", "Interest rates"),
+            ("tx_interet_int_fixed.csv", "Internal interest rates"),
+            ("tx_retrait_fixed.csv", "Lapse rates")
         ]
 
         loaded_data = []
