@@ -570,11 +570,11 @@ def acfc_algorithm_fully_fixed(data_path: str = ".", NBCPT: int = 4, NB_SC: int 
 if __name__ == "__main__":
     results = acfc_algorithm_fully_fixed(
         data_path=HERE.joinpath("data_in"),
-        NBCPT=30,
-        NB_SC=20,
-        NB_AN_PROJECTION=20,
+        NBCPT=10,
+        NB_SC=10,
+        NB_AN_PROJECTION=100,
         NB_SC_INT=10,
-        NB_AN_PROJECTION_INT=10,
+        NB_AN_PROJECTION_INT=100,
         CHOC_CAPITAL=0.35,
         HURDLE_RT=0.10
     )
