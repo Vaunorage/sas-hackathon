@@ -133,31 +133,19 @@ def prepare_gpu_data(data: Dict, nb_accounts: int, nb_scenarios: int) -> Tuple[
     initial_data = np.zeros((min(nb_accounts, len(data['population'])), DATA_SIZE), dtype=np.float64)
     account_ids = np.zeros(min(nb_accounts, len(data['population'])), dtype=np.float64)
 
-    # FIX: Create proper account ID to index mapping with validation
+    # FIX 1: Create proper account ID to index mapping
     account_id_to_idx = {}
     max_account_id = 0
 
-    # First pass: identify all account IDs and find max
-    for account_idx in range(min(nb_accounts, len(data['population']))):
-        account_data = data['population'].iloc[account_idx]
-        account_id = int(account_data['ID_COMPTE'])
-        max_account_id = max(max_account_id, account_id)
-
-    # Create mapping array (initialize with -1 for unmapped IDs)
-    account_mapping = np.full(max_account_id + 1, -1, dtype=np.int32)
-
-    # Second pass: populate data and mapping
     combination_idx = 0
     for account_idx in range(min(nb_accounts, len(data['population']))):
         account_data = data['population'].iloc[account_idx]
         account_id = int(account_data['ID_COMPTE'])
-
-        # Store mapping
         account_ids[account_idx] = float(account_id)
         account_id_to_idx[account_id] = account_idx
-        account_mapping[account_id] = account_idx  # Direct mapping for O(1) lookup
+        max_account_id = max(max_account_id, account_id)
 
-        # Store initial data with EXACT precision
+        # Store initial data
         initial_data[account_idx, DATA_MT_VM] = float(account_data['MT_VM'])
         initial_data[account_idx, DATA_MT_GAR_DECES] = float(account_data['MT_GAR_DECES'])
         initial_data[account_idx, DATA_AGE_DEB] = int(account_data['age_deb'])
@@ -183,26 +171,19 @@ def prepare_gpu_data(data: Dict, nb_accounts: int, nb_scenarios: int) -> Tuple[
             states[combination_idx, STATE_IS_TERMINATED] = 0.0
             combination_idx += 1
 
-    # Verification
-    print("\n=== ACCOUNT MAPPING VERIFICATION ===")
-    print(f"Max account ID: {max_account_id}")
-    print(f"Mapping array size: {len(account_mapping)}")
-    print(f"Account IDs and their mapped indices:")
-    for i in range(min(10, len(account_ids))):
-        aid = int(account_ids[i])
-        mapped_idx = account_mapping[aid]
-        print(f"  Account ID {aid} -> Index {mapped_idx} (Expected: {i})")
-        if mapped_idx != i:
-            print(f"    WARNING: Mismatch detected!")
+    # FIX 1: Create account mapping array for GPU kernel
+    # This allows O(1) lookup instead of linear search
+    account_mapping = np.full(max_account_id + 1, -1, dtype=np.int32)
+    for account_id, idx in account_id_to_idx.items():
+        account_mapping[account_id] = idx
 
-    # Verify all account IDs in states have valid mappings
-    unique_account_ids = np.unique(states[:, STATE_ACCOUNT_ID])
-    print(f"\nUnique account IDs in states: {unique_account_ids}")
-    for aid in unique_account_ids:
-        if aid > 0:
-            mapped_idx = account_mapping[int(aid)]
-            if mapped_idx == -1:
-                print(f"  ERROR: Account ID {int(aid)} has no mapping!")
+    # FIX 4: Verify initial data consistency
+    print("\n=== INITIAL DATA VERIFICATION ===")
+    for i in range(min(5, len(initial_data))):
+        print(f"Account {i} (ID: {int(account_ids[i])}):")
+        print(f"  MT_VM: {initial_data[i, DATA_MT_VM]:.2f}")
+        print(f"  AGE_DEB: {int(initial_data[i, DATA_AGE_DEB])}")
+        print(f"  Mapped index: {account_mapping[int(account_ids[i])]}")
 
     return states, initial_data, account_ids, account_mapping
 
@@ -212,20 +193,18 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
                                   lookups_discount_ext, lookups_discount_int, lookups_returns_ext,
                                   lookups_returns_int, results, year, projection_type, fund_shock, start_year,
                                   max_years):
-    """GPU kernel for year transition calculations - FIXED with proper termination checks"""
+    """GPU kernel for year transition calculations - FIXED version"""
 
     combination_idx = cuda.grid(1)
     if combination_idx >= states.shape[0]:
         return
 
-    # Use threshold for termination instead of exact equality
-    EPSILON = 1e-10
     if states[combination_idx, STATE_IS_TERMINATED] > 0:
         return
 
     account_idx = int(states[combination_idx, STATE_ACCOUNT_IDX])
 
-    # Bounds checking
+    # FIXED: Add bounds checking for account_idx
     if account_idx >= initial_data.shape[0] or account_idx < 0:
         return
 
@@ -275,11 +254,10 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             results[result_idx, 8] = VP_FLUX_NET
         return
 
-    # Check termination with threshold instead of exact equality
     current_survie = states[combination_idx, STATE_TX_SURVIE]
     current_vm = states[combination_idx, STATE_MT_VM_PROJ]
 
-    if current_survie < EPSILON or current_vm < EPSILON:
+    if current_survie <= 0.0 or current_vm <= 0.0:
         states[combination_idx, STATE_IS_TERMINATED] = 1.0
         nb_years_total = max_years + 1
         result_idx = combination_idx * nb_years_total + year
@@ -309,7 +287,6 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
 
     MT_VM_DEB = states[combination_idx, STATE_MT_VM_PROJ]
 
-    # Get return rate with proper bounds checking
     RENDEMENT_rate = 0.0
     if projection_type == 0:  # EXTERNE
         if (scenario >= 0 and scenario < lookups_returns_ext.shape[1] and
@@ -320,21 +297,15 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
                 an_proj >= 0 and an_proj < lookups_returns_int.shape[0]):
             RENDEMENT_rate = lookups_returns_int[an_proj, scenario]
 
-    # Calculate fund value progression - EXACT CPU formula
     RENDEMENT = MT_VM_DEB * RENDEMENT_rate
     FRAIS = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[account_idx, DATA_PC_REVENU_FDS]
+    new_MT_VM_PROJ = max(0.0, states[combination_idx, STATE_MT_VM_PROJ] + RENDEMENT + FRAIS)
 
-    # CRITICAL: Match CPU order of operations exactly
-    new_MT_VM_PROJ = MT_VM_DEB + RENDEMENT + FRAIS
-    new_MT_VM_PROJ = max(0.0, new_MT_VM_PROJ)
-
-    # Death benefit reset logic
     new_MT_GAR_DECES_PROJ = states[combination_idx, STATE_MT_GAR_DECES_PROJ]
     if (initial_data[account_idx, DATA_FREQ_RESET_DECES] == 1 and
             new_age <= initial_data[account_idx, DATA_MAX_RESET_DECES]):
         new_MT_GAR_DECES_PROJ = max(states[combination_idx, STATE_MT_GAR_DECES_PROJ], new_MT_VM_PROJ)
 
-    # Mortality and lapse rates
     QX = 0.0
     WX = 0.0
     if new_age >= 0 and new_age < lookups_mortality.shape[0]:
@@ -342,11 +313,9 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
     if an_proj >= 0 and an_proj < lookups_lapse.shape[0]:
         WX = lookups_lapse[an_proj]
 
-    # Survival probability - EXACT CPU formula
     TX_SURVIE_DEB = states[combination_idx, STATE_TX_SURVIE]
     new_TX_SURVIE = TX_SURVIE_DEB * (1 - QX) * (1 - WX)
 
-    # Cash flow calculations - EXACT CPU formulas
     REVENUS = -FRAIS * TX_SURVIE_DEB
     FRAIS_GEST = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[account_idx, DATA_PC_HONORAIRES_GEST] * TX_SURVIE_DEB
     COMMISSIONS = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[account_idx, DATA_TX_COMM_MAINTIEN] * TX_SURVIE_DEB
@@ -355,13 +324,11 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
 
     FLUX_NET = REVENUS + FRAIS_GEST + COMMISSIONS + FRAIS_GEN + PMT_GARANTIE
 
-    # Discounting
     TX_ACTU = 1.0
     if an_proj >= 0 and an_proj < lookups_discount_ext.shape[0]:
         TX_ACTU = lookups_discount_ext[an_proj]
     VP_FLUX_NET = FLUX_NET * TX_ACTU
 
-    # Internal adjustment
     if projection_type == 1 and start_year > 0:  # INTERNE
         TX_ACTU_INT = 1.0
         if start_year >= 0 and start_year < lookups_discount_int.shape[0]:
@@ -369,17 +336,14 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
         if TX_ACTU_INT != 0:
             VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
 
-    # Update states
     states[combination_idx, STATE_MT_VM_PROJ] = new_MT_VM_PROJ
     states[combination_idx, STATE_MT_GAR_DECES_PROJ] = new_MT_GAR_DECES_PROJ
     states[combination_idx, STATE_TX_SURVIE] = new_TX_SURVIE
     states[combination_idx, STATE_AGE] = new_age
 
-    # Check termination with threshold
-    if new_TX_SURVIE < EPSILON or new_MT_VM_PROJ < EPSILON:
+    if new_TX_SURVIE <= 0.0 or new_MT_VM_PROJ <= 0.0:
         states[combination_idx, STATE_IS_TERMINATED] = 1.0
 
-    # Store results
     nb_years_total = max_years + 1
     result_idx = combination_idx * nb_years_total + year
     if result_idx < results.shape[0]:
@@ -392,6 +356,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
         results[result_idx, 6] = new_TX_SURVIE
         results[result_idx, 7] = FLUX_NET
         results[result_idx, 8] = VP_FLUX_NET
+
 
 def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_type: str,
                        fund_shock: float = 0.0, start_year: int = 0) -> np.ndarray:
