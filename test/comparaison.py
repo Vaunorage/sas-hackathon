@@ -3,10 +3,10 @@ import matplotlib.pyplot as plt
 from paths import HERE
 
 gpu_data_path = HERE.joinpath('test/gpu_results_complete.csv')
-cpu_data_path = HERE.joinpath('test/acfc_results_fixed.csv')
+cpu_data_path = HERE.joinpath('data_out/calculs_sommaire.csv')
 
 df1 = pd.read_csv(gpu_data_path)
-df2 = pd.read_csv(cpu_data_path)
+df2 = pd.read_csv(cpu_data_path, sep=';')
 
 gpu_col = df1['VP_FLUX_DISTRIBUABLES']
 cpu_col = df2['VP_FLUX_DISTRIBUABLES']

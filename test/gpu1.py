@@ -1,3 +1,11 @@
+import os
+os.environ['NUMBA_CUDA_COMPUTE_CAPABILITY'] = '8.0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
+# Force Numba to use lower PTX version
+import numba
+numba.config.CUDA_DEFAULT_PTX_CC = (8, 0)
+
 import pandas as pd
 import numpy as np
 from numba import cuda, jit
@@ -41,14 +49,14 @@ DATA_SIZE = 11
 def load_input_data(data_path: str = ".", nb_accounts: int = None) -> Dict:
     """Load all input data files"""
     try:
-        population = pd.read_csv(f"{data_path}/population.csv")
+        population = pd.read_csv(f"{data_path}/population_fixed.csv")
         if nb_accounts is not None:
             population = population.head(nb_accounts)
-        rendement = pd.read_csv(f"{data_path}/rendement.csv")
-        tx_deces = pd.read_csv(f"{data_path}/tx_deces.csv")
-        tx_interet = pd.read_csv(f"{data_path}/tx_interet.csv")
-        tx_interet_int = pd.read_csv(f"{data_path}/tx_interet_int.csv")
-        tx_retrait = pd.read_csv(f"{data_path}/tx_retrait.csv")
+        rendement = pd.read_csv(f"{data_path}/rendement1.csv")
+        tx_deces = pd.read_csv(f"{data_path}/tx_deces_fixed.csv")
+        tx_interet = pd.read_csv(f"{data_path}/tx_interet_fixed.csv")
+        tx_interet_int = pd.read_csv(f"{data_path}/tx_interet_int_fixed.csv")
+        tx_retrait = pd.read_csv(f"{data_path}/tx_retrait_fixed.csv")
 
         if 'TYPE' in rendement.columns:
             rendement['TYPE'] = rendement['TYPE'].apply(
@@ -692,11 +700,11 @@ if __name__ == "__main__":
 
     results = gpu_acfc_algorithm_complete(
         data_path=data_path,
-        nb_accounts=30,
-        nb_scenarios=20,
-        nb_years=20,
-        nb_sc_int=10,
-        nb_an_projection_int=10,
+        nb_accounts=400,
+        nb_scenarios=500,
+        nb_years=100,
+        nb_sc_int=100,
+        nb_an_projection_int=100,
         choc_capital=0.35,
         hurdle_rt=0.10
     )
