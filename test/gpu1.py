@@ -125,65 +125,82 @@ def create_gpu_lookup_tables(data: Dict, max_age: int = 120, max_year: int = 50,
     }
 
 
-def prepare_gpu_data(data: Dict, nb_accounts: int, nb_scenarios: int) -> Tuple[
-    np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Prepare data for GPU processing - FIXED with proper account mapping"""
+def prepare_gpu_data_fixed(data, nb_accounts, nb_scenarios):
+    """
+    Improved version with explicit validation
+    """
+    from datetime import datetime
+
     total_combinations = min(nb_accounts, len(data['population'])) * nb_scenarios
-    states = np.zeros((total_combinations, STATE_SIZE), dtype=np.float64)
-    initial_data = np.zeros((min(nb_accounts, len(data['population'])), DATA_SIZE), dtype=np.float64)
+
+    # Initialize arrays
+    states = np.zeros((total_combinations, 9), dtype=np.float64)
+    initial_data = np.zeros((min(nb_accounts, len(data['population'])), 11), dtype=np.float64)
     account_ids = np.zeros(min(nb_accounts, len(data['population'])), dtype=np.float64)
 
-    # FIX 1: Create proper account ID to index mapping
-    account_id_to_idx = {}
+    # CRITICAL: Determine the maximum account ID first
     max_account_id = 0
+    account_id_to_idx = {}
 
+    for account_idx in range(min(nb_accounts, len(data['population']))):
+        account_data = data['population'].iloc[account_idx]
+        account_id = int(account_data['ID_COMPTE'])
+        max_account_id = max(max_account_id, account_id)
+        account_id_to_idx[account_id] = account_idx
+
+    print(f"\nAccount ID range: 1 to {max_account_id}")
+    print(f"Number of accounts: {len(account_id_to_idx)}")
+    print(f"Account IDs: {sorted(account_id_to_idx.keys())}")
+
+    # Create mapping array with size based on max account ID
+    account_mapping = np.full(max_account_id + 1, -1, dtype=np.int32)
+
+    # Populate data arrays
     combination_idx = 0
     for account_idx in range(min(nb_accounts, len(data['population']))):
         account_data = data['population'].iloc[account_idx]
         account_id = int(account_data['ID_COMPTE'])
+
+        # Store account ID
         account_ids[account_idx] = float(account_id)
-        account_id_to_idx[account_id] = account_idx
-        max_account_id = max(max_account_id, account_id)
 
-        # Store initial data
-        initial_data[account_idx, DATA_MT_VM] = float(account_data['MT_VM'])
-        initial_data[account_idx, DATA_MT_GAR_DECES] = float(account_data['MT_GAR_DECES'])
-        initial_data[account_idx, DATA_AGE_DEB] = int(account_data['age_deb'])
-        initial_data[account_idx, DATA_TX_COMM_VENTE] = float(account_data.get('TX_COMM_VENTE', 0.0))
-        initial_data[account_idx, DATA_FRAIS_ACQUI] = float(account_data['FRAIS_ACQUI'])
-        initial_data[account_idx, DATA_PC_REVENU_FDS] = float(account_data['PC_REVENU_FDS'])
-        initial_data[account_idx, DATA_PC_HONORAIRES_GEST] = float(account_data['PC_HONORAIRES_GEST'])
-        initial_data[account_idx, DATA_TX_COMM_MAINTIEN] = float(account_data['TX_COMM_MAINTIEN'])
-        initial_data[account_idx, DATA_FRAIS_ADMIN] = float(account_data['FRAIS_ADMIN'])
-        initial_data[account_idx, DATA_FREQ_RESET_DECES] = float(account_data['FREQ_RESET_DECES'])
-        initial_data[account_idx, DATA_MAX_RESET_DECES] = float(account_data['MAX_RESET_DECES'])
+        # Update mapping
+        account_mapping[account_id] = account_idx
 
-        # Initialize states for all scenarios of this account
+        # Store initial data (using correct indices from constants)
+        initial_data[account_idx, 0] = float(account_data['MT_VM'])  # DATA_MT_VM
+        initial_data[account_idx, 1] = float(account_data['MT_GAR_DECES'])  # DATA_MT_GAR_DECES
+        initial_data[account_idx, 2] = int(account_data['age_deb'])  # DATA_AGE_DEB
+        initial_data[account_idx, 3] = float(account_data.get('TX_COMM_VENTE', 0.0))
+        initial_data[account_idx, 4] = float(account_data['FRAIS_ACQUI'])
+        initial_data[account_idx, 5] = float(account_data['PC_REVENU_FDS'])
+        initial_data[account_idx, 6] = float(account_data['PC_HONORAIRES_GEST'])
+        initial_data[account_idx, 7] = float(account_data['TX_COMM_MAINTIEN'])
+        initial_data[account_idx, 8] = float(account_data['FRAIS_ADMIN'])
+        initial_data[account_idx, 9] = float(account_data['FREQ_RESET_DECES'])
+        initial_data[account_idx, 10] = float(account_data['MAX_RESET_DECES'])
+
+        # Initialize states for all scenarios
         for scenario in range(1, nb_scenarios + 1):
-            states[combination_idx, STATE_ACCOUNT_ID] = float(account_id)
-            states[combination_idx, STATE_SCENARIO] = float(scenario)
-            states[combination_idx, STATE_ACCOUNT_IDX] = float(account_idx)
-            states[combination_idx, STATE_AGE_DEB] = float(account_data['age_deb'])
-            states[combination_idx, STATE_MT_VM_PROJ] = 0.0
-            states[combination_idx, STATE_MT_GAR_DECES_PROJ] = 0.0
-            states[combination_idx, STATE_TX_SURVIE] = 0.0
-            states[combination_idx, STATE_AGE] = float(account_data['age_deb'])
-            states[combination_idx, STATE_IS_TERMINATED] = 0.0
+            states[combination_idx, 0] = float(account_id)  # STATE_ACCOUNT_ID
+            states[combination_idx, 1] = float(scenario)  # STATE_SCENARIO
+            states[combination_idx, 2] = float(account_idx)  # STATE_ACCOUNT_IDX
+            states[combination_idx, 3] = float(account_data['age_deb'])  # STATE_AGE_DEB
+            states[combination_idx, 4] = 0.0  # STATE_MT_VM_PROJ
+            states[combination_idx, 5] = 0.0  # STATE_MT_GAR_DECES_PROJ
+            states[combination_idx, 6] = 0.0  # STATE_TX_SURVIE
+            states[combination_idx, 7] = float(account_data['age_deb'])  # STATE_AGE
+            states[combination_idx, 8] = 0.0  # STATE_IS_TERMINATED
             combination_idx += 1
 
-    # FIX 1: Create account mapping array for GPU kernel
-    # This allows O(1) lookup instead of linear search
-    account_mapping = np.full(max_account_id + 1, -1, dtype=np.int32)
-    for account_id, idx in account_id_to_idx.items():
-        account_mapping[account_id] = idx
-
-    # FIX 4: Verify initial data consistency
-    print("\n=== INITIAL DATA VERIFICATION ===")
-    for i in range(min(5, len(initial_data))):
-        print(f"Account {i} (ID: {int(account_ids[i])}):")
-        print(f"  MT_VM: {initial_data[i, DATA_MT_VM]:.2f}")
-        print(f"  AGE_DEB: {int(initial_data[i, DATA_AGE_DEB])}")
-        print(f"  Mapped index: {account_mapping[int(account_ids[i])]}")
+    # Verify the mapping
+    print("\nVerifying account mapping...")
+    for account_id, expected_idx in account_id_to_idx.items():
+        actual_idx = account_mapping[account_id]
+        if actual_idx != expected_idx:
+            print(f"ERROR: Account {account_id} should map to {expected_idx} but maps to {actual_idx}")
+        else:
+            print(f"  Account {account_id} -> Index {actual_idx} OK")
 
     return states, initial_data, account_ids, account_mapping
 
@@ -406,11 +423,13 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
 
 
 @cuda.jit
-def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mortality, lookups_lapse,
-                                     lookups_discount_ext, lookups_discount_int, lookups_returns_ext,
-                                     lookups_returns_int, internal_results, nb_sc_int, nb_an_projection_int,
-                                     fund_shock, account_mapping):
-    """GPU kernel for calculating internal scenarios - FIXED with proper account mapping"""
+def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mortality,
+                                           lookups_lapse, lookups_discount_ext, lookups_discount_int,
+                                           lookups_returns_ext, lookups_returns_int, internal_results,
+                                           nb_sc_int, nb_an_projection_int, fund_shock, account_mapping):
+    """
+    FIXED version with proper bounds checking and synchronization
+    """
 
     external_idx = cuda.grid(1)
     if external_idx >= external_results.shape[0]:
@@ -429,77 +448,112 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
     if survival_prob == 0 or fund_value == 0:
         return
 
-    # FIX 1: Use direct array lookup instead of linear search
+    # CRITICAL FIX: Validate account_id bounds BEFORE array access
     if account_id >= account_mapping.shape[0] or account_id < 0:
+        internal_results[external_idx] = 0.0
         return
 
     account_idx = account_mapping[account_id]
 
-    # Validate the mapping
-    if account_idx == -1 or account_idx >= initial_data.shape[0]:
+    # CRITICAL FIX: Validate the mapped index
+    if account_idx == -1 or account_idx >= initial_data.shape[0] or account_idx < 0:
+        internal_results[external_idx] = 0.0
         return
 
+    # FIX: Use local variable for accumulation to avoid memory issues
     total_vp = 0.0
     valid_scenarios = 0
 
     for internal_scenario in range(1, nb_sc_int + 1):
+        # Initialize state variables for this internal scenario
         MT_VM_PROJ = fund_value
         MT_GAR_DECES_PROJ = death_benefit
         TX_SURVIE = survival_prob
-        AGE = int(initial_data[account_idx, DATA_AGE_DEB]) + year
+        AGE = int(initial_data[account_idx, 2]) + year  # DATA_AGE_DEB = 2
 
+        # Apply fund shock if needed
         if fund_shock > 0:
             MT_VM_PROJ = MT_VM_PROJ * (1 - fund_shock)
 
         scenario_vp = 0.0
 
+        # Project forward for this internal scenario
         for internal_year in range(nb_an_projection_int + 1):
+            # Check termination conditions
             if TX_SURVIE == 0 or MT_VM_PROJ == 0:
                 break
 
             an_proj = year + internal_year
             current_age = AGE + internal_year
 
-            if current_age >= lookups_mortality.shape[0] or an_proj >= lookups_returns_int.shape[0]:
+            # Bounds checking
+            if current_age >= lookups_mortality.shape[0] or current_age < 0:
+                break
+            if an_proj >= lookups_returns_int.shape[0] or an_proj < 0:
                 break
 
+            # Skip year 0 calculations
             if internal_year == 0:
                 continue
 
-            if internal_scenario < lookups_returns_int.shape[1] and an_proj < lookups_returns_int.shape[0]:
+            # Get return rate with bounds checking
+            RENDEMENT_rate = 0.0
+            if (internal_scenario >= 0 and internal_scenario < lookups_returns_int.shape[1] and
+                    an_proj >= 0 and an_proj < lookups_returns_int.shape[0]):
                 RENDEMENT_rate = lookups_returns_int[an_proj, internal_scenario]
-            else:
-                RENDEMENT_rate = 0.0
 
+            # CRITICAL FIX: Store MT_VM_DEB before modifications
             MT_VM_DEB = MT_VM_PROJ
+
+            # Calculate returns and fees
             RENDEMENT = MT_VM_DEB * RENDEMENT_rate
-            FRAIS = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[account_idx, DATA_PC_REVENU_FDS]
+            FRAIS = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[account_idx, 5]  # DATA_PC_REVENU_FDS = 5
+
+            # Update fund value
             MT_VM_PROJ = max(0.0, MT_VM_PROJ + RENDEMENT + FRAIS)
 
-            if (initial_data[account_idx, DATA_FREQ_RESET_DECES] == 1 and
-                    current_age <= initial_data[account_idx, DATA_MAX_RESET_DECES]):
+            # Death benefit reset logic
+            FREQ_RESET_DECES = initial_data[account_idx, 9]  # DATA_FREQ_RESET_DECES = 9
+            MAX_RESET_DECES = initial_data[account_idx, 10]  # DATA_MAX_RESET_DECES = 10
+
+            if FREQ_RESET_DECES == 1 and current_age <= MAX_RESET_DECES:
                 MT_GAR_DECES_PROJ = max(MT_GAR_DECES_PROJ, MT_VM_PROJ)
 
-            QX = lookups_mortality[min(current_age, lookups_mortality.shape[0] - 1)]
-            WX = lookups_lapse[min(an_proj, lookups_lapse.shape[0] - 1)]
+            # Get mortality and lapse rates with bounds checking
+            QX = 0.0
+            WX = 0.0
+            if current_age < lookups_mortality.shape[0]:
+                QX = lookups_mortality[current_age]
+            if an_proj < lookups_lapse.shape[0]:
+                WX = lookups_lapse[an_proj]
+
+            # Update survival probability
             TX_SURVIE_DEB = TX_SURVIE
             TX_SURVIE = TX_SURVIE_DEB * (1 - QX) * (1 - WX)
 
+            # Calculate cash flows
             REVENUS = -FRAIS * TX_SURVIE_DEB
             FRAIS_GEST = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[
-                account_idx, DATA_PC_HONORAIRES_GEST] * TX_SURVIE_DEB
+                account_idx, 6] * TX_SURVIE_DEB  # DATA_PC_HONORAIRES_GEST = 6
             COMMISSIONS = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[
-                account_idx, DATA_TX_COMM_MAINTIEN] * TX_SURVIE_DEB
-            FRAIS_GEN = -initial_data[account_idx, DATA_FRAIS_ADMIN] * TX_SURVIE_DEB
+                account_idx, 7] * TX_SURVIE_DEB  # DATA_TX_COMM_MAINTIEN = 7
+            FRAIS_GEN = -initial_data[account_idx, 8] * TX_SURVIE_DEB  # DATA_FRAIS_ADMIN = 8
             PMT_GARANTIE = -max(0.0, MT_GAR_DECES_PROJ - MT_VM_PROJ) * QX * TX_SURVIE_DEB
 
             FLUX_NET = REVENUS + FRAIS_GEST + COMMISSIONS + FRAIS_GEN + PMT_GARANTIE
 
-            TX_ACTU = lookups_discount_ext[min(an_proj, lookups_discount_ext.shape[0] - 1)]
+            # Discount to present value
+            TX_ACTU = 1.0
+            if an_proj < lookups_discount_ext.shape[0]:
+                TX_ACTU = lookups_discount_ext[an_proj]
+
             VP_FLUX_NET = FLUX_NET * TX_ACTU
 
+            # CRITICAL FIX: Apply internal discount rate correction
             if year > 0:
-                TX_ACTU_INT = lookups_discount_int[min(year, lookups_discount_int.shape[0] - 1)]
+                TX_ACTU_INT = 1.0
+                if year < lookups_discount_int.shape[0]:
+                    TX_ACTU_INT = lookups_discount_int[year]
                 if TX_ACTU_INT != 0:
                     VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
 
@@ -508,11 +562,11 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
         total_vp += scenario_vp
         valid_scenarios += 1
 
+    # FIX: Only write result once all scenarios are computed
     if valid_scenarios > 0:
         internal_results[external_idx] = total_vp / valid_scenarios
     else:
         internal_results[external_idx] = 0.0
-
 
 def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_scenarios: int = 10,
                                 nb_years: int = 10, nb_sc_int: int = 10, nb_an_projection_int: int = 10,
