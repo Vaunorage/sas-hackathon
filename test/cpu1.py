@@ -674,9 +674,9 @@ if __name__ == "__main__":
         data_path=HERE.joinpath("data_in"),
         NBCPT=2,
         NB_SC=2,
-        NB_AN_PROJECTION=30,
+        NB_AN_PROJECTION=50,
         NB_SC_INT=2,
-        NB_AN_PROJECTION_INT=30,
+        NB_AN_PROJECTION_INT=50,
         CHOC_CAPITAL=0.35,
         HURDLE_RT=0.10,
         verbose=True,  # Enable detailed logging
