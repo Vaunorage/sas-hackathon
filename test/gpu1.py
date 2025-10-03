@@ -841,9 +841,9 @@ if __name__ == "__main__":
         data_path=data_path,
         nb_accounts=2,
         nb_scenarios=2,
-        nb_years=10,
+        nb_years=30,
         nb_sc_int=2,
-        nb_an_projection_int=10,
+        nb_an_projection_int=30,
         choc_capital=0.35,
         hurdle_rt=0.10,
         verbose=True  # Set to False to disable detailed logging
