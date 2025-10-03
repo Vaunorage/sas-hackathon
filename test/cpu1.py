@@ -327,6 +327,15 @@ def project_cash_flows_exact_sas_logic(account_data: pd.Series, scenario: int, p
 
     return results
 
+def kahan_sum(numbers):
+    sum_val = 0.0
+    compensation = 0.0
+    for x in numbers:
+        y = x - compensation
+        t = sum_val + y
+        compensation = (t - sum_val) - y
+        sum_val = t
+    return sum_val
 
 def run_internal_calculations_exact(external_projection: List[Dict], account_data: pd.Series,
                                     scenario: int, lookups: Dict, calculation_type: str,
@@ -375,7 +384,7 @@ def run_internal_calculations_exact(external_projection: List[Dict], account_dat
             )
 
             if internal_results:
-                total_vp = sum([row['VP_FLUX_NET'] for row in internal_results])
+                total_vp = kahan_sum([row['VP_FLUX_NET'] for row in internal_results])
                 internal_scenarios_sum.append(total_vp)
 
         if internal_scenarios_sum:
