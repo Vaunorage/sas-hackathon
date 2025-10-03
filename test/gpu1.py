@@ -375,8 +375,8 @@ def gpu_calculate_year_transition(
         results[result_idx, 8] = VP_FLUX_NET
 
 def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_type: str,
-                       fund_shock: float = 0.0, start_year: int = 0) -> np.ndarray:
-    """Run projection on GPU"""
+                       fund_shock: float = 0.0, start_year: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    """Run projection on GPU with corrected kernel arguments"""
     proj_type_num = 0 if projection_type == "EXTERNE" else 1
 
     max_results = states.shape[0] * (nb_years + 1)
@@ -384,10 +384,10 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
 
     print(f"DEBUG: States shape: {states.shape}, Max results: {max_results}")
 
+    # Move all data to the GPU
     d_states = cuda.to_device(states)
     d_initial_data = cuda.to_device(initial_data)
     d_results = cuda.to_device(results)
-
     d_mortality = cuda.to_device(lookups['mortality'])
     d_lapse = cuda.to_device(lookups['lapse'])
     d_discount_ext = cuda.to_device(lookups['discount_ext'])
@@ -402,24 +402,26 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
 
     for year in range(nb_years + 1):
         print(f"DEBUG: Processing year {year}")
+
+        # 🎯🎯🎯 THE FIX IS HERE: Re-ordered the arguments to match the kernel definition 🎯🎯🎯
         gpu_calculate_year_transition[blocks_per_grid, threads_per_block](
-            d_states, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
-            d_returns_ext, d_returns_int, d_results, year, proj_type_num,
-            fund_shock, start_year, nb_years
+            d_states,                       # 1. states
+            d_results,                      # 2. results
+            d_initial_data,                 # 3. initial_data
+            d_mortality,                    # 4. lookups_mortality
+            d_lapse,                        # 5. lookups_lapse
+            d_discount_ext,                 # 6. lookups_discount_ext
+            d_discount_int,                 # 7. lookups_discount_int
+            d_returns_ext,                  # 8. lookups_returns_ext
+            d_returns_int,                  # 9. lookups_returns_int
+            year, proj_type_num, fund_shock, start_year, nb_years
         )
         cuda.synchronize()
-
-        if year == 0:
-            temp_results = d_results.copy_to_host()
-            year_0_results = temp_results[temp_results[:, 2] == 0]
-            year_0_accounts = np.unique(year_0_results[:, 0][year_0_results[:, 0] != 0])
-            print(f"DEBUG: Year 0 - Accounts with results: {year_0_accounts}")
 
     results = d_results.copy_to_host()
     states = d_states.copy_to_host()
 
     return results, states
-
 
 @cuda.jit
 def gpu_calculate_internal_scenarios(
