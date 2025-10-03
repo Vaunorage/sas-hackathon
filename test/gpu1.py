@@ -686,17 +686,39 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     threads_per_block = 256
     blocks_per_grid = (len(valid_external_results) + threads_per_block - 1) // threads_per_block
 
+    # Call for reserves
+    print("  -> Calculating reserves...")
     gpu_calculate_internal_scenarios[blocks_per_grid, threads_per_block](
-        d_external_results, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
-        d_returns_ext, d_returns_int, d_reserve_results, nb_sc_int, nb_an_projection_int,
-        0.0, d_account_mapping
+        d_external_results,
+        d_initial_data,
+        d_account_mapping,  # MOVED to 3rd position
+        d_mortality,
+        d_lapse,
+        d_discount_ext,
+        d_discount_int,
+        d_returns_int,  # d_returns_ext is REMOVED
+        d_reserve_results,
+        nb_sc_int,
+        nb_an_projection_int,
+        0.0  # fund_shock for reserves
     )
     cuda.synchronize()
 
+    # Call for capital
+    print("  -> Calculating capital...")
     gpu_calculate_internal_scenarios[blocks_per_grid, threads_per_block](
-        d_external_results, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
-        d_returns_ext, d_returns_int, d_capital_results, nb_sc_int, nb_an_projection_int,
-        choc_capital, d_account_mapping
+        d_external_results,
+        d_initial_data,
+        d_account_mapping,  # MOVED to 3rd position
+        d_mortality,
+        d_lapse,
+        d_discount_ext,
+        d_discount_int,
+        d_returns_int,  # d_returns_ext is REMOVED
+        d_capital_results,
+        nb_sc_int,
+        nb_an_projection_int,
+        choc_capital  # fund_shock for capital
     )
     cuda.synchronize()
 
