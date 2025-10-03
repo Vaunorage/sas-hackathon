@@ -398,16 +398,18 @@ def log_external_year_details(external_results, year, account_id=None, scenario=
     """Log detailed information for a specific year"""
     year_data = external_results[external_results[:, 2] == year]
 
-    if account_id is not None:
-        year_data = year_data[year_data[:, 0] == account_id]
-    if scenario is not None:
-        year_data = year_data[year_data[:, 1] == scenario]
+    valid_year_data = year_data[year_data[:, 0] != 0]
 
-    if len(year_data) == 0:
+    if account_id is not None:
+        valid_year_data = valid_year_data[valid_year_data[:, 0] == account_id]
+    if scenario is not None:
+        valid_year_data = valid_year_data[valid_year_data[:, 1] == scenario]
+
+    if len(valid_year_data) == 0:
         return
 
     print(f"\n--- Year {year} Details ---")
-    for row in year_data:
+    for row in valid_year_data:
         acc_id, scn, yr, age, vm, death_ben, survie, flux, vp_flux = row
         print(f"  Account {int(acc_id)}, Scenario {int(scn)}:")
         print(f"    Age: {int(age)}")
