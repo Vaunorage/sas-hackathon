@@ -1,9 +1,11 @@
 import os
+
 os.environ['NUMBA_CUDA_COMPUTE_CAPABILITY'] = '8.0'
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 # Force Numba to use lower PTX version
 import numba
+
 numba.config.CUDA_DEFAULT_PTX_CC = (8, 0)
 
 import pandas as pd
@@ -125,9 +127,9 @@ def create_gpu_lookup_tables(data: Dict, max_age: int = 120, max_year: int = 50,
     }
 
 
-def prepare_gpu_data(data, nb_accounts, nb_scenarios):
+def prepare_gpu_data(data, nb_accounts, nb_scenarios, verbose=True):
     """
-    Improved version with explicit validation
+    Improved version with explicit validation and detailed logging
     """
     from datetime import datetime
 
@@ -142,11 +144,30 @@ def prepare_gpu_data(data, nb_accounts, nb_scenarios):
     max_account_id = 0
     account_id_to_idx = {}
 
+    if verbose:
+        print("\n" + "=" * 80)
+        print("INITIAL DATA PREPARATION - DETAILED LOG")
+        print("=" * 80)
+
     for account_idx in range(min(nb_accounts, len(data['population']))):
         account_data = data['population'].iloc[account_idx]
         account_id = int(account_data['ID_COMPTE'])
         max_account_id = max(max_account_id, account_id)
         account_id_to_idx[account_id] = account_idx
+
+        if verbose:
+            print(f"\n--- Account {account_id} (Index {account_idx}) ---")
+            print(f"  MT_VM (Initial Fund Value):       {account_data['MT_VM']:,.2f}")
+            print(f"  MT_GAR_DECES (Death Benefit):     {account_data['MT_GAR_DECES']:,.2f}")
+            print(f"  AGE_DEB (Starting Age):           {int(account_data['age_deb'])}")
+            print(f"  TX_COMM_VENTE (Sales Commission): {account_data.get('TX_COMM_VENTE', 0.0):.4f}")
+            print(f"  FRAIS_ACQUI (Acquisition Fee):    {account_data['FRAIS_ACQUI']:.2f}")
+            print(f"  PC_REVENU_FDS (Fund Revenue):     {account_data['PC_REVENU_FDS']:.4f}")
+            print(f"  PC_HONORAIRES_GEST (Mgmt Fee):    {account_data['PC_HONORAIRES_GEST']:.4f}")
+            print(f"  TX_COMM_MAINTIEN (Ongoing Comm):  {account_data['TX_COMM_MAINTIEN']:.4f}")
+            print(f"  FRAIS_ADMIN (Admin Fee):          {account_data['FRAIS_ADMIN']:.2f}")
+            print(f"  FREQ_RESET_DECES (Reset Freq):    {account_data['FREQ_RESET_DECES']:.0f}")
+            print(f"  MAX_RESET_DECES (Max Reset Age):  {account_data['MAX_RESET_DECES']:.0f}")
 
     print(f"\nAccount ID range: 1 to {max_account_id}")
     print(f"Number of accounts: {len(account_id_to_idx)}")
@@ -167,10 +188,10 @@ def prepare_gpu_data(data, nb_accounts, nb_scenarios):
         # Update mapping
         account_mapping[account_id] = account_idx
 
-        # Store initial data (using correct indices from constants)
-        initial_data[account_idx, 0] = float(account_data['MT_VM'])  # DATA_MT_VM
-        initial_data[account_idx, 1] = float(account_data['MT_GAR_DECES'])  # DATA_MT_GAR_DECES
-        initial_data[account_idx, 2] = int(account_data['age_deb'])  # DATA_AGE_DEB
+        # Store initial data
+        initial_data[account_idx, 0] = float(account_data['MT_VM'])
+        initial_data[account_idx, 1] = float(account_data['MT_GAR_DECES'])
+        initial_data[account_idx, 2] = int(account_data['age_deb'])
         initial_data[account_idx, 3] = float(account_data.get('TX_COMM_VENTE', 0.0))
         initial_data[account_idx, 4] = float(account_data['FRAIS_ACQUI'])
         initial_data[account_idx, 5] = float(account_data['PC_REVENU_FDS'])
@@ -182,25 +203,24 @@ def prepare_gpu_data(data, nb_accounts, nb_scenarios):
 
         # Initialize states for all scenarios
         for scenario in range(1, nb_scenarios + 1):
-            states[combination_idx, 0] = float(account_id)  # STATE_ACCOUNT_ID
-            states[combination_idx, 1] = float(scenario)  # STATE_SCENARIO
-            states[combination_idx, 2] = float(account_idx)  # STATE_ACCOUNT_IDX
-            states[combination_idx, 3] = float(account_data['age_deb'])  # STATE_AGE_DEB
-            states[combination_idx, 4] = 0.0  # STATE_MT_VM_PROJ
-            states[combination_idx, 5] = 0.0  # STATE_MT_GAR_DECES_PROJ
-            states[combination_idx, 6] = 0.0  # STATE_TX_SURVIE
-            states[combination_idx, 7] = float(account_data['age_deb'])  # STATE_AGE
-            states[combination_idx, 8] = 0.0  # STATE_IS_TERMINATED
+            states[combination_idx, 0] = float(account_id)
+            states[combination_idx, 1] = float(scenario)
+            states[combination_idx, 2] = float(account_idx)
+            states[combination_idx, 3] = float(account_data['age_deb'])
+            states[combination_idx, 4] = 0.0
+            states[combination_idx, 5] = 0.0
+            states[combination_idx, 6] = 0.0
+            states[combination_idx, 7] = float(account_data['age_deb'])
+            states[combination_idx, 8] = 0.0
             combination_idx += 1
 
-    # Verify the mapping
-    print("\nVerifying account mapping...")
-    for account_id, expected_idx in account_id_to_idx.items():
-        actual_idx = account_mapping[account_id]
-        if actual_idx != expected_idx:
-            print(f"ERROR: Account {account_id} should map to {expected_idx} but maps to {actual_idx}")
-        else:
-            print(f"  Account {account_id} -> Index {actual_idx} OK")
+    if verbose:
+        print("\n" + "=" * 80)
+        print("Account mapping verification:")
+        for account_id, expected_idx in account_id_to_idx.items():
+            actual_idx = account_mapping[account_id]
+            status = "✓ OK" if actual_idx == expected_idx else "✗ ERROR"
+            print(f"  Account {account_id} -> Index {actual_idx} {status}")
 
     return states, initial_data, account_ids, account_mapping
 
@@ -210,7 +230,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
                                   lookups_discount_ext, lookups_discount_int, lookups_returns_ext,
                                   lookups_returns_int, results, year, projection_type, fund_shock, start_year,
                                   max_years):
-    """GPU kernel for year transition calculations - FIXED version"""
+    """GPU kernel for year transition calculations"""
 
     combination_idx = cuda.grid(1)
     if combination_idx >= states.shape[0]:
@@ -221,7 +241,6 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
 
     account_idx = int(states[combination_idx, STATE_ACCOUNT_IDX])
 
-    # FIXED: Add bounds checking for account_idx
     if account_idx >= initial_data.shape[0] or account_idx < 0:
         return
 
@@ -375,15 +394,46 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
         results[result_idx, 8] = VP_FLUX_NET
 
 
+def log_external_year_details(external_results, year, account_id=None, scenario=None):
+    """Log detailed information for a specific year"""
+    year_data = external_results[external_results[:, 2] == year]
+
+    if account_id is not None:
+        year_data = year_data[year_data[:, 0] == account_id]
+    if scenario is not None:
+        year_data = year_data[year_data[:, 1] == scenario]
+
+    if len(year_data) == 0:
+        return
+
+    print(f"\n--- Year {year} Details ---")
+    for row in year_data:
+        acc_id, scn, yr, age, vm, death_ben, survie, flux, vp_flux = row
+        print(f"  Account {int(acc_id)}, Scenario {int(scn)}:")
+        print(f"    Age: {int(age)}")
+        print(f"    Fund Value: {vm:,.2f}")
+        print(f"    Death Benefit: {death_ben:,.2f}")
+        print(f"    Survival Prob: {survie:.6f}")
+        print(f"    Net Cash Flow: {flux:,.2f}")
+        print(f"    PV Net Cash Flow: {vp_flux:,.2f}")
+
+
 def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_type: str,
-                       fund_shock: float = 0.0, start_year: int = 0) -> np.ndarray:
-    """Run projection on GPU"""
+                       fund_shock: float = 0.0, start_year: int = 0, verbose=True) -> np.ndarray:
+    """Run projection on GPU with detailed logging"""
     proj_type_num = 0 if projection_type == "EXTERNE" else 1
 
     max_results = states.shape[0] * (nb_years + 1)
     results = np.zeros((max_results, 9), dtype=np.float64)
 
-    print(f"DEBUG: States shape: {states.shape}, Max results: {max_results}")
+    if verbose:
+        print(f"\n{'=' * 80}")
+        print(f"RUNNING {projection_type} PROJECTION")
+        print(f"{'=' * 80}")
+        print(f"States shape: {states.shape}")
+        print(f"Max results: {max_results}")
+        print(f"Fund shock: {fund_shock}")
+        print(f"Start year: {start_year}")
 
     d_states = cuda.to_device(states)
     d_initial_data = cuda.to_device(initial_data)
@@ -399,10 +449,13 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
     threads_per_block = 256
     blocks_per_grid = (states.shape[0] + threads_per_block - 1) // threads_per_block
 
-    print(f"DEBUG: GPU grid: {blocks_per_grid} blocks, {threads_per_block} threads per block")
+    if verbose:
+        print(f"GPU grid: {blocks_per_grid} blocks, {threads_per_block} threads per block")
 
     for year in range(nb_years + 1):
-        print(f"DEBUG: Processing year {year}")
+        if verbose:
+            print(f"\nProcessing year {year}...")
+
         gpu_calculate_year_transition[blocks_per_grid, threads_per_block](
             d_states, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
             d_returns_ext, d_returns_int, d_results, year, proj_type_num,
@@ -410,11 +463,9 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
         )
         cuda.synchronize()
 
-        if year == 0:
+        if verbose and year <= 2:  # Log first few years in detail
             temp_results = d_results.copy_to_host()
-            year_0_results = temp_results[temp_results[:, 2] == 0]
-            year_0_accounts = np.unique(year_0_results[:, 0][year_0_results[:, 0] != 0])
-            print(f"DEBUG: Year 0 - Accounts with results: {year_0_accounts}")
+            log_external_year_details(temp_results, year)
 
     results = d_results.copy_to_host()
     states = d_states.copy_to_host()
@@ -424,12 +475,10 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
 
 @cuda.jit
 def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mortality,
-                                              lookups_lapse, lookups_discount_ext, lookups_discount_int,
-                                              lookups_returns_ext, lookups_returns_int, internal_results,
-                                              nb_sc_int, nb_an_projection_int, fund_shock, account_mapping):
-    """
-    REAL FIX: Match CPU's age-based loop termination exactly
-    """
+                                     lookups_lapse, lookups_discount_ext, lookups_discount_int,
+                                     lookups_returns_ext, lookups_returns_int, internal_results,
+                                     nb_sc_int, nb_an_projection_int, fund_shock, account_mapping):
+    """GPU kernel for internal scenario calculations"""
 
     external_idx = cuda.grid(1)
     if external_idx >= external_results.shape[0]:
@@ -448,7 +497,6 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
         internal_results[external_idx] = 0.0
         return
 
-    # Validate account mapping
     if account_id >= account_mapping.shape[0] or account_id < 0:
         internal_results[external_idx] = 0.0
         return
@@ -458,68 +506,53 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
         internal_results[external_idx] = 0.0
         return
 
-    # 🎯 KEY FIX: Calculate max years based on age (match CPU logic)
     AGE_BASE = int(initial_data[account_idx, 2])
     max_years_for_age = 99 - AGE_BASE - year
-
-    # Use the minimum of nb_an_projection_int and age-based limit
     actual_max_years = min(nb_an_projection_int, max_years_for_age)
 
-    # Ensure it's positive
     if actual_max_years < 0:
         internal_results[external_idx] = 0.0
         return
 
-    # Kahan summation variables
     sum_vp = 0.0
     sum_compensation = 0.0
 
     for internal_scenario in range(1, nb_sc_int + 1):
-        # Initialize state
         MT_VM_PROJ = fund_value
         MT_GAR_DECES_PROJ = death_benefit
         TX_SURVIE = survival_prob
 
-        # Apply shock
         if fund_shock > 0.0:
             MT_VM_PROJ = MT_VM_PROJ * (1.0 - fund_shock)
 
-        # Scenario accumulation with Kahan
         scenario_sum = 0.0
         scenario_compensation = 0.0
 
-        # 🎯 CRITICAL FIX: Use actual_max_years instead of nb_an_projection_int
         for internal_year in range(1, actual_max_years + 1):
-            # Early termination
             if TX_SURVIE < 1e-15 or MT_VM_PROJ < 1e-15:
                 break
 
             an_proj = year + internal_year
             current_age = AGE_BASE + year + internal_year
 
-            # Bounds check
             if current_age >= lookups_mortality.shape[0]:
                 break
             if an_proj >= lookups_returns_int.shape[0]:
                 break
 
-            # Get return rate
             RENDEMENT_rate = 0.0
             if internal_scenario < lookups_returns_int.shape[1] and an_proj < lookups_returns_int.shape[0]:
                 RENDEMENT_rate = lookups_returns_int[an_proj, internal_scenario]
 
-            # Fund evolution
             MT_VM_DEB = MT_VM_PROJ
             RENDEMENT = MT_VM_DEB * RENDEMENT_rate
             MT_VM_HALF_REND = MT_VM_DEB + RENDEMENT / 2.0
             FRAIS = -MT_VM_HALF_REND * initial_data[account_idx, 5]
 
-            # Update fund value
             MT_VM_PROJ = MT_VM_DEB + RENDEMENT + FRAIS
             if MT_VM_PROJ < 0.0:
                 MT_VM_PROJ = 0.0
 
-            # Death benefit reset
             FREQ_RESET = initial_data[account_idx, 9]
             MAX_RESET = initial_data[account_idx, 10]
 
@@ -528,7 +561,6 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
                     if MT_VM_PROJ > MT_GAR_DECES_PROJ:
                         MT_GAR_DECES_PROJ = MT_VM_PROJ
 
-            # Get rates
             QX = 0.0
             WX = 0.0
             if current_age < lookups_mortality.shape[0]:
@@ -536,17 +568,14 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
             if an_proj < lookups_lapse.shape[0]:
                 WX = lookups_lapse[an_proj]
 
-            # Update survival
             TX_SURVIE_DEB = TX_SURVIE
             TX_SURVIE = TX_SURVIE_DEB * (1.0 - QX) * (1.0 - WX)
 
-            # Cash flows
             REVENUS = -FRAIS * TX_SURVIE_DEB
             FRAIS_GEST = -MT_VM_HALF_REND * initial_data[account_idx, 6] * TX_SURVIE_DEB
             COMMISSIONS = -MT_VM_HALF_REND * initial_data[account_idx, 7] * TX_SURVIE_DEB
             FRAIS_GEN = -initial_data[account_idx, 8] * TX_SURVIE_DEB
 
-            # Death benefit payment
             shortfall = MT_GAR_DECES_PROJ - MT_VM_PROJ
             if shortfall > 0.0:
                 PMT_GARANTIE = -shortfall * QX * TX_SURVIE_DEB
@@ -555,94 +584,104 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
 
             FLUX_NET = REVENUS + FRAIS_GEST + COMMISSIONS + FRAIS_GEN + PMT_GARANTIE
 
-            # External discount
             TX_ACTU = 1.0
             if an_proj < lookups_discount_ext.shape[0]:
                 TX_ACTU = lookups_discount_ext[an_proj]
 
             VP_FLUX_NET = FLUX_NET * TX_ACTU
 
-            # Internal discount
             if year > 0:
                 if year < lookups_discount_int.shape[0]:
                     TX_ACTU_INT = lookups_discount_int[year]
                     if TX_ACTU_INT > 1e-15:
                         VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
 
-            # Kahan summation for scenario
             y = VP_FLUX_NET - scenario_compensation
             t = scenario_sum + y
             scenario_compensation = (t - scenario_sum) - y
             scenario_sum = t
 
-        # Kahan summation for total
         y = scenario_sum - sum_compensation
         t = sum_vp + y
         sum_compensation = (t - sum_vp) - y
         sum_vp = t
 
-    # Calculate mean
     internal_results[external_idx] = sum_vp / float(nb_sc_int)
+
 
 def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_scenarios: int = 10,
                                 nb_years: int = 10, nb_sc_int: int = 10, nb_an_projection_int: int = 10,
-                                choc_capital: float = 0.35, hurdle_rt: float = 0.10) -> pd.DataFrame:
+                                choc_capital: float = 0.35, hurdle_rt: float = 0.10,
+                                verbose: bool = True) -> pd.DataFrame:
     """
-    Complete GPU-Accelerated ACFC Algorithm - FIXED VERSION
+    Complete GPU-Accelerated ACFC Algorithm with detailed logging
     """
 
-    print("Phase 1: Loading input data...")
+    if verbose:
+        print("\n" + "=" * 80)
+        print("GPU-ACCELERATED ACFC ALGORITHM - COMPLETE EXECUTION LOG")
+        print("=" * 80)
+        print(f"Parameters:")
+        print(f"  Accounts: {nb_accounts}")
+        print(f"  External Scenarios: {nb_scenarios}")
+        print(f"  Projection Years: {nb_years}")
+        print(f"  Internal Scenarios: {nb_sc_int}")
+        print(f"  Internal Projection Years: {nb_an_projection_int}")
+        print(f"  Capital Shock: {choc_capital}")
+        print(f"  Hurdle Rate: {hurdle_rt}")
+
+    print("\nPhase 1: Loading input data...")
     data = load_input_data(data_path, nb_accounts)
 
-    print(f"DEBUG: Loaded {len(data['population'])} accounts:")
-    for i, row in data['population'].iterrows():
-        print(f"  Account {i}: ID_COMPTE = {row['ID_COMPTE']}")
-
-    print("Phase 2: Creating GPU lookup tables...")
+    print("\nPhase 2: Creating GPU lookup tables...")
     lookups = create_gpu_lookup_tables(data)
 
-    print("Phase 3: Preparing GPU data...")
-    states, initial_data, account_ids, account_mapping = prepare_gpu_data(data, nb_accounts, nb_scenarios)
-
-    print(f"DEBUG: Prepared {len(states)} state combinations")
-    print(f"DEBUG: Account IDs in prepared data: {account_ids}")
-    print(f"DEBUG: Unique account IDs in states: {np.unique(states[:, STATE_ACCOUNT_ID])}")
-    print(f"DEBUG: Account mapping array size: {len(account_mapping)}")
-
-    print("Phase 4: Running GPU external projections...")
-    external_results, final_states = run_gpu_projection(
-        states, initial_data, lookups, nb_years, 'EXTERNE'
+    print("\nPhase 3: Preparing GPU data...")
+    states, initial_data, account_ids, account_mapping = prepare_gpu_data(
+        data, nb_accounts, nb_scenarios, verbose=verbose
     )
 
-    # FIX 3: Better debugging of external results
-    print("\n=== DEBUGGING EXTERNAL RESULTS ===")
-    print(f"Total external results before filtering: {len(external_results)}")
-    print(f"Non-zero account IDs in results: {np.unique(external_results[:, 0][external_results[:, 0] != 0])}")
+    print("\nPhase 4: Running GPU external projections...")
+    external_results, final_states = run_gpu_projection(
+        states, initial_data, lookups, nb_years, 'EXTERNE', verbose=verbose
+    )
 
-    valid_mask = external_results[:, 0] != 0
-    valid_external_results = external_results[valid_mask]
+    if verbose:
+        print(f"\n{'=' * 80}")
+        print("EXTERNAL PROJECTION RESULTS SUMMARY")
+        print(f"{'=' * 80}")
+        print(f"Total results: {len(external_results)}")
+        valid_mask = external_results[:, 0] != 0
+        valid_external_results = external_results[valid_mask]
+        print(f"Valid results: {len(valid_external_results)}")
 
-    print(f"Valid external results after filtering: {len(valid_external_results)}")
+        for account_id in sorted(np.unique(valid_external_results[:, 0])):
+            account_mask = valid_external_results[:, 0] == account_id
+            account_results = valid_external_results[account_mask]
+            print(f"\nAccount {int(account_id)}:")
+            print(f"  Total results: {len(account_results)}")
+            print(f"  Scenarios: {sorted(set(account_results[:, 1]))}")
 
-    for account_id in sorted(np.unique(valid_external_results[:, 0])):
-        account_mask = valid_external_results[:, 0] == account_id
-        account_results = valid_external_results[account_mask]
-        scenarios = sorted(set(account_results[:, 1]))
-        print(f"\nAccount {int(account_id)}:")
-        print(f"  Total results: {len(account_results)}")
-        print(f"  Scenarios found: {scenarios}")
-        if len(scenarios) > 0:
-            print(f"  Years per scenario: {len(account_results) // len(scenarios)}")
-
-        year_0 = account_results[account_results[:, 2] == 0]
-        if len(year_0) > 0:
-            print(f"  Year 0 MT_VM_PROJ range: {year_0[:, 4].min():.2f} to {year_0[:, 4].max():.2f}")
+            # Show year 0 and year 1 details for first scenario
+            for yr in [0, 1]:
+                yr_data = account_results[(account_results[:, 2] == yr) & (account_results[:, 1] == 1)]
+                if len(yr_data) > 0:
+                    row = yr_data[0]
+                    print(f"  Year {yr} (Scenario 1):")
+                    print(f"    Fund Value: {row[4]:,.2f}")
+                    print(f"    Death Benefit: {row[5]:,.2f}")
+                    print(f"    Survival Prob: {row[6]:.6f}")
+                    print(f"    Net Cash Flow: {row[7]:,.2f}")
+                    print(f"    PV Cash Flow: {row[8]:,.2f}")
+    else:
+        valid_mask = external_results[:, 0] != 0
+        valid_external_results = external_results[valid_mask]
 
     if len(valid_external_results) == 0:
-        print("WARNING: No valid external results found!")
+        print("ERROR: No valid external results found!")
         return pd.DataFrame()
 
-    print("Phase 6: Running GPU internal calculations for reserves and capital...")
+    print("\nPhase 5: Running GPU internal calculations...")
 
     reserve_results = np.zeros(len(valid_external_results), dtype=np.float64)
     capital_results = np.zeros(len(valid_external_results), dtype=np.float64)
@@ -663,6 +702,8 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     threads_per_block = 256
     blocks_per_grid = (len(valid_external_results) + threads_per_block - 1) // threads_per_block
 
+    if verbose:
+        print(f"Calculating reserves (no shock)...")
     gpu_calculate_internal_scenarios[blocks_per_grid, threads_per_block](
         d_external_results, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
         d_returns_ext, d_returns_int, d_reserve_results, nb_sc_int, nb_an_projection_int,
@@ -670,6 +711,8 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     )
     cuda.synchronize()
 
+    if verbose:
+        print(f"Calculating capital (with {choc_capital} shock)...")
     gpu_calculate_internal_scenarios[blocks_per_grid, threads_per_block](
         d_external_results, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
         d_returns_ext, d_returns_int, d_capital_results, nb_sc_int, nb_an_projection_int,
@@ -680,16 +723,13 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     reserve_results = d_reserve_results.copy_to_host()
     capital_results = d_capital_results.copy_to_host()
 
-    print("Phase 7: Calculating distributable flows...")
+    print("\nPhase 6: Calculating distributable flows...")
 
     final_results = []
-
     from collections import defaultdict
     grouped_external = defaultdict(list)
     grouped_reserves = defaultdict(list)
     grouped_capital = defaultdict(list)
-
-    print(f"DEBUG: Processing {len(valid_external_results)} external results")
 
     for i, row in enumerate(valid_external_results):
         account_id = int(row[0])
@@ -705,7 +745,10 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
         grouped_reserves[key].append((year, reserve_results[i]))
         grouped_capital[key].append((year, capital_results[i] - reserve_results[i]))
 
-    print(f"DEBUG: Unique account-scenario combinations: {len(grouped_external)}")
+    if verbose:
+        print(f"\n{'=' * 80}")
+        print("DISTRIBUTABLE FLOWS CALCULATION")
+        print(f"{'=' * 80}")
 
     for key in grouped_external:
         account_id, scenario = key.split('_')
@@ -715,6 +758,12 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
         external_data = sorted(grouped_external[key], key=lambda x: x['year'])
         reserve_data = dict(sorted(grouped_reserves[key], key=lambda x: x[0]))
         capital_data = dict(sorted(grouped_capital[key], key=lambda x: x[0]))
+
+        if verbose and scenario == 1:  # Log first scenario in detail
+            print(f"\nAccount {account_id}, Scenario {scenario}:")
+            print(
+                f"  {'Year':<6} {'Ext CF':<12} {'Reserve':<12} {'Capital':<12} {'Profit':<12} {'Distrib':<12} {'PV Distrib':<12}")
+            print(f"  {'-' * 6} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12}")
 
         distributable_pvs = []
         prev_reserve = 0.0
@@ -741,10 +790,17 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
 
             distributable_pvs.append(pv_distributable)
 
+            if verbose and scenario == 1:
+                print(f"  {year:<6} {external_cf:>12,.2f} {current_reserve:>12,.2f} {current_capital:>12,.2f} "
+                      f"{profit:>12,.2f} {distributable:>12,.2f} {pv_distributable:>12,.2f}")
+
             prev_reserve = current_reserve
             prev_capital = current_capital
 
         total_pv_distributable = sum(distributable_pvs)
+
+        if verbose and scenario == 1:
+            print(f"  {'TOTAL':<6} {'':<12} {'':<12} {'':<12} {'':<12} {'':<12} {total_pv_distributable:>12,.2f}")
 
         final_results.append({
             'ID_COMPTE': account_id,
@@ -752,10 +808,23 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
             'VP_FLUX_DISTRIBUABLES': total_pv_distributable
         })
 
-    print("Phase 8: Converting to DataFrame...")
+    print("\nPhase 7: Converting to DataFrame...")
     output_df = pd.DataFrame(final_results)
 
-    print(f"Complete GPU algorithm finished. Generated {len(output_df)} results.")
+    if verbose:
+        print(f"\n{'=' * 80}")
+        print("FINAL RESULTS SUMMARY")
+        print(f"{'=' * 80}")
+        print(f"Total results: {len(output_df)}")
+        print(f"\nMean VP_FLUX_DISTRIBUABLES: {output_df['VP_FLUX_DISTRIBUABLES'].mean():,.2f}")
+        print(f"Min: {output_df['VP_FLUX_DISTRIBUABLES'].min():,.2f}")
+        print(f"Max: {output_df['VP_FLUX_DISTRIBUABLES'].max():,.2f}")
+        print(f"\nResults by account:")
+        for account_id in sorted(output_df['ID_COMPTE'].unique()):
+            account_data = output_df[output_df['ID_COMPTE'] == account_id]
+            print(f"  Account {account_id}: Mean = {account_data['VP_FLUX_DISTRIBUABLES'].mean():,.2f}, "
+                  f"Scenarios = {len(account_data)}")
+
     return output_df
 
 
@@ -776,12 +845,11 @@ if __name__ == "__main__":
         nb_sc_int=2,
         nb_an_projection_int=10,
         choc_capital=0.35,
-        hurdle_rt=0.10
+        hurdle_rt=0.10,
+        verbose=True  # Set to False to disable detailed logging
     )
 
     print("\nFinal Results:")
     print(results)
 
     results.to_csv('test/gpu_results_complete.csv', index=False)
-    print(f"\nMean VP_FLUX_DISTRIBUABLES: {results['VP_FLUX_DISTRIBUABLES'].mean():.2f}")
-    print(f"Range: {results['VP_FLUX_DISTRIBUABLES'].min():.2f} to {results['VP_FLUX_DISTRIBUABLES'].max():.2f}")
