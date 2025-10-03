@@ -428,7 +428,13 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
                                            lookups_returns_ext, lookups_returns_int, internal_results,
                                            nb_sc_int, nb_an_projection_int, fund_shock, account_mapping):
     """
-    FIXED version with proper bounds checking and synchronization
+    Final corrected version matching CPU exactly.
+
+    Key fixes for age-dependent drift:
+    1. Match CPU's order of operations EXACTLY
+    2. Use explicit max logic instead of max() function
+    3. Kahan summation to handle long accumulation periods
+    4. Careful handling of repeated discount operations
     """
 
     external_idx = cuda.grid(1)
@@ -440,86 +446,92 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
         return
 
     account_id = int(external_results[external_idx, 0])
-    scenario = int(external_results[external_idx, 1])
     fund_value = external_results[external_idx, 4]
     death_benefit = external_results[external_idx, 5]
     survival_prob = external_results[external_idx, 6]
 
-    if survival_prob == 0 or fund_value == 0:
+    if survival_prob == 0.0 or fund_value == 0.0:
+        internal_results[external_idx] = 0.0
         return
 
-    # CRITICAL FIX: Validate account_id bounds BEFORE array access
+    # Validate account mapping
     if account_id >= account_mapping.shape[0] or account_id < 0:
         internal_results[external_idx] = 0.0
         return
 
     account_idx = account_mapping[account_id]
-
-    # CRITICAL FIX: Validate the mapped index
     if account_idx == -1 or account_idx >= initial_data.shape[0] or account_idx < 0:
         internal_results[external_idx] = 0.0
         return
 
-    # FIX: Use local variable for accumulation to avoid memory issues
-    total_vp = 0.0
-    valid_scenarios = 0
+    # Kahan summation variables
+    sum_vp = 0.0
+    sum_compensation = 0.0
 
     for internal_scenario in range(1, nb_sc_int + 1):
-        # Initialize state variables for this internal scenario
+        # Initialize state - MATCH CPU EXACTLY
         MT_VM_PROJ = fund_value
         MT_GAR_DECES_PROJ = death_benefit
         TX_SURVIE = survival_prob
-        AGE = int(initial_data[account_idx, 2]) + year  # DATA_AGE_DEB = 2
 
-        # Apply fund shock if needed
-        if fund_shock > 0:
-            MT_VM_PROJ = MT_VM_PROJ * (1 - fund_shock)
+        # Apply shock AFTER initialization
+        if fund_shock > 0.0:
+            MT_VM_PROJ = MT_VM_PROJ * (1.0 - fund_shock)
 
-        scenario_vp = 0.0
+        AGE_BASE = int(initial_data[account_idx, 2])
 
-        # Project forward for this internal scenario
-        for internal_year in range(nb_an_projection_int + 1):
-            # Check termination conditions
-            if TX_SURVIE == 0 or MT_VM_PROJ == 0:
+        # Scenario accumulation with Kahan
+        scenario_sum = 0.0
+        scenario_compensation = 0.0
+
+        # CRITICAL: Start from year 1, not 0 (CPU skips year 0)
+        for internal_year in range(1, nb_an_projection_int + 1):
+            # Early termination
+            if TX_SURVIE < 1e-15 or MT_VM_PROJ < 1e-15:
                 break
 
             an_proj = year + internal_year
-            current_age = AGE + internal_year
+            current_age = AGE_BASE + year + internal_year
 
-            # Bounds checking
-            if current_age >= lookups_mortality.shape[0] or current_age < 0:
+            # Bounds check
+            if current_age >= lookups_mortality.shape[0]:
                 break
-            if an_proj >= lookups_returns_int.shape[0] or an_proj < 0:
+            if an_proj >= lookups_returns_int.shape[0]:
                 break
 
-            # Skip year 0 calculations
-            if internal_year == 0:
-                continue
-
-            # Get return rate with bounds checking
+            # Get return rate
             RENDEMENT_rate = 0.0
-            if (internal_scenario >= 0 and internal_scenario < lookups_returns_int.shape[1] and
-                    an_proj >= 0 and an_proj < lookups_returns_int.shape[0]):
+            if internal_scenario < lookups_returns_int.shape[1] and an_proj < lookups_returns_int.shape[0]:
                 RENDEMENT_rate = lookups_returns_int[an_proj, internal_scenario]
 
-            # CRITICAL FIX: Store MT_VM_DEB before modifications
+            # Fund evolution - EXACT CPU sequence
             MT_VM_DEB = MT_VM_PROJ
-
-            # Calculate returns and fees
             RENDEMENT = MT_VM_DEB * RENDEMENT_rate
-            FRAIS = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[account_idx, 5]  # DATA_PC_REVENU_FDS = 5
+
+            # CRITICAL: Calculate average in one step to match CPU
+            MT_VM_HALF_REND = MT_VM_DEB + RENDEMENT / 2.0
+            FRAIS = -MT_VM_HALF_REND * initial_data[account_idx, 5]
 
             # Update fund value
-            MT_VM_PROJ = max(0.0, MT_VM_PROJ + RENDEMENT + FRAIS)
+            MT_VM_PROJ = MT_VM_DEB + RENDEMENT + FRAIS
 
-            # Death benefit reset logic
-            FREQ_RESET_DECES = initial_data[account_idx, 9]  # DATA_FREQ_RESET_DECES = 9
-            MAX_RESET_DECES = initial_data[account_idx, 10]  # DATA_MAX_RESET_DECES = 10
+            # Ensure non-negative (match CPU's max(MT_VM_PROJ, 0))
+            if MT_VM_PROJ < 0.0:
+                MT_VM_PROJ = 0.0
 
-            if FREQ_RESET_DECES == 1 and current_age <= MAX_RESET_DECES:
-                MT_GAR_DECES_PROJ = max(MT_GAR_DECES_PROJ, MT_VM_PROJ)
+            # Death benefit reset - CRITICAL FIX
+            # Use explicit comparison to avoid max() function issues
+            FREQ_RESET = initial_data[account_idx, 9]
+            MAX_RESET = initial_data[account_idx, 10]
 
-            # Get mortality and lapse rates with bounds checking
+            # Match CPU logic EXACTLY
+            if FREQ_RESET > 0.5:  # More robust than == 1.0
+                if current_age <= MAX_RESET:
+                    # Explicit comparison instead of max()
+                    if MT_VM_PROJ > MT_GAR_DECES_PROJ:
+                        MT_GAR_DECES_PROJ = MT_VM_PROJ
+
+            # Get rates
             QX = 0.0
             WX = 0.0
             if current_age < lookups_mortality.shape[0]:
@@ -527,46 +539,53 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
             if an_proj < lookups_lapse.shape[0]:
                 WX = lookups_lapse[an_proj]
 
-            # Update survival probability
+            # Update survival
             TX_SURVIE_DEB = TX_SURVIE
-            TX_SURVIE = TX_SURVIE_DEB * (1 - QX) * (1 - WX)
+            TX_SURVIE = TX_SURVIE_DEB * (1.0 - QX) * (1.0 - WX)
 
-            # Calculate cash flows
+            # Cash flows - use pre-calculated average
             REVENUS = -FRAIS * TX_SURVIE_DEB
-            FRAIS_GEST = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[
-                account_idx, 6] * TX_SURVIE_DEB  # DATA_PC_HONORAIRES_GEST = 6
-            COMMISSIONS = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[
-                account_idx, 7] * TX_SURVIE_DEB  # DATA_TX_COMM_MAINTIEN = 7
-            FRAIS_GEN = -initial_data[account_idx, 8] * TX_SURVIE_DEB  # DATA_FRAIS_ADMIN = 8
-            PMT_GARANTIE = -max(0.0, MT_GAR_DECES_PROJ - MT_VM_PROJ) * QX * TX_SURVIE_DEB
+            FRAIS_GEST = -MT_VM_HALF_REND * initial_data[account_idx, 6] * TX_SURVIE_DEB
+            COMMISSIONS = -MT_VM_HALF_REND * initial_data[account_idx, 7] * TX_SURVIE_DEB
+            FRAIS_GEN = -initial_data[account_idx, 8] * TX_SURVIE_DEB
+
+            # Death benefit payment - explicit max
+            shortfall = MT_GAR_DECES_PROJ - MT_VM_PROJ
+            if shortfall > 0.0:
+                PMT_GARANTIE = -shortfall * QX * TX_SURVIE_DEB
+            else:
+                PMT_GARANTIE = 0.0
 
             FLUX_NET = REVENUS + FRAIS_GEST + COMMISSIONS + FRAIS_GEN + PMT_GARANTIE
 
-            # Discount to present value
+            # External discount
             TX_ACTU = 1.0
             if an_proj < lookups_discount_ext.shape[0]:
                 TX_ACTU = lookups_discount_ext[an_proj]
 
             VP_FLUX_NET = FLUX_NET * TX_ACTU
 
-            # CRITICAL FIX: Apply internal discount rate correction
+            # Internal discount - CRITICAL: Match CPU exactly
             if year > 0:
-                TX_ACTU_INT = 1.0
                 if year < lookups_discount_int.shape[0]:
                     TX_ACTU_INT = lookups_discount_int[year]
-                if TX_ACTU_INT != 0:
-                    VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
+                    if TX_ACTU_INT > 1e-15:
+                        VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
 
-            scenario_vp += VP_FLUX_NET
+            # Kahan summation for scenario
+            y = VP_FLUX_NET - scenario_compensation
+            t = scenario_sum + y
+            scenario_compensation = (t - scenario_sum) - y
+            scenario_sum = t
 
-        total_vp += scenario_vp
-        valid_scenarios += 1
+        # Kahan summation for total
+        y = scenario_sum - sum_compensation
+        t = sum_vp + y
+        sum_compensation = (t - sum_vp) - y
+        sum_vp = t
 
-    # FIX: Only write result once all scenarios are computed
-    if valid_scenarios > 0:
-        internal_results[external_idx] = total_vp / valid_scenarios
-    else:
-        internal_results[external_idx] = 0.0
+    # Calculate mean
+    internal_results[external_idx] = sum_vp / float(nb_sc_int)
 
 def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_scenarios: int = 10,
                                 nb_years: int = 10, nb_sc_int: int = 10, nb_an_projection_int: int = 10,

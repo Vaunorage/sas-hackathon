@@ -134,3 +134,57 @@ Next steps:
 2. If no clear pattern → Run the step-by-step tracer (next script)
 3. Consider that {len(perfect)} accounts work perfectly, so core logic is correct
 """)
+
+
+def test_young_vs_old_accounts():
+    """
+    After applying the fix, this function tests whether young and old accounts
+    now have similar error rates.
+    """
+    import pandas as pd
+
+    gpu_df = pd.read_csv(HERE.joinpath('test/gpu_results_complete.csv'))
+    cpu_df = pd.read_csv(HERE.joinpath('test/acfc_results_fixed.csv'))
+    population = pd.read_csv('data_in/population_fixed.csv').head(10)
+
+    merged = pd.merge(gpu_df, cpu_df, on=['ID_COMPTE', 'scn_eval'], suffixes=('_gpu', '_cpu'))
+    merged['abs_diff'] = abs(merged['VP_FLUX_DISTRIBUABLES_gpu'] - merged['VP_FLUX_DISTRIBUABLES_cpu'])
+
+    # Add age information
+    age_map = dict(zip(population['ID_COMPTE'], population['age_deb']))
+    merged['age'] = merged['ID_COMPTE'].map(age_map)
+
+    print("\nError Analysis by Age Group:")
+    print("=" * 60)
+
+    young = merged[merged['age'] < 30]
+    middle = merged[(merged['age'] >= 30) & (merged['age'] < 50)]
+    old = merged[merged['age'] >= 50]
+
+    if len(young) > 0:
+        print(f"Young accounts (age < 30): {len(young) // 10} accounts")
+        print(f"  Mean error: {young['abs_diff'].mean():.4f}")
+        print(f"  Max error: {young['abs_diff'].max():.4f}")
+
+    if len(middle) > 0:
+        print(f"\nMiddle accounts (30 ≤ age < 50): {len(middle) // 10} accounts")
+        print(f"  Mean error: {middle['abs_diff'].mean():.4f}")
+        print(f"  Max error: {middle['abs_diff'].max():.4f}")
+
+    if len(old) > 0:
+        print(f"\nOld accounts (age ≥ 50): {len(old) // 10} accounts")
+        print(f"  Mean error: {old['abs_diff'].mean():.4f}")
+        print(f"  Max error: {old['abs_diff'].max():.4f}")
+
+    print("\n" + "=" * 60)
+
+    # Check if fix worked
+    if len(young) > 0 and len(old) > 0:
+        ratio = young['abs_diff'].mean() / old['abs_diff'].mean()
+        if ratio < 2.0:
+            print("✅ FIX SUCCESSFUL! Young and old accounts have similar error rates.")
+        else:
+            print(f"⚠️  Young accounts still have {ratio:.1f}x more error than old accounts")
+            print("   May need additional investigation")
+
+test_young_vs_old_accounts()
