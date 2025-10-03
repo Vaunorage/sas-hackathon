@@ -125,7 +125,7 @@ def create_gpu_lookup_tables(data: Dict, max_age: int = 120, max_year: int = 50,
     }
 
 
-def prepare_gpu_data_fixed(data, nb_accounts, nb_scenarios):
+def prepare_gpu_data(data, nb_accounts, nb_scenarios):
     """
     Improved version with explicit validation
     """
