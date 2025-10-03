@@ -424,17 +424,11 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
 
 @cuda.jit
 def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mortality,
-                                           lookups_lapse, lookups_discount_ext, lookups_discount_int,
-                                           lookups_returns_ext, lookups_returns_int, internal_results,
-                                           nb_sc_int, nb_an_projection_int, fund_shock, account_mapping):
+                                              lookups_lapse, lookups_discount_ext, lookups_discount_int,
+                                              lookups_returns_ext, lookups_returns_int, internal_results,
+                                              nb_sc_int, nb_an_projection_int, fund_shock, account_mapping):
     """
-    Final corrected version matching CPU exactly.
-
-    Key fixes for age-dependent drift:
-    1. Match CPU's order of operations EXACTLY
-    2. Use explicit max logic instead of max() function
-    3. Kahan summation to handle long accumulation periods
-    4. Careful handling of repeated discount operations
+    REAL FIX: Match CPU's age-based loop termination exactly
     """
 
     external_idx = cuda.grid(1)
@@ -464,28 +458,38 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
         internal_results[external_idx] = 0.0
         return
 
+    # 🎯 KEY FIX: Calculate max years based on age (match CPU logic)
+    AGE_BASE = int(initial_data[account_idx, 2])
+    max_years_for_age = 99 - AGE_BASE - year
+
+    # Use the minimum of nb_an_projection_int and age-based limit
+    actual_max_years = min(nb_an_projection_int, max_years_for_age)
+
+    # Ensure it's positive
+    if actual_max_years < 0:
+        internal_results[external_idx] = 0.0
+        return
+
     # Kahan summation variables
     sum_vp = 0.0
     sum_compensation = 0.0
 
     for internal_scenario in range(1, nb_sc_int + 1):
-        # Initialize state - MATCH CPU EXACTLY
+        # Initialize state
         MT_VM_PROJ = fund_value
         MT_GAR_DECES_PROJ = death_benefit
         TX_SURVIE = survival_prob
 
-        # Apply shock AFTER initialization
+        # Apply shock
         if fund_shock > 0.0:
             MT_VM_PROJ = MT_VM_PROJ * (1.0 - fund_shock)
-
-        AGE_BASE = int(initial_data[account_idx, 2])
 
         # Scenario accumulation with Kahan
         scenario_sum = 0.0
         scenario_compensation = 0.0
 
-        # CRITICAL: Start from year 1, not 0 (CPU skips year 0)
-        for internal_year in range(1, nb_an_projection_int + 1):
+        # 🎯 CRITICAL FIX: Use actual_max_years instead of nb_an_projection_int
+        for internal_year in range(1, actual_max_years + 1):
             # Early termination
             if TX_SURVIE < 1e-15 or MT_VM_PROJ < 1e-15:
                 break
@@ -504,30 +508,23 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
             if internal_scenario < lookups_returns_int.shape[1] and an_proj < lookups_returns_int.shape[0]:
                 RENDEMENT_rate = lookups_returns_int[an_proj, internal_scenario]
 
-            # Fund evolution - EXACT CPU sequence
+            # Fund evolution
             MT_VM_DEB = MT_VM_PROJ
             RENDEMENT = MT_VM_DEB * RENDEMENT_rate
-
-            # CRITICAL: Calculate average in one step to match CPU
             MT_VM_HALF_REND = MT_VM_DEB + RENDEMENT / 2.0
             FRAIS = -MT_VM_HALF_REND * initial_data[account_idx, 5]
 
             # Update fund value
             MT_VM_PROJ = MT_VM_DEB + RENDEMENT + FRAIS
-
-            # Ensure non-negative (match CPU's max(MT_VM_PROJ, 0))
             if MT_VM_PROJ < 0.0:
                 MT_VM_PROJ = 0.0
 
-            # Death benefit reset - CRITICAL FIX
-            # Use explicit comparison to avoid max() function issues
+            # Death benefit reset
             FREQ_RESET = initial_data[account_idx, 9]
             MAX_RESET = initial_data[account_idx, 10]
 
-            # Match CPU logic EXACTLY
-            if FREQ_RESET > 0.5:  # More robust than == 1.0
+            if FREQ_RESET > 0.5:
                 if current_age <= MAX_RESET:
-                    # Explicit comparison instead of max()
                     if MT_VM_PROJ > MT_GAR_DECES_PROJ:
                         MT_GAR_DECES_PROJ = MT_VM_PROJ
 
@@ -543,13 +540,13 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
             TX_SURVIE_DEB = TX_SURVIE
             TX_SURVIE = TX_SURVIE_DEB * (1.0 - QX) * (1.0 - WX)
 
-            # Cash flows - use pre-calculated average
+            # Cash flows
             REVENUS = -FRAIS * TX_SURVIE_DEB
             FRAIS_GEST = -MT_VM_HALF_REND * initial_data[account_idx, 6] * TX_SURVIE_DEB
             COMMISSIONS = -MT_VM_HALF_REND * initial_data[account_idx, 7] * TX_SURVIE_DEB
             FRAIS_GEN = -initial_data[account_idx, 8] * TX_SURVIE_DEB
 
-            # Death benefit payment - explicit max
+            # Death benefit payment
             shortfall = MT_GAR_DECES_PROJ - MT_VM_PROJ
             if shortfall > 0.0:
                 PMT_GARANTIE = -shortfall * QX * TX_SURVIE_DEB
@@ -565,7 +562,7 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
 
             VP_FLUX_NET = FLUX_NET * TX_ACTU
 
-            # Internal discount - CRITICAL: Match CPU exactly
+            # Internal discount
             if year > 0:
                 if year < lookups_discount_int.shape[0]:
                     TX_ACTU_INT = lookups_discount_int[year]
