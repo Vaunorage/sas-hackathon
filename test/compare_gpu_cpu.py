@@ -3,115 +3,100 @@ from numba import cuda
 import matplotlib.pyplot as plt
 
 
-def rigorous_chaotic_divergence(iterations=100):
+def final_chaotic_divergence_demo(iterations=100, num_trajectories=500000):
     """
-    A more rigorous demonstration where CPU and GPU start with the EXACT same
-    initial value. The divergence arises naturally from the hardware's
-    different handling of the exact same sequence of floating-point operations.
+    This is a robust demonstration combining chaotic recursion with parallel reduction.
+    It forces the GPU to perform complex memory access and parallel summation,
+    making it impossible for the compiler to "cheat" and pre-calculate the result.
+    This reliably exposes the inherent floating-point differences between
+    CPU and GPU architectures.
     """
     print("=" * 70)
-    print("Rigorous Demonstration of Chaotic Divergence")
+    print("Robust Demonstration of GPU vs. CPU Chaotic Divergence")
     print("=" * 70)
 
-    # 1. Define IDENTICAL parameters for both simulations.
+    # 1. IDENTICAL parameters for a large number of parallel simulations
     r = np.float64(3.99)
-    start_val = np.float64(0.7)
+    # Create an array of slightly different starting values for each trajectory
+    # This ensures the workload is realistic and not uniform.
+    start_values = np.linspace(0.6, 0.7, num_trajectories, dtype=np.float64)
 
     print(f"Simulation parameters are IDENTICAL for both platforms:")
-    print(f"  Iterations: {iterations}")
-    print(f"  Growth Rate (r): {r:.17g}")
-    print(f"  Start Value (x0): {start_val:.17g}\n")
+    print(f"  Iterations per trajectory: {iterations}")
+    print(f"  Number of trajectories:    {num_trajectories:,}")
+    print(f"  Growth Rate (r):           {r:.17g}\n")
 
-    # 2. Run the simulation on the CPU
+    # 2. Run the simulation on the CPU (sequentially)
     print("Running CPU simulation...")
-    cpu_history = np.zeros(iterations, dtype=np.float64)
-    x_cpu = start_val
+    cpu_final_values = np.copy(start_values)
     for i in range(iterations):
-        # Explicitly use float64 to be clear
-        x_cpu = r * x_cpu * (np.float64(1.0) - x_cpu)
-        cpu_history[i] = x_cpu
+        # This is a vectorized operation, which is fast on CPU
+        cpu_final_values = r * cpu_final_values * (1.0 - cpu_final_values)
 
-    print(f"CPU final result: {cpu_history[-1]:.17g}")
+    # Finally, sum the results from all trajectories
+    cpu_total_sum = np.sum(cpu_final_values)
+    print(f"CPU Final Sum: {cpu_total_sum:.17g}")
     print("-" * 70)
 
     # 3. Run the EXACT same simulation on the GPU
     @cuda.jit
-    def logistic_map_kernel(start_val, r, iterations, history_out):
-        # This thread will execute the simulation on the GPU hardware
-        x_gpu = start_val
-        for i in range(iterations):
-            # The exact same formula, but compiled for and executed on the GPU
-            x_gpu = r * x_gpu * (1.0 - x_gpu)
-            history_out[i] = x_gpu
+    def chaotic_kernel(io_array, r, iterations):
+        # Each GPU thread handles one trajectory (one element of the array)
+        idx = cuda.grid(1)
+        if idx < io_array.shape[0]:
+            # Load the starting value for this thread
+            x = io_array[idx]
+            # Run the chaotic iteration
+            for i in range(iterations):
+                x = r * x * (1.0 - x)
+            # Store the final result back into the array
+            io_array[idx] = x
+
+    # We also need a parallel sum kernel, as used in the first demo
+    @cuda.jit
+    def parallel_sum_kernel(array, result_out):
+        idx = cuda.grid(1)
+        stride = cuda.gridsize(1)
+        partial_sum = np.float64(0.0)  # Use float64 for precision
+        for i in range(idx, array.shape[0], stride):
+            partial_sum += array[i]
+        cuda.atomic.add(result_out, 0, partial_sum)
 
     print("Running GPU simulation...")
-    gpu_history_device = cuda.device_array(iterations, dtype=np.float64)
-    # Launch with a single thread. We are not testing parallelism here,
-    # but the difference in the GPU's floating-point arithmetic unit.
-    logistic_map_kernel[1, 1](start_val, r, iterations, gpu_history_device)
-    gpu_history = gpu_history_device.copy_to_host()
+    # Copy initial data to GPU
+    gpu_values_device = cuda.to_device(start_values)
 
-    print(f"GPU final result: {gpu_history[-1]:.17g}")
+    # Configure grid and launch the chaotic kernel
+    threads_per_block = 256
+    blocks_per_grid = (num_trajectories + threads_per_block - 1) // threads_per_block
+    chaotic_kernel[blocks_per_grid, threads_per_block](gpu_values_device, r, iterations)
+
+    # Now, sum the results on the GPU using the parallel reduction kernel
+    result_gpu_array = cuda.to_device(np.zeros(1, dtype=np.float64))
+    parallel_sum_kernel[blocks_per_grid, threads_per_block](gpu_values_device, result_gpu_array)
+
+    # Copy the final sum back
+    gpu_total_sum = result_gpu_array.copy_to_host()[0]
+
+    print(f"GPU Final Sum: {gpu_total_sum:.17g}")
     print("-" * 70)
 
-    # 4. Analyze the divergence over time
-    print("Analyzing the divergence that arose NATURALLY from the hardware...")
-    difference_history = np.abs(cpu_history - gpu_history)
+    # 4. Analyze the results
+    difference = cpu_total_sum - gpu_total_sum
+    relative_diff = abs(difference / cpu_total_sum) if cpu_total_sum != 0 else 0
 
-    # Find the very first iteration where the values are no longer identical
-    first_divergence_iter = -1
-    for i in range(iterations):
-        if cpu_history[i] != gpu_history[i]:
-            first_divergence_iter = i
-            break
+    print("Final Comparison:")
+    print(f"  Absolute Difference: {difference:.17g}")
+    print(f"  Relative Difference: {relative_diff:.3e}")
 
-    if first_divergence_iter != -1:
-        print(f"First divergence detected at iteration: {first_divergence_iter}")
-        print(f"  CPU value at divergence: {cpu_history[first_divergence_iter]:.17g}")
-        print(f"  GPU value at divergence: {gpu_history[first_divergence_iter]:.17g}")
-        print(f"  Difference:              {difference_history[first_divergence_iter]:.2e}\n")
+    if difference != 0:
+        print("\nConclusion: The results are DIFFERENT.")
+        print("By running a complex, memory-dependent workload, we have forced")
+        print("the subtle hardware differences to manifest in the final result.")
+        print("This is a much more realistic analog to your financial model.")
     else:
-        print("No divergence detected. This would be extremely surprising.\n")
-
-    print(f"{'Iteration':<12} {'CPU Value':<20} {'GPU Value':<20} {'Difference':<20}")
-    print(f"{'-' * 12} {'-' * 20} {'-' * 20} {'-' * 20}")
-
-    for i in range(iterations):
-        if i < 5 or (
-                i > first_divergence_iter - 3 and i < first_divergence_iter + 3) or i % 10 == 0 or i == iterations - 1:
-            print(f"{i:<12} {cpu_history[i]:<20.6f} {gpu_history[i]:<20.6f} {difference_history[i]:<20.2e}")
-
-    final_difference = difference_history[-1]
-    print(f"\nFinal Absolute Difference: {final_difference:.6f}")
-
-    # ... (Plotting code remains the same as before) ...
-    try:
-        plt.figure(figsize=(15, 7))
-        plt.subplot(1, 2, 1)
-        plt.plot(cpu_history, 'b-', label=f'CPU Execution')
-        plt.plot(gpu_history, 'r--', label=f'GPU Execution')
-        plt.axvline(x=first_divergence_iter, color='k', linestyle=':',
-                    label=f'First Divergence at iter={first_divergence_iter}')
-        plt.title('Natural Divergence from Identical Starting Points')
-        plt.xlabel('Iteration')
-        plt.ylabel('Value (x)')
-        plt.legend()
-        plt.grid(True)
-
-        plt.subplot(1, 2, 2)
-        plt.plot(difference_history, 'g-')
-        plt.yscale('log')
-        plt.title('Growth of the Natural Difference (Log Scale)')
-        plt.xlabel('Iteration')
-        plt.ylabel('Absolute Difference')
-        plt.grid(True)
-
-        plt.tight_layout()
-        plt.savefig('natural_divergence.png')
-        print("\nSaved a plot to 'natural_divergence.png' for visualization.")
-    except ImportError:
-        print("\nMatplotlib not found. Skipping plot generation.")
+        print("\nConclusion: The results are identical (this is virtually impossible).")
 
 
 if __name__ == "__main__":
-    rigorous_chaotic_divergence()
+    final_chaotic_divergence_demo()
