@@ -423,188 +423,165 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
 
 
 @cuda.jit
-def gpu_calculate_internal_scenarios(
-        # --- Input Arrays ---
-        external_results,  # Results from the external projection (state at each year)
-        initial_data,  # Static account data (initial VM, age_deb, fees, etc.)
-        account_mapping,  # Maps sparse account_id to dense initial_data index
-
-        # --- Lookup Tables ---
-        lookups_mortality,
-        lookups_lapse,
-        lookups_discount_ext,
-        lookups_discount_int,
-        lookups_returns_int,  # Using internal returns for this projection
-
-        # --- Output Array ---
-        internal_results,  # The final calculated value (reserve or capital) for each external_result row
-
-        # --- Configuration Parameters ---
-        nb_sc_int,  # Number of internal scenarios to run (e.g., 2)
-        nb_an_projection_int,  # Maximum possible projection years (e.g., 100)
-        fund_shock  # Capital shock factor (0.0 for reserves, 0.35 for capital)
-):
+def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mortality,
+                                              lookups_lapse, lookups_discount_ext, lookups_discount_int,
+                                              lookups_returns_ext, lookups_returns_int, internal_results,
+                                              nb_sc_int, nb_an_projection_int, fund_shock, account_mapping):
     """
-    GPU kernel to calculate the average present value of future cash flows for
-    a given state (account, scenario, year) from an external projection.
-
-    This kernel is launched for each row in the `external_results` array. Each thread
-    will run a full Monte Carlo simulation (nb_sc_int scenarios) from the
-    starting point defined by that row.
-
-    The key fix to match the CPU logic is the dynamic calculation of the
-    projection horizon based on the account's age.
+    REAL FIX: Match CPU's age-based loop termination exactly
     """
 
-    # 1. SETUP: Determine which external state this thread will process
-    # ------------------------------------------------------------------
     external_idx = cuda.grid(1)
     if external_idx >= external_results.shape[0]:
-        return  # Exit if this thread is outside the bounds of the input data
-
-    # 2. DATA UNPACKING & INITIAL CHECKS: Get the starting state for our projection
-    # --------------------------------------------------------------------------------
-    year = int(external_results[external_idx, 2])  # Column 2: an_proj (start year)
-
-    # Internal calculations are only performed for future years (t > 0)
-    if year == 0:
-        internal_results[external_idx] = 0.0
         return
 
-    # Unpack the state variables from the external projection result
+    year = int(external_results[external_idx, 2])
+    if year == 0 or external_results[external_idx, 0] == 0:
+        return
+
     account_id = int(external_results[external_idx, 0])
-    fund_value = external_results[external_idx, 4]  # MT_VM_PROJ at this year
-    death_benefit = external_results[external_idx, 5]  # MT_GAR_DECES_PROJ at this year
-    survival_prob = external_results[external_idx, 6]  # TX_SURVIE at this year
+    fund_value = external_results[external_idx, 4]
+    death_benefit = external_results[external_idx, 5]
+    survival_prob = external_results[external_idx, 6]
 
-    # If the policy has already terminated, there are no future cash flows
-    if survival_prob < 1e-15 or fund_value < 1e-15:
+    if survival_prob == 0.0 or fund_value == 0.0:
         internal_results[external_idx] = 0.0
         return
 
-    # 3. ACCOUNT MAPPING: Find the account's static data
-    # ----------------------------------------------------------------
-    # The `account_id` can be large and sparse (e.g., 1, 5, 1002).
-    # We use the mapping array to find its index in our dense `initial_data` array.
-    if account_id < 0 or account_id >= account_mapping.shape[0]:
+    # Validate account mapping
+    if account_id >= account_mapping.shape[0] or account_id < 0:
         internal_results[external_idx] = 0.0
-        return  # Safety check: account_id is out of bounds for the mapping array
+        return
 
     account_idx = account_mapping[account_id]
-
-    # Further safety checks on the mapping result
-    if account_idx == -1 or account_idx >= initial_data.shape[0]:
+    if account_idx == -1 or account_idx >= initial_data.shape[0] or account_idx < 0:
         internal_results[external_idx] = 0.0
         return
 
-    # 4. ** THE FIX **: DYNAMICALLY CALCULATE PROJECTION HORIZON
-    # ----------------------------------------------------------------
-    # This is the critical logic to ensure GPU results match the CPU.
-    # The projection must stop when the person reaches age 99.
-    AGE_BASE = int(initial_data[account_idx, 2])  # Index 2 is DATA_AGE_DEB
-
-    # Calculate how many years are left until the person reaches age 99
+    # 🎯 KEY FIX: Calculate max years based on age (match CPU logic)
+    AGE_BASE = int(initial_data[account_idx, 2])
     max_years_for_age = 99 - AGE_BASE - year
 
-    # The actual projection horizon is the minimum of the global setting
-    # and the account-specific age limit.
+    # Use the minimum of nb_an_projection_int and age-based limit
     actual_max_years = min(nb_an_projection_int, max_years_for_age)
 
-    # If the person is already too old, there's no projection to run
+    # Ensure it's positive
     if actual_max_years < 0:
         internal_results[external_idx] = 0.0
         return
 
-    # 5. MONTE CARLO SIMULATION: Run internal scenarios
-    # ----------------------------------------------------------------
-    # Use Kahan summation to improve numerical stability for floating-point sums.
-    sum_vp = 0.0  # Holds the sum of PVs across all scenarios
-    sum_compensation = 0.0  # Kahan compensation term for the total sum
+    # Kahan summation variables
+    sum_vp = 0.0
+    sum_compensation = 0.0
 
     for internal_scenario in range(1, nb_sc_int + 1):
-        # --- A. Initialize state for this scenario ---
+        # Initialize state
         MT_VM_PROJ = fund_value
         MT_GAR_DECES_PROJ = death_benefit
         TX_SURVIE = survival_prob
 
-        # Apply capital shock if applicable (fund_shock > 0)
+        # Apply shock
         if fund_shock > 0.0:
             MT_VM_PROJ = MT_VM_PROJ * (1.0 - fund_shock)
 
-        # Kahan variables for summing the PVs within this single scenario
+        # Scenario accumulation with Kahan
         scenario_sum = 0.0
         scenario_compensation = 0.0
 
-        # --- B. Project cash flows for this scenario year by year ---
-        # ** NOTE: We use `actual_max_years` calculated in step 4 **
+        # 🎯 CRITICAL FIX: Use actual_max_years instead of nb_an_projection_int
         for internal_year in range(1, actual_max_years + 1):
-
-            # Terminate this scenario early if policy lapses or fund is depleted
+            # Early termination
             if TX_SURVIE < 1e-15 or MT_VM_PROJ < 1e-15:
                 break
 
-            # Calculate current age and projection year for lookups
             an_proj = year + internal_year
-            current_age = AGE_BASE + an_proj
+            current_age = AGE_BASE + year + internal_year
 
-            # Bounds checks for lookup tables
-            if current_age >= lookups_mortality.shape[0] or \
-                    an_proj >= lookups_returns_int.shape[0]:
+            # Bounds check
+            if current_age >= lookups_mortality.shape[0]:
+                break
+            if an_proj >= lookups_returns_int.shape[0]:
                 break
 
-            # --- C. Core Financial Calculations (for one year) ---
-            # Get investment return rate for this year and scenario
-            RENDEMENT_rate = lookups_returns_int[an_proj, internal_scenario]
+            # Get return rate
+            RENDEMENT_rate = 0.0
+            if internal_scenario < lookups_returns_int.shape[1] and an_proj < lookups_returns_int.shape[0]:
+                RENDEMENT_rate = lookups_returns_int[an_proj, internal_scenario]
 
-            # Fund value evolution
+            # Fund evolution
             MT_VM_DEB = MT_VM_PROJ
             RENDEMENT = MT_VM_DEB * RENDEMENT_rate
-            MT_VM_HALF_REND = MT_VM_DEB + RENDEMENT / 2.0  # Pre-calculate for fee base
-            FRAIS = -MT_VM_HALF_REND * initial_data[account_idx, 5]  # Index 5: PC_REVENU_FDS
-            MT_VM_PROJ = max(0.0, MT_VM_DEB + RENDEMENT + FRAIS)
+            MT_VM_HALF_REND = MT_VM_DEB + RENDEMENT / 2.0
+            FRAIS = -MT_VM_HALF_REND * initial_data[account_idx, 5]
 
-            # Death benefit guarantee reset logic
-            if initial_data[account_idx, 9] == 1 and current_age <= initial_data[account_idx, 10]:
-                MT_GAR_DECES_PROJ = max(MT_GAR_DECES_PROJ, MT_VM_PROJ)
+            # Update fund value
+            MT_VM_PROJ = MT_VM_DEB + RENDEMENT + FRAIS
+            if MT_VM_PROJ < 0.0:
+                MT_VM_PROJ = 0.0
 
-            # Survival probability update
-            QX = lookups_mortality[current_age]
-            WX = lookups_lapse[an_proj]
+            # Death benefit reset
+            FREQ_RESET = initial_data[account_idx, 9]
+            MAX_RESET = initial_data[account_idx, 10]
+
+            if FREQ_RESET > 0.5:
+                if current_age <= MAX_RESET:
+                    if MT_VM_PROJ > MT_GAR_DECES_PROJ:
+                        MT_GAR_DECES_PROJ = MT_VM_PROJ
+
+            # Get rates
+            QX = 0.0
+            WX = 0.0
+            if current_age < lookups_mortality.shape[0]:
+                QX = lookups_mortality[current_age]
+            if an_proj < lookups_lapse.shape[0]:
+                WX = lookups_lapse[an_proj]
+
+            # Update survival
             TX_SURVIE_DEB = TX_SURVIE
             TX_SURVIE = TX_SURVIE_DEB * (1.0 - QX) * (1.0 - WX)
 
-            # Cash Flow Calculations
+            # Cash flows
             REVENUS = -FRAIS * TX_SURVIE_DEB
-            FRAIS_GEST = -MT_VM_HALF_REND * initial_data[account_idx, 6] * TX_SURVIE_DEB  # Idx 6: PC_HONORAIRES_GEST
-            COMMISSIONS = -MT_VM_HALF_REND * initial_data[account_idx, 7] * TX_SURVIE_DEB  # Idx 7: TX_COMM_MAINTIEN
-            FRAIS_GEN = -initial_data[account_idx, 8] * TX_SURVIE_DEB  # Idx 8: FRAIS_ADMIN
-            PMT_GARANTIE = -max(0.0, MT_GAR_DECES_PROJ - MT_VM_PROJ) * QX * TX_SURVIE_DEB
+            FRAIS_GEST = -MT_VM_HALF_REND * initial_data[account_idx, 6] * TX_SURVIE_DEB
+            COMMISSIONS = -MT_VM_HALF_REND * initial_data[account_idx, 7] * TX_SURVIE_DEB
+            FRAIS_GEN = -initial_data[account_idx, 8] * TX_SURVIE_DEB
+
+            # Death benefit payment
+            shortfall = MT_GAR_DECES_PROJ - MT_VM_PROJ
+            if shortfall > 0.0:
+                PMT_GARANTIE = -shortfall * QX * TX_SURVIE_DEB
+            else:
+                PMT_GARANTIE = 0.0
+
             FLUX_NET = REVENUS + FRAIS_GEST + COMMISSIONS + FRAIS_GEN + PMT_GARANTIE
 
-            # Discounting to find Present Value (PV)
-            TX_ACTU_EXT = lookups_discount_ext[an_proj]
-            VP_FLUX_NET = FLUX_NET * TX_ACTU_EXT
+            # External discount
+            TX_ACTU = 1.0
+            if an_proj < lookups_discount_ext.shape[0]:
+                TX_ACTU = lookups_discount_ext[an_proj]
 
-            # Additional internal discounting based on the starting year of this projection
-            TX_ACTU_INT = lookups_discount_int[year]
-            if TX_ACTU_INT > 1e-15:
-                VP_FLUX_NET /= TX_ACTU_INT
+            VP_FLUX_NET = FLUX_NET * TX_ACTU
 
-            # --- D. Accumulate PV for this scenario using Kahan sum ---
+            # Internal discount
+            if year > 0:
+                if year < lookups_discount_int.shape[0]:
+                    TX_ACTU_INT = lookups_discount_int[year]
+                    if TX_ACTU_INT > 1e-15:
+                        VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
+
+            # Kahan summation for scenario
             y = VP_FLUX_NET - scenario_compensation
             t = scenario_sum + y
             scenario_compensation = (t - scenario_sum) - y
             scenario_sum = t
 
-        # --- E. Add this scenario's total PV to the grand total (Kahan sum) ---
+        # Kahan summation for total
         y = scenario_sum - sum_compensation
         t = sum_vp + y
         sum_compensation = (t - sum_vp) - y
         sum_vp = t
 
-    # 6. FINALIZATION: Calculate the mean and write the result
-    # -----------------------------------------------------------
-    # The final result is the average PV across all internal scenarios.
+    # Calculate mean
     internal_results[external_idx] = sum_vp / float(nb_sc_int)
 
 def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_scenarios: int = 10,
