@@ -259,7 +259,7 @@ def gpu_calculate_year_transition(
         # It is only executed once and its logic was already correct.
         if projection_type == 0:  # EXTERNE
             MT_VM_PROJ = initial_data[account_idx, DATA_MT_VM]
-            MT_GAR_DECES_PROJ = initial_data[account_idx, DATA_GAR_DECES]
+            MT_GAR_DECES_PROJ = initial_data[account_idx, DATA_MT_GAR_DECES]
             TX_SURVIE = 1.0
             AGE = initial_data[account_idx, DATA_AGE_DEB]
 
@@ -273,7 +273,7 @@ def gpu_calculate_year_transition(
             if fund_shock > 0:
                 MT_VM_PROJ *= (1 - fund_shock)
 
-            MT_GAR_DECES_PROJ = initial_data[account_idx, DATA_GAR_DECES]
+            MT_GAR_DECES_PROJ = initial_data[account_idx, DATA_MT_GAR_DECES]
             TX_SURVIE = 1.0
             AGE = initial_data[account_idx, DATA_AGE_DEB] + start_year
             FLUX_NET = 0.0
