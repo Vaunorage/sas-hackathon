@@ -1,7 +1,3 @@
-# test_cuda_simple.py
-import os
-os.environ['NUMBA_CUDA_DEFAULT_PTX_VERSION'] = '8.4'
-
 from numba import cuda
 import numpy as np
 
