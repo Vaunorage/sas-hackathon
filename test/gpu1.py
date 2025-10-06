@@ -838,7 +838,39 @@ def initialize_cuda_context():
         return False
 
 
+# Add this diagnostic function
+def check_cuda_environment():
+    """Comprehensive CUDA environment check"""
+    print("\n" + "=" * 80)
+    print("CUDA ENVIRONMENT DIAGNOSTICS")
+    print("=" * 80)
+
+    # Check if CUDA is available
+    print(f"CUDA Available: {cuda.is_available()}")
+
+    if cuda.is_available():
+        try:
+            print(f"Number of GPUs: {len(cuda.gpus)}")
+            for i, gpu in enumerate(cuda.gpus):
+                print(f"  GPU {i}: {gpu.name.decode()}")
+        except Exception as e:
+            print(f"Error accessing GPU info: {e}")
+
+    # Check Numba version
+    print(f"Numba version: {numba.__version__}")
+
+    # Try to detect CUDA toolkit
+    try:
+        from numba.cuda.cudadrv.libs import test
+        test()
+        print("✓ CUDA libraries detected")
+    except Exception as e:
+        print(f"✗ CUDA libraries not properly detected: {e}")
+
+    print("=" * 80 + "\n")
+
 if __name__ == "__main__":
+    check_cuda_environment()
     if not cuda.is_available():
         print("CUDA is not available. Please install CUDA and ensure your GPU supports it.")
         exit(1)
