@@ -1,13 +1,3 @@
-import os
-
-os.environ['NUMBA_CUDA_COMPUTE_CAPABILITY'] = '8.0'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-
-# Force Numba to use lower PTX version
-import numba
-
-numba.config.CUDA_DEFAULT_PTX_CC = (8, 0)
-
 import pandas as pd
 import numpy as np
 from numba import cuda, jit
@@ -830,12 +820,41 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     return output_df
 
 
+def initialize_cuda_context():
+    """Initialize CUDA context explicitly"""
+    try:
+        # Select and initialize GPU device
+        cuda.select_device(0)
+
+        # Force context creation by allocating a small array
+        test_array = np.array([1.0], dtype=np.float64)
+        d_test = cuda.to_device(test_array)
+        d_test.copy_to_host()
+
+        print(f"✓ CUDA context initialized successfully on device: {cuda.get_current_device().name.decode()}")
+        return True
+    except Exception as e:
+        print(f"✗ Failed to initialize CUDA context: {e}")
+        return False
+
+
 if __name__ == "__main__":
     if not cuda.is_available():
         print("CUDA is not available. Please install CUDA and ensure your GPU supports it.")
         exit(1)
 
-    print(f"CUDA devices available: {cuda.gpus}")
+    print(f"CUDA devices detected: {len(cuda.gpus)}")
+    for i, gpu in enumerate(cuda.gpus):
+        print(f"  Device {i}: {gpu.name.decode()}")
+
+    # Initialize CUDA context
+    if not initialize_cuda_context():
+        print("\nCannot proceed without valid CUDA context.")
+        print("Possible issues:")
+        print("  1. No physical GPU available")
+        print("  2. GPU not accessible (check permissions/docker settings)")
+        print("  3. CUDA driver mismatch")
+        exit(1)
 
     data_path = "data_in"
 
@@ -848,10 +867,9 @@ if __name__ == "__main__":
         nb_an_projection_int=100,
         choc_capital=0.35,
         hurdle_rt=0.10,
-        verbose=True  # Set to False to disable detailed logging
+        verbose=True
     )
 
     print("\nFinal Results:")
     print(results)
-
     results.to_csv('test/gpu_results_complete.csv', index=False)
