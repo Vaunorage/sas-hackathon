@@ -7,6 +7,24 @@ import warnings
 import logging
 import math
 
+def _initialize_cuda():
+    """Initialize CUDA at module import time"""
+    if cuda.is_available():
+        try:
+            # Force context creation
+            cuda.select_device(0)
+            # Create a dummy device array to establish context
+            dummy = cuda.device_array(1, dtype=np.float32)
+            del dummy
+            return True
+        except Exception as e:
+            print(f"Warning: Could not initialize CUDA context: {e}")
+            return False
+    return False
+
+# Initialize CUDA context when module loads
+_CUDA_INITIALIZED = _initialize_cuda()
+
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -823,18 +841,37 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
 def initialize_cuda_context():
     """Initialize CUDA context explicitly"""
     try:
-        # Select and initialize GPU device
-        cuda.select_device(0)
+        # Explicitly select device 0 and create context
+        device = cuda.select_device(0)
 
-        # Force context creation by allocating a small array
-        test_array = np.array([1.0], dtype=np.float64)
+        # Force context creation by accessing the context
+        ctx = cuda.current_context()
+
+        # Verify context is valid by running a simple kernel
+        @cuda.jit
+        def dummy_kernel(output):
+            output[0] = 1.0
+
+        test_array = np.zeros(1, dtype=np.float64)
         d_test = cuda.to_device(test_array)
-        d_test.copy_to_host()
 
-        print(f"✓ CUDA context initialized successfully on device: {cuda.get_current_device().name.decode()}")
-        return True
+        dummy_kernel[1, 1](d_test)
+        cuda.synchronize()
+
+        result = d_test.copy_to_host()
+
+        if result[0] == 1.0:
+            print(f"✓ CUDA context initialized successfully on device: {device.name.decode()}")
+            print(f"✓ Context verification passed")
+            return True
+        else:
+            print("✗ Context verification failed")
+            return False
+
     except Exception as e:
         print(f"✗ Failed to initialize CUDA context: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -869,24 +906,40 @@ def check_cuda_environment():
 
     print("=" * 80 + "\n")
 
+
 if __name__ == "__main__":
     check_cuda_environment()
+
     if not cuda.is_available():
         print("CUDA is not available. Please install CUDA and ensure your GPU supports it.")
         exit(1)
 
-    print(f"CUDA devices detected: {len(cuda.gpus)}")
+    if not _CUDA_INITIALIZED:
+        print("\n⚠ CUDA context could not be initialized at module load time.")
+        print("Attempting manual initialization...")
+
+        try:
+            # Try manual initialization
+            cuda.close()  # Close any partial context
+            cuda.select_device(0)
+
+            # Simple test
+            test = cuda.device_array(10, dtype=np.float32)
+            del test
+
+            print("✓ Manual initialization successful")
+
+        except Exception as e:
+            print(f"✗ Manual initialization failed: {e}")
+            print("\nThis might be a Docker/permissions issue.")
+            print("Try running with: docker run --gpus all --privileged ...")
+            exit(1)
+    else:
+        print("✓ CUDA context already initialized at module load")
+
+    print(f"\nCUDA devices detected: {len(cuda.gpus)}")
     for i, gpu in enumerate(cuda.gpus):
         print(f"  Device {i}: {gpu.name.decode()}")
-
-    # Initialize CUDA context
-    if not initialize_cuda_context():
-        print("\nCannot proceed without valid CUDA context.")
-        print("Possible issues:")
-        print("  1. No physical GPU available")
-        print("  2. GPU not accessible (check permissions/docker settings)")
-        print("  3. CUDA driver mismatch")
-        exit(1)
 
     data_path = "data_in"
 
