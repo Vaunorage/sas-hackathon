@@ -6,123 +6,55 @@ import logging
 import time
 from tqdm import tqdm
 
-from paths import HERE
-
 warnings.filterwarnings('ignore')
-
-# Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def load_input_files(data_path: str, verbose: bool = True) -> Tuple[pd.DataFrame, ...]:
-    """Load all input CSV files exactly as SAS does"""
+def load_input_data(data_path: str = ".", nb_accounts: int = None) -> Dict:
+    """Load all input data files"""
     try:
-        if verbose:
-            print("\n📁 LOADING INPUT FILES")
-            print("-" * 50)
-
-        files_to_load = [
-            ("population_fixed.csv", "Population data"),
-            ("rendement1.csv", "Returns data"),
-            ("tx_deces_fixed.csv", "Mortality rates"),
-            ("tx_interet_fixed.csv", "Interest rates"),
-            ("tx_interet_int_fixed.csv", "Internal interest rates"),
-            ("tx_retrait_fixed.csv", "Lapse rates")
-        ]
-
-        loaded_data = []
-        for filename, description in files_to_load:
-            if verbose:
-                print(f"Loading {description}...")
-            df = pd.read_csv(f"{data_path}/{filename}")
-            loaded_data.append(df)
-            if verbose:
-                print(f"  ✓ {description}: {len(df):,} rows")
-                time.sleep(0.1)
-
-        population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait = loaded_data
+        population = pd.read_csv(f"{data_path}/population_fixed.csv")
+        if nb_accounts is not None:
+            population = population.head(nb_accounts)
+        rendement = pd.read_csv(f"{data_path}/rendement1.csv")
+        tx_deces = pd.read_csv(f"{data_path}/tx_deces_fixed.csv")
+        tx_interet = pd.read_csv(f"{data_path}/tx_interet_fixed.csv")
+        tx_interet_int = pd.read_csv(f"{data_path}/tx_interet_int_fixed.csv")
+        tx_retrait = pd.read_csv(f"{data_path}/tx_retrait_fixed.csv")
 
         if 'TYPE' in rendement.columns:
-            if verbose:
-                print("🔧 Processing TYPE column encoding...")
             rendement['TYPE'] = rendement['TYPE'].apply(
                 lambda x: x.decode('utf-8') if isinstance(x, bytes) else str(x)
             )
-            if verbose:
-                print(f"  ✓ Processed {len(rendement):,} TYPE entries")
 
-        if verbose:
-            print(f"\n✅ All files loaded successfully!")
-            print(f"📊 Found {len(population)} accounts for processing")
-
-        return population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait
-
+        logger.info(f"Input files loaded - Population: {len(population)} accounts")
+        return {
+            'population': population,
+            'rendement': rendement,
+            'tx_deces': tx_deces,
+            'tx_interet': tx_interet,
+            'tx_interet_int': tx_interet_int,
+            'tx_retrait': tx_retrait
+        }
     except Exception as e:
         logger.error(f"Error loading input files: {e}")
         raise
 
 
-def load_input_data(data_path: str = ".", verbose: bool = True):
-    """Load all input data files and create lookup dictionaries"""
-    population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait = load_input_files(data_path, verbose)
-
-    return {
-        'population': population,
-        'rendement': rendement,
-        'tx_deces': tx_deces,
-        'tx_interet': tx_interet,
-        'tx_interet_int': tx_interet_int,
-        'tx_retrait': tx_retrait
-    }
-
-
-def create_lookup_tables(data: Dict, verbose: bool = True) -> Dict:
+def create_lookup_tables(data: Dict) -> Dict:
     """Create hash table lookups for O(1) access"""
-    if verbose:
-        print("\n🔍 CREATING LOOKUP TABLES")
-        print("-" * 50)
-
     lookups = {}
 
-    if verbose:
-        print("Building mortality lookup table...")
     lookups['mortality'] = dict(zip(data['tx_deces']['AGE'], data['tx_deces']['QX']))
-    if verbose:
-        print(f"  ✓ {len(lookups['mortality'])} mortality rates loaded")
-
-    if verbose:
-        print("Building lapse lookup table...")
     lookups['lapse'] = dict(zip(data['tx_retrait']['an_proj'], data['tx_retrait']['WX']))
-    if verbose:
-        print(f"  ✓ {len(lookups['lapse'])} lapse rates loaded")
-
-    if verbose:
-        print("Building discount rate lookup tables...")
     lookups['discount_ext'] = dict(zip(data['tx_interet']['an_proj'], data['tx_interet']['TX_ACTU']))
     lookups['discount_int'] = dict(zip(data['tx_interet_int']['an_eval'], data['tx_interet_int']['TX_ACTU_INT']))
-    if verbose:
-        print(f"  ✓ {len(lookups['discount_ext'])} external rates, {len(lookups['discount_int'])} internal rates")
 
-    if verbose:
-        print("Building returns lookup table...")
     lookups['returns'] = {}
-
-    if len(data['rendement']) > 5000 and verbose:
-        iterator = tqdm(data['rendement'].iterrows(),
-                        desc="Processing returns",
-                        total=len(data['rendement']),
-                        unit="rows")
-    else:
-        iterator = data['rendement'].iterrows()
-
-    for _, row in iterator:
+    for _, row in data['rendement'].iterrows():
         key = (int(row['an_proj']), int(row['scn_proj']), row['TYPE'])
         lookups['returns'][key] = row['RENDEMENT']
-
-    if verbose:
-        print(f"  ✓ {len(lookups['returns'])} return scenarios loaded")
-        print("✅ All lookup tables created successfully!")
 
     return lookups
 
@@ -132,17 +64,44 @@ def hash_find(hash_table: dict, key, default_value=None):
     return hash_table.get(key, default_value if default_value is not None else 0.0)
 
 
+def log_external_year_details(results: List[Dict], year: int, account_id: int = None, scenario: int = None):
+    """Log detailed information for a specific year (GPU style)"""
+    year_data = [r for r in results if r['year'] == year]
+
+    if account_id is not None:
+        year_data = [r for r in year_data if r['account_id'] == account_id]
+    if scenario is not None:
+        year_data = [r for r in year_data if r['scenario'] == scenario]
+
+    if len(year_data) == 0:
+        return
+
+    print(f"\n--- Year {year} Details ---")
+    for row in year_data:
+        acc_id = row['account_id']
+        scn = row['scenario']
+        age = row['AGE']
+        vm = row['MT_VM_PROJ']
+        death_ben = row['MT_GAR_DECES_PROJ']
+        survie = row['TX_SURVIE']
+        flux = row['FLUX_NET']
+        vp_flux = row['VP_FLUX_NET']
+
+        print(f"  Account {int(acc_id)}, Scenario {int(scn)}:")
+        print(f"    Age: {int(age)}")
+        print(f"    Fund Value: {vm:,.2f}")
+        print(f"    Death Benefit: {death_ben:,.2f}")
+        print(f"    Survival Prob: {survie:.6f}")
+        print(f"    Net Cash Flow: {flux:,.2f}")
+        print(f"    PV Net Cash Flow: {vp_flux:,.2f}")
+
+
 def project_cash_flows_exact_sas_logic(account_data: pd.Series, scenario: int, projection_type: str,
                                        lookups: Dict, nb_years: int, fund_shock: float = 0.0,
-                                       start_year: int = 0, verbose: bool = False,
-                                       log_account_id: int = None) -> List[Dict]:
+                                       start_year: int = 0, verbose: bool = False) -> List[Dict]:
     """
-    Exact replication of SAS cash flow calculation logic with detailed logging
+    Exact replication of SAS cash flow calculation logic
     """
-
-    # Determine if we should log details for this account
-    should_log = verbose and (log_account_id is None or account_data.get('ID_COMPTE') == log_account_id)
-
     # Initialize retained variables exactly as in SAS
     MT_VM_PROJ = 0.0
     MT_GAR_DECES_PROJ = 0.0
@@ -158,21 +117,7 @@ def project_cash_flows_exact_sas_logic(account_data: pd.Series, scenario: int, p
         max_years = min(nb_years, 99 - int(account_data['age_deb']) - start_year)
         year_range = range(max_years + 1)
 
-    if should_log and projection_type == "EXTERNE":
-        print(f"\n{'=' * 80}")
-        print(f"PROJECTION DETAILS - Account {account_data.get('ID_COMPTE')}, Scenario {scenario}")
-        print(f"{'=' * 80}")
-        print(f"Type: {projection_type}")
-        print(f"Starting Age: {int(account_data['age_deb'])}")
-        print(f"Initial Fund Value: {account_data['MT_VM']:,.2f}")
-        print(f"Initial Death Benefit: {account_data['MT_GAR_DECES']:,.2f}")
-        print(f"Max Projection Years: {max_years}")
-        print(f"\nYear-by-Year Progression:")
-        print(
-            f"{'Year':<6} {'Age':<5} {'Fund Value':<14} {'Death Ben':<14} {'Survival':<12} {'Net CF':<14} {'PV Net CF':<14}")
-        print(f"{'-' * 6} {'-' * 5} {'-' * 14} {'-' * 14} {'-' * 12} {'-' * 14} {'-' * 14}")
-
-    for year_idx, current_year in enumerate(year_range):
+    for current_year in year_range:
 
         # ***********************************************
         # *** Initialization for year 0 ***
@@ -298,11 +243,6 @@ def project_cash_flows_exact_sas_logic(account_data: pd.Series, scenario: int, p
                     VP_PMT_GARANTIE = VP_PMT_GARANTIE / TX_ACTU_INT
                     VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
 
-        # Log detailed year information
-        if should_log and projection_type == "EXTERNE" and current_year <= 5:
-            print(f"{current_year:<6} {AGE:<5} {MT_VM_PROJ:>14,.2f} {MT_GAR_DECES_PROJ:>14,.2f} "
-                  f"{TX_SURVIE:>12.6f} {FLUX_NET:>14,.2f} {VP_FLUX_NET:>14,.2f}")
-
         # Store results
         result_row = {
             'year': current_year,
@@ -318,16 +258,11 @@ def project_cash_flows_exact_sas_logic(account_data: pd.Series, scenario: int, p
 
         results.append(result_row)
 
-    if should_log and projection_type == "EXTERNE" and len(results) > 5:
-        print(f"{'...':<6} {'...':<5} {'...':<14} {'...':<14} {'...':<12} {'...':<14} {'...':<14}")
-        last_year = results[-1]
-        print(f"{last_year['year']:<6} {last_year['AGE']:<5} {last_year['MT_VM_PROJ']:>14,.2f} "
-              f"{last_year['MT_GAR_DECES_PROJ']:>14,.2f} {last_year['TX_SURVIE']:>12.6f} "
-              f"{last_year['FLUX_NET']:>14,.2f} {last_year['VP_FLUX_NET']:>14,.2f}")
-
     return results
 
+
 def kahan_sum(numbers):
+    """Kahan compensated summation for improved numerical accuracy"""
     sum_val = 0.0
     compensation = 0.0
     for x in numbers:
@@ -337,26 +272,16 @@ def kahan_sum(numbers):
         sum_val = t
     return sum_val
 
+
 def run_internal_calculations_exact(external_projection: List[Dict], account_data: pd.Series,
                                     scenario: int, lookups: Dict, calculation_type: str,
                                     NB_SC_INT: int, NB_AN_PROJECTION_INT: int,
-                                    CHOC_CAPITAL: float, verbose: bool = False,
-                                    log_account_id: int = None) -> Dict:
+                                    CHOC_CAPITAL: float, verbose: bool = False) -> Dict:
     """
-    Internal calculations with detailed logging
+    Internal calculations matching GPU logic
     """
-    should_log = verbose and (log_account_id is None or account_data.get('ID_COMPTE') == log_account_id)
-
     year_results = {}
     valid_years = [ext_data for ext_data in external_projection if ext_data['year'] > 0]
-
-    if should_log and valid_years:
-        print(f"\n{'=' * 80}")
-        print(f"{calculation_type} CALCULATION - Account {account_data.get('ID_COMPTE')}, Scenario {scenario}")
-        print(f"{'=' * 80}")
-        print(f"Processing {len(valid_years)} years × {NB_SC_INT} internal scenarios")
-        shock_text = f"with {CHOC_CAPITAL:.1%} shock" if calculation_type == 'CAPITAL' else "no shock"
-        print(f"Fund shock: {shock_text}")
 
     for ext_data in valid_years:
         year = ext_data['year']
@@ -389,177 +314,51 @@ def run_internal_calculations_exact(external_projection: List[Dict], account_dat
 
         if internal_scenarios_sum:
             year_results[year] = np.mean(internal_scenarios_sum)
-            if should_log and year <= 3:
-                print(f"  Year {year}: Mean across {len(internal_scenarios_sum)} scenarios = {year_results[year]:,.2f}")
         else:
             year_results[year] = 0.0
 
     year_results[0] = 0.0
-
-    if should_log:
-        print(f"\n{calculation_type} results summary:")
-        for yr in sorted(year_results.keys())[:5]:
-            print(f"  Year {yr}: {year_results[yr]:,.2f}")
-        if len(year_results) > 5:
-            print(f"  ...")
-
     return year_results
 
 
-def calculate_distributable_flows_exact(external_results: List[Dict], lookups: Dict,
-                                        NB_SC_INT: int, NB_AN_PROJECTION_INT: int,
-                                        CHOC_CAPITAL: float, HURDLE_RT: float,
-                                        verbose: bool = True,
-                                        log_account_id: int = None) -> List[Dict]:
+def acfc_algorithm_with_gpu_logging(data_path: str = ".", nb_accounts: int = 4, nb_scenarios: int = 10,
+                                    nb_years: int = 10, nb_sc_int: int = 10, nb_an_projection_int: int = 10,
+                                    choc_capital: float = 0.35, hurdle_rt: float = 0.10,
+                                    verbose: bool = True) -> pd.DataFrame:
     """
-    Calculate distributable cash flows with detailed logging
+    Complete CPU ACFC Algorithm with GPU-style detailed logging
     """
 
-    final_results = []
-
     if verbose:
-        print("\n💰 CALCULATING DISTRIBUTABLE FLOWS")
-        print("-" * 50)
-        print(f"Processing {len(external_results)} account×scenario combinations...")
+        print("\n" + "=" * 80)
+        print("CPU ACFC ALGORITHM - COMPLETE EXECUTION LOG")
+        print("=" * 80)
+        print(f"Parameters:")
+        print(f"  Accounts: {nb_accounts}")
+        print(f"  External Scenarios: {nb_scenarios}")
+        print(f"  Projection Years: {nb_years}")
+        print(f"  Internal Scenarios: {nb_sc_int}")
+        print(f"  Internal Projection Years: {nb_an_projection_int}")
+        print(f"  Capital Shock: {choc_capital}")
+        print(f"  Hurdle Rate: {hurdle_rt}")
 
-    account_groups = {}
-    for ext_result in external_results:
-        account_id = ext_result['account_id']
-        if account_id not in account_groups:
-            account_groups[account_id] = []
-        account_groups[account_id].append(ext_result)
+    print("\nPhase 1: Loading input data...")
+    data = load_input_data(data_path, nb_accounts)
 
-    account_progress = tqdm(account_groups.items(),
-                            desc="Processing accounts",
-                            unit="account",
-                            disable=not verbose)
+    print("\nPhase 2: Creating lookup tables...")
+    lookups = create_lookup_tables(data)
 
-    for account_id, account_scenarios in account_progress:
-        if verbose:
-            account_progress.set_postfix({"Account": account_id})
-
-        for scenario_idx, ext_result in enumerate(account_scenarios, 1):
-            scenario = ext_result['scenario']
-            external_projection = ext_result['projection']
-            account_data = ext_result['account_data']
-
-            should_log = verbose and (log_account_id is None or account_id == log_account_id) and scenario == 1
-
-            # Calculate reserves and capital
-            reserve_by_year = run_internal_calculations_exact(
-                external_projection, account_data, scenario, lookups, 'RESERVE',
-                NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL,
-                verbose=should_log, log_account_id=log_account_id
-            )
-
-            capital_results = run_internal_calculations_exact(
-                external_projection, account_data, scenario, lookups, 'CAPITAL',
-                NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL,
-                verbose=should_log, log_account_id=log_account_id
-            )
-
-            capital_by_year = {}
-            for year in capital_results:
-                reserve_value = reserve_by_year.get(year, 0.0)
-                capital_value = capital_results[year] - reserve_value
-                capital_by_year[year] = capital_value
-
-            # Calculate distributable flows
-            if should_log:
-                print(f"\n{'=' * 80}")
-                print(f"DISTRIBUTABLE FLOWS - Account {account_id}, Scenario {scenario}")
-                print(f"{'=' * 80}")
-                print(f"{'Year':<6} {'Ext CF':<14} {'Reserve':<14} {'ΔReserve':<14} {'Capital':<14} "
-                      f"{'ΔCapital':<14} {'Profit':<14} {'Distrib':<14} {'PV Dist':<14}")
-                print(
-                    f"{'-' * 6} {'-' * 14} {'-' * 14} {'-' * 14} {'-' * 14} {'-' * 14} {'-' * 14} {'-' * 14} {'-' * 14}")
-
-            distributable_pvs = []
-            prev_reserve = 0.0
-            prev_capital = 0.0
-
-            for ext_data in external_projection:
-                year = ext_data['year']
-                external_cf = ext_data['FLUX_NET']
-
-                current_reserve = reserve_by_year.get(year, 0.0)
-                current_capital = capital_by_year.get(year, 0.0)
-
-                if year == 0:
-                    profit = external_cf + current_reserve
-                    distributable = profit + current_capital
-                    delta_reserve = current_reserve
-                    delta_capital = current_capital
-                else:
-                    delta_reserve = current_reserve - prev_reserve
-                    delta_capital = current_capital - prev_capital
-                    profit = external_cf + delta_reserve
-                    distributable = profit + delta_capital
-
-                if year > 0:
-                    pv_distributable = distributable / ((1 + HURDLE_RT) ** year)
-                else:
-                    pv_distributable = distributable
-
-                distributable_pvs.append(pv_distributable)
-
-                if should_log and (year <= 5 or year == len(external_projection) - 1):
-                    print(f"{year:<6} {external_cf:>14,.2f} {current_reserve:>14,.2f} {delta_reserve:>14,.2f} "
-                          f"{current_capital:>14,.2f} {delta_capital:>14,.2f} {profit:>14,.2f} "
-                          f"{distributable:>14,.2f} {pv_distributable:>14,.2f}")
-                elif should_log and year == 6:
-                    print(f"{'...':<6} {'...':<14} {'...':<14} {'...':<14} {'...':<14} "
-                          f"{'...':<14} {'...':<14} {'...':<14} {'...':<14}")
-
-                prev_reserve = current_reserve
-                prev_capital = current_capital
-
-            total_pv_distributable = sum(distributable_pvs)
-
-            if should_log:
-                print(f"{'TOTAL':<6} {'':<14} {'':<14} {'':<14} {'':<14} {'':<14} "
-                      f"{'':<14} {'':<14} {total_pv_distributable:>14,.2f}")
-
-            final_results.append({
-                'ID_COMPTE': account_id,
-                'scn_eval': scenario,
-                'VP_FLUX_DISTRIBUABLES': total_pv_distributable
-            })
-
+    print("\nPhase 3: Preparing data...")
     if verbose:
-        print(f"\n✅ Completed {len(final_results)} distributable flow calculations")
+        print("\n" + "=" * 80)
+        print("INITIAL DATA PREPARATION - DETAILED LOG")
+        print("=" * 80)
 
-    return final_results
+        for account_idx in range(min(nb_accounts, len(data['population']))):
+            account_data = data['population'].iloc[account_idx]
+            account_id = int(account_data['ID_COMPTE'])
 
-
-def run_external_calculations_exact(data: Dict, lookups: Dict, NBCPT: int, NB_SC: int,
-                                    NB_AN_PROJECTION: int, verbose: bool = True,
-                                    log_account_id: int = None) -> List[Dict]:
-    """Run external calculations with detailed logging"""
-
-    external_results = []
-    total_accounts = min(NBCPT, len(data['population']))
-
-    if verbose:
-        print(f"\n🌍 RUNNING EXTERNAL CALCULATIONS")
-        print("-" * 50)
-        print(f"Processing {total_accounts} accounts × {NB_SC} scenarios = {total_accounts * NB_SC:,} projections")
-
-    account_progress = tqdm(range(total_accounts), desc="Processing accounts", unit="account", disable=not verbose)
-
-    for account_idx in account_progress:
-        account_data = data['population'].iloc[account_idx]
-        account_id = account_data['ID_COMPTE']
-
-        if verbose:
-            account_progress.set_postfix({"Account": account_id})
-
-        should_log = verbose and (log_account_id is None or account_id == log_account_id)
-
-        if should_log:
-            print(f"\n{'=' * 80}")
-            print(f"ACCOUNT {account_id} - INITIAL DATA")
-            print(f"{'=' * 80}")
+            print(f"\n--- Account {account_id} (Index {account_idx}) ---")
             print(f"  MT_VM (Initial Fund Value):       {account_data['MT_VM']:,.2f}")
             print(f"  MT_GAR_DECES (Death Benefit):     {account_data['MT_GAR_DECES']:,.2f}")
             print(f"  AGE_DEB (Starting Age):           {int(account_data['age_deb'])}")
@@ -572,126 +371,198 @@ def run_external_calculations_exact(data: Dict, lookups: Dict, NBCPT: int, NB_SC
             print(f"  FREQ_RESET_DECES (Reset Freq):    {account_data['FREQ_RESET_DECES']:.0f}")
             print(f"  MAX_RESET_DECES (Max Reset Age):  {account_data['MAX_RESET_DECES']:.0f}")
 
-        scenario_progress = tqdm(range(1, NB_SC + 1),
-                                 desc=f"    Scenarios for {account_id}",
-                                 unit="scenario",
-                                 leave=False,
-                                 disable=not verbose or should_log)
-
-        for scenario in scenario_progress:
-            projection = project_cash_flows_exact_sas_logic(
-                account_data, scenario, 'EXTERNE', lookups, NB_AN_PROJECTION,
-                verbose=should_log and scenario == 1, log_account_id=log_account_id
-            )
-
-            external_results.append({
-                'account_id': account_id,
-                'scenario': scenario,
-                'projection': projection,
-                'account_data': account_data
-            })
-
-    if verbose:
-        print(f"\n✅ Completed {len(external_results)} external projections")
-
-    return external_results
-
-
-def acfc_algorithm_fully_fixed(data_path: str = ".", NBCPT: int = 4, NB_SC: int = 10, NB_AN_PROJECTION: int = 10,
-                               NB_SC_INT: int = 10, NB_AN_PROJECTION_INT: int = 10,
-                               CHOC_CAPITAL: float = 0.35, HURDLE_RT: float = 0.10,
-                               verbose: bool = True, log_account_id: int = None) -> pd.DataFrame:
-    """
-    Fully Fixed ACFC Algorithm with detailed logging
-
-    Parameters:
-    -----------
-    verbose : bool
-        Enable detailed progress logging
-    log_account_id : int, optional
-        If specified, only show detailed calculations for this account ID
-    """
-
-    start_time = time.time()
-
-    if verbose:
-        print("\n" + "=" * 80)
-        print("🚀 ACFC ALGORITHM - DETAILED EXECUTION LOG")
-        print("=" * 80)
-        print(f"📊 Configuration:")
-        print(f"   • Accounts to process: {NBCPT}")
-        print(f"   • External scenarios: {NB_SC}")
-        print(f"   • Projection years: {NB_AN_PROJECTION}")
-        print(f"   • Internal scenarios: {NB_SC_INT}")
-        print(f"   • Internal projection years: {NB_AN_PROJECTION_INT}")
-        print(f"   • Capital shock: {CHOC_CAPITAL:.1%}")
-        print(f"   • Hurdle rate: {HURDLE_RT:.1%}")
-        if log_account_id:
-            print(f"   • Detailed logging for Account ID: {log_account_id}")
-        print("=" * 80)
-
-    # Phase 1: Data Loading
-    data = load_input_data(data_path, verbose=verbose)
-    lookups = create_lookup_tables(data, verbose=verbose)
-
-    # Phase 2: External Calculations
-    external_results = run_external_calculations_exact(
-        data, lookups, NBCPT, NB_SC, NB_AN_PROJECTION,
-        verbose=verbose, log_account_id=log_account_id
-    )
-
-    # Phase 3-5: Internal Calculations and Distributable Flows
-    final_results = calculate_distributable_flows_exact(
-        external_results, lookups, NB_SC_INT, NB_AN_PROJECTION_INT,
-        CHOC_CAPITAL, HURDLE_RT, verbose=verbose, log_account_id=log_account_id
-    )
-
-    # Phase 6: Output Generation
-    if verbose:
-        print(f"\n📄 GENERATING OUTPUT")
-        print("-" * 50)
-
-    output_df = pd.DataFrame(final_results)
-
-    end_time = time.time()
-    total_time = end_time - start_time
+    print("\nPhase 4: Running external projections...")
+    all_external_results = []
 
     if verbose:
         print(f"\n{'=' * 80}")
-        print(f"✅ ALGORITHM COMPLETED SUCCESSFULLY!")
+        print("RUNNING EXTERNE PROJECTION")
         print(f"{'=' * 80}")
-        print(f"📈 Results Summary:")
-        print(f"   • Total calculations: {len(output_df):,}")
-        print(f"   • Processing time: {total_time:.1f} seconds")
-        print(f"   • Average time per calculation: {total_time / len(output_df):.3f} seconds")
-        print(f"   • Mean VP_FLUX_DISTRIBUABLES: ${output_df['VP_FLUX_DISTRIBUABLES'].mean():,.2f}")
-        print(f"   • Range: ${output_df['VP_FLUX_DISTRIBUABLES'].min():,.2f} to "
-              f"${output_df['VP_FLUX_DISTRIBUABLES'].max():,.2f}")
-        print(f"\n   Results by Account:")
+
+    for account_idx in range(min(nb_accounts, len(data['population']))):
+        account_data = data['population'].iloc[account_idx]
+        account_id = int(account_data['ID_COMPTE'])
+
+        for scenario in range(1, nb_scenarios + 1):
+            if verbose:
+                print(f"\nProcessing year 0...")
+
+            projection = project_cash_flows_exact_sas_logic(
+                account_data, scenario, 'EXTERNE', lookups, nb_years, verbose=False
+            )
+
+            # Add account_id and scenario to each result
+            for result in projection:
+                result['account_id'] = account_id
+                result['scenario'] = scenario
+
+            all_external_results.extend(projection)
+
+            # Log first few years in detail for first scenario
+            if verbose and scenario == 1:
+                for year in [0, 1, 2]:
+                    log_external_year_details(projection, year, account_id, scenario)
+
+    # External results summary
+    if verbose:
+        print(f"\n{'=' * 80}")
+        print("EXTERNAL PROJECTION RESULTS SUMMARY")
+        print(f"{'=' * 80}")
+        print(f"Total results: {len(all_external_results)}")
+
+        from collections import defaultdict
+        by_account = defaultdict(list)
+        for r in all_external_results:
+            by_account[r['account_id']].append(r)
+
+        for account_id in sorted(by_account.keys()):
+            account_results = by_account[account_id]
+            scenarios = sorted(set(r['scenario'] for r in account_results))
+            print(f"\nAccount {account_id}:")
+            print(f"  Total results: {len(account_results)}")
+            print(f"  Scenarios: {scenarios}")
+
+            for yr in [0, 1]:
+                yr_data = [r for r in account_results if r['year'] == yr and r['scenario'] == 1]
+                if yr_data:
+                    row = yr_data[0]
+                    print(f"  Year {yr} (Scenario 1):")
+                    print(f"    Fund Value: {row['MT_VM_PROJ']:,.2f}")
+                    print(f"    Death Benefit: {row['MT_GAR_DECES_PROJ']:,.2f}")
+                    print(f"    Survival Prob: {row['TX_SURVIE']:.6f}")
+                    print(f"    Net Cash Flow: {row['FLUX_NET']:,.2f}")
+                    print(f"    PV Cash Flow: {row['VP_FLUX_NET']:,.2f}")
+
+    print("\nPhase 5: Running internal calculations...")
+
+    # Group by account and scenario
+    grouped = defaultdict(lambda: defaultdict(list))
+    for r in all_external_results:
+        grouped[r['account_id']][r['scenario']].append(r)
+
+    final_results = []
+
+    for account_idx in range(min(nb_accounts, len(data['population']))):
+        account_data = data['population'].iloc[account_idx]
+        account_id = int(account_data['ID_COMPTE'])
+
+        for scenario in range(1, nb_scenarios + 1):
+            external_projection = grouped[account_id][scenario]
+
+            if verbose and scenario == 1:
+                print(f"\nCalculating reserves (no shock) for Account {account_id}, Scenario {scenario}...")
+
+            # Calculate reserves
+            reserve_by_year = run_internal_calculations_exact(
+                external_projection, account_data, scenario, lookups, 'RESERVE',
+                nb_sc_int, nb_an_projection_int, choc_capital, verbose=False
+            )
+
+            if verbose and scenario == 1:
+                print(f"Calculating capital (with {choc_capital} shock)...")
+
+            # Calculate capital
+            capital_results = run_internal_calculations_exact(
+                external_projection, account_data, scenario, lookups, 'CAPITAL',
+                nb_sc_int, nb_an_projection_int, choc_capital, verbose=False
+            )
+
+            capital_by_year = {}
+            for year in capital_results:
+                reserve_value = reserve_by_year.get(year, 0.0)
+                capital_value = capital_results[year] - reserve_value
+                capital_by_year[year] = capital_value
+
+            # Calculate distributable flows
+            if verbose and scenario == 1:
+                print(f"\n{'=' * 80}")
+                print(f"DISTRIBUTABLE FLOWS CALCULATION")
+                print(f"{'=' * 80}")
+                print(f"Account {account_id}, Scenario {scenario}:")
+                print(
+                    f"  {'Year':<6} {'Ext CF':<12} {'Reserve':<12} {'Capital':<12} {'Profit':<12} {'Distrib':<12} {'PV Distrib':<12}")
+                print(f"  {'-' * 6} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12}")
+
+            distributable_pvs = []
+            prev_reserve = 0.0
+            prev_capital = 0.0
+
+            for ext_result in external_projection:
+                year = ext_result['year']
+                external_cf = ext_result['FLUX_NET']
+
+                current_reserve = reserve_by_year.get(year, 0.0)
+                current_capital = capital_by_year.get(year, 0.0)
+
+                if year == 0:
+                    profit = external_cf + current_reserve
+                    distributable = profit + current_capital
+                else:
+                    profit = external_cf + (current_reserve - prev_reserve)
+                    distributable = profit + (current_capital - prev_capital)
+
+                if year > 0:
+                    pv_distributable = distributable / ((1 + hurdle_rt) ** year)
+                else:
+                    pv_distributable = distributable
+
+                distributable_pvs.append(pv_distributable)
+
+                if verbose and scenario == 1 and (year <= 5 or year == len(external_projection) - 1):
+                    print(f"  {year:<6} {external_cf:>12,.2f} {current_reserve:>12,.2f} {current_capital:>12,.2f} "
+                          f"{profit:>12,.2f} {distributable:>12,.2f} {pv_distributable:>12,.2f}")
+                elif verbose and scenario == 1 and year == 6:
+                    print(f"  {'...':<6} {'...':<12} {'...':<12} {'...':<12} {'...':<12} {'...':<12} {'...':<12}")
+
+                prev_reserve = current_reserve
+                prev_capital = current_capital
+
+            total_pv_distributable = sum(distributable_pvs)
+
+            if verbose and scenario == 1:
+                print(f"  {'TOTAL':<6} {'':<12} {'':<12} {'':<12} {'':<12} {'':<12} {total_pv_distributable:>12,.2f}")
+
+            final_results.append({
+                'ID_COMPTE': account_id,
+                'scn_eval': scenario,
+                'VP_FLUX_DISTRIBUABLES': total_pv_distributable
+            })
+
+    print("\nPhase 7: Converting to DataFrame...")
+    output_df = pd.DataFrame(final_results)
+
+    if verbose:
+        print(f"\n{'=' * 80}")
+        print("FINAL RESULTS SUMMARY")
+        print(f"{'=' * 80}")
+        print(f"Total results: {len(output_df)}")
+        print(f"\nMean VP_FLUX_DISTRIBUABLES: {output_df['VP_FLUX_DISTRIBUABLES'].mean():,.2f}")
+        print(f"Min: {output_df['VP_FLUX_DISTRIBUABLES'].min():,.2f}")
+        print(f"Max: {output_df['VP_FLUX_DISTRIBUABLES'].max():,.2f}")
+        print(f"\nResults by account:")
         for account_id in sorted(output_df['ID_COMPTE'].unique()):
             account_data = output_df[output_df['ID_COMPTE'] == account_id]
-            print(f"     Account {account_id}: Mean = ${account_data['VP_FLUX_DISTRIBUABLES'].mean():,.2f}, "
+            print(f"  Account {account_id}: Mean = {account_data['VP_FLUX_DISTRIBUABLES'].mean():,.2f}, "
                   f"Scenarios = {len(account_data)}")
-        print("=" * 80)
 
     return output_df
 
 
-# Example usage
 if __name__ == "__main__":
-    results = acfc_algorithm_fully_fixed(
-        data_path=HERE.joinpath("data_in"),
-        NBCPT=2,
-        NB_SC=2,
-        NB_AN_PROJECTION=100,
-        NB_SC_INT=2,
-        NB_AN_PROJECTION_INT=100,
-        CHOC_CAPITAL=0.35,
-        HURDLE_RT=0.10,
-        verbose=True,
-        log_account_id=None
+    data_path = "data_in"
+
+    results = acfc_algorithm_with_gpu_logging(
+        data_path=data_path,
+        nb_accounts=2,
+        nb_scenarios=2,
+        nb_years=100,
+        nb_sc_int=2,
+        nb_an_projection_int=100,
+        choc_capital=0.35,
+        hurdle_rt=0.10,
+        verbose=True
     )
 
-    print(f"\n📋 Sample Results:")
-    print(results.head(10))
-    results.to_csv(HERE.joinpath('test/acfc_results_fixed.csv'), index=False)
+    print("\nFinal Results:")
+    print(results)
+    results.to_csv('test/cpu_results_complete.csv', index=False)
