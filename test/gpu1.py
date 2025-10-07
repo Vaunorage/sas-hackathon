@@ -689,7 +689,7 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
 
     if len(valid_external_results) == 0:
         print("ERROR: No valid external results found!")
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     print("\nPhase 5: Running GPU internal calculations...")
 
@@ -736,6 +736,7 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     print("\nPhase 6: Calculating distributable flows...")
 
     final_results = []
+    detailed_results = []  # NEW: For year-by-year detailed output
     from collections import defaultdict
     grouped_external = defaultdict(list)
     grouped_reserves = defaultdict(list)
@@ -800,6 +801,19 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
 
             distributable_pvs.append(pv_distributable)
 
+            # NEW: Store detailed year-by-year results
+            detailed_results.append({
+                'ID_COMPTE': account_id,
+                'scn_eval': scenario,
+                'an_proj': year,
+                'FLUX_NET_EXT': external_cf,
+                'RESERVE': current_reserve,
+                'CAPITAL_REQUIREMENT': current_capital,
+                'PROFIT': profit,
+                'FLUX_DISTRIBUABLE': distributable,
+                'VP_FLUX_DISTRIBUABLE_YEARLY': pv_distributable
+            })
+
             if verbose and scenario == 1:
                 print(f"  {year:<6} {external_cf:>12,.2f} {current_reserve:>12,.2f} {current_capital:>12,.2f} "
                       f"{profit:>12,.2f} {distributable:>12,.2f} {pv_distributable:>12,.2f}")
@@ -820,6 +834,7 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
 
     print("\nPhase 7: Converting to DataFrame...")
     output_df = pd.DataFrame(final_results)
+    detailed_df = pd.DataFrame(detailed_results)  # NEW: Detailed DataFrame
 
     if verbose:
         print(f"\n{'=' * 80}")
@@ -834,8 +849,15 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
             account_data = output_df[output_df['ID_COMPTE'] == account_id]
             print(f"  Account {account_id}: Mean = {account_data['VP_FLUX_DISTRIBUABLES'].mean():,.2f}, "
                   f"Scenarios = {len(account_data)}")
+        
+        print(f"\n{'=' * 80}")
+        print("DETAILED RESULTS")
+        print(f"{'=' * 80}")
+        print(f"Total detailed records: {len(detailed_df)}")
+        print(f"\nFirst few rows:")
+        print(detailed_df.head(10))
 
-    return output_df
+    return output_df, detailed_df  # Return both DataFrames
 
 
 def initialize_cuda_context():
@@ -943,7 +965,7 @@ if __name__ == "__main__":
 
     data_path = "data_in"
 
-    results = gpu_acfc_algorithm_complete(
+    results, detailed_results = gpu_acfc_algorithm_complete(
         data_path=data_path,
         nb_accounts=1,
         nb_scenarios=2,
@@ -955,6 +977,10 @@ if __name__ == "__main__":
         verbose=True
     )
 
-    print("\nFinal Results:")
+    print("\nFinal Summary Results:")
     print(results)
     results.to_csv('test/gpu_results_complete.csv', index=False)
+    
+    print("\nSaving detailed year-by-year results...")
+    detailed_results.to_csv('test/gpu_results_detailed.csv', index=False)
+    print(f"✓ Detailed results saved to 'test/gpu_results_detailed.csv' ({len(detailed_results)} rows)")
