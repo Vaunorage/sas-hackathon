@@ -1006,14 +1006,14 @@ if __name__ == "__main__":
     results, detailed_results = gpu_acfc_algorithm_complete(
         data_path=data_path,
         nb_accounts=1,
-        nb_scenarios=1,
+        nb_scenarios=2,
         nb_years=100,
-        nb_sc_int=1,
+        nb_sc_int=2,
         nb_an_projection_int=100,
         choc_capital=0.35,
         hurdle_rt=0.10,
         verbose=True,
-        log_account_id=1,  # Only log acco
+        log_account_id=1,  # Only log account 1
         log_scenario=1,  # Only log scenario 1
         log_max_years=10  # Only log first 10 years (0-9)
     )
@@ -1024,14 +1024,4 @@ if __name__ == "__main__":
 
     print("\nSaving detailed year-by-year results...")
     detailed_results.to_csv('test/gpu_results_detailed.csv', index=False)
-    filter_msg = ""
-    if log_account_id is not None or log_scenario is not None or log_max_years is not None:
-        filters = []
-        if log_account_id is not None:
-            filters.append(f"account={log_account_id}")
-        if log_scenario is not None:
-            filters.append(f"scenario={log_scenario}")
-        if log_max_years is not None:
-            filters.append(f"years=0-{log_max_years - 1}")
-        filter_msg = f" [Filtered: {', '.join(filters)}]"
-    print(f"✓ Detailed results saved to 'test/gpu_results_detailed.csv' ({len(detailed_results)} rows{filter_msg})")
+    print(f"✓ Detailed results saved to 'test/gpu_results_detailed.csv' ({len(detailed_results)} rows)")
