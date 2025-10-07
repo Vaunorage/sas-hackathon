@@ -1,500 +1,740 @@
 import pandas as pd
 import numpy as np
-import sys
+from typing import Dict, Tuple, List
+import warnings
+import logging
+import time
+from tqdm import tqdm
+
+from paths import HERE
+
+warnings.filterwarnings('ignore')
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
-def compare_detailed_yearly_results(cpu_file: str, gpu_file: str = None, tolerance: float = 1e-6):
-    """
-    Compare detailed year-by-year results between CPU and GPU (or analyze CPU alone)
-    """
-    print("\n" + "=" * 80)
-    print("DETAILED YEAR-BY-YEAR ANALYSIS")
-    print("=" * 80)
-
+def load_input_files(data_path: str, verbose: bool = True) -> Tuple[pd.DataFrame, ...]:
+    """Load all input CSV files exactly as SAS does"""
     try:
-        cpu_df = pd.read_csv(cpu_file)
-        print(f"\n📊 CPU Data loaded: {len(cpu_df)} rows")
-        print(f"Columns: {list(cpu_df.columns)}")
+        if verbose:
+            print("\n📁 LOADING INPUT FILES")
+            print("-" * 50)
 
-        # Show summary statistics
-        print(f"\n📈 SUMMARY STATISTICS")
-        print("-" * 80)
-        for col in ['FLUX_NET_EXT', 'RESERVE', 'CAPITAL_REQUIREMENT', 'PROFIT',
-                    'FLUX_DISTRIBUABLE', 'VP_FLUX_DISTRIBUABLE_YEARLY']:
-            if col in cpu_df.columns:
-                print(f"\n{col}:")
-                print(f"  Mean: {cpu_df[col].mean():,.2f}")
-                print(f"  Std:  {cpu_df[col].std():,.2f}")
-                print(f"  Min:  {cpu_df[col].min():,.2f}")
-                print(f"  Max:  {cpu_df[col].max():,.2f}")
+        files_to_load = [
+            ("population_fixed.csv", "Population data"),
+            ("rendement1.csv", "Returns data"),
+            ("tx_deces_fixed.csv", "Mortality rates"),
+            ("tx_interet_fixed.csv", "Interest rates"),
+            ("tx_interet_int_fixed.csv", "Internal interest rates"),
+            ("tx_retrait_fixed.csv", "Lapse rates")
+        ]
 
-        # Show by account and scenario
-        print(f"\n📊 BY ACCOUNT AND SCENARIO")
-        print("-" * 80)
-        for account_id in sorted(cpu_df['ID_COMPTE'].unique()):
-            for scenario in sorted(cpu_df[cpu_df['ID_COMPTE'] == account_id]['scn_eval'].unique()):
-                subset = cpu_df[(cpu_df['ID_COMPTE'] == account_id) &
-                                (cpu_df['scn_eval'] == scenario)]
-                total_pv = subset['VP_FLUX_DISTRIBUABLE_YEARLY'].sum()
-                print(f"\nAccount {account_id}, Scenario {scenario}:")
-                print(f"  Years: {len(subset)}")
-                print(f"  Total VP_FLUX_DISTRIBUABLE: {total_pv:,.2f}")
+        loaded_data = []
+        for filename, description in files_to_load:
+            if verbose:
+                print(f"Loading {description}...")
+            df = pd.read_csv(f"{data_path}/{filename}")
+            loaded_data.append(df)
+            if verbose:
+                print(f"  ✓ {description}: {len(df):,} rows")
+                time.sleep(0.1)
 
-                # Show first few years
-                print(f"  First 3 years:")
-                for _, row in subset.head(3).iterrows():
-                    print(f"    Year {int(row['an_proj'])}: "
-                          f"ExtCF={row['FLUX_NET_EXT']:>10,.2f}, "
-                          f"Reserve={row['RESERVE']:>10,.2f}, "
-                          f"Capital={row['CAPITAL_REQUIREMENT']:>10,.2f}, "
-                          f"PV={row['VP_FLUX_DISTRIBUABLE_YEARLY']:>10,.2f}")
+        population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait = loaded_data
 
-        # If GPU file provided, compare
-        if gpu_file:
-            print(f"\n{'=' * 80}")
-            print("COMPARING WITH GPU RESULTS")
-            print(f"{'=' * 80}")
-
-            gpu_df = pd.read_csv(gpu_file)
-            print(f"\n📊 GPU Data loaded: {len(gpu_df)} rows")
-
-            # Merge on key columns
-            merge_cols = ['ID_COMPTE', 'scn_eval', 'an_proj']
-            merged = pd.merge(
-                cpu_df, gpu_df,
-                on=merge_cols,
-                suffixes=('_cpu', '_gpu'),
-                how='outer',
-                indicator=True
+        if 'TYPE' in rendement.columns:
+            if verbose:
+                print("🔧 Processing TYPE column encoding...")
+            rendement['TYPE'] = rendement['TYPE'].apply(
+                lambda x: x.decode('utf-8') if isinstance(x, bytes) else str(x)
             )
+            if verbose:
+                print(f"  ✓ Processed {len(rendement):,} TYPE entries")
 
-            print(f"\n🔗 MERGE RESULTS")
-            print("-" * 80)
-            print(f"Both: {len(merged[merged['_merge'] == 'both'])}")
-            print(f"CPU only: {len(merged[merged['_merge'] == 'left_only'])}")
-            print(f"GPU only: {len(merged[merged['_merge'] == 'right_only'])}")
+        if verbose:
+            print(f"\n✅ All files loaded successfully!")
+            print(f"📊 Found {len(population)} accounts for processing")
 
-            # Compare each field
-            matched = merged[merged['_merge'] == 'both'].copy()
-
-            if len(matched) > 0:
-                print(f"\n📊 FIELD-BY-FIELD COMPARISON")
-                print("-" * 80)
-
-                fields = ['FLUX_NET_EXT', 'RESERVE', 'CAPITAL_REQUIREMENT', 'PROFIT',
-                          'FLUX_DISTRIBUABLE', 'VP_FLUX_DISTRIBUABLE_YEARLY']
-
-                for field in fields:
-                    cpu_col = f"{field}_cpu"
-                    gpu_col = f"{field}_gpu"
-
-                    if cpu_col in matched.columns and gpu_col in matched.columns:
-                        matched[f'{field}_diff'] = np.abs(matched[cpu_col] - matched[gpu_col])
-                        matched[f'{field}_rel_diff'] = np.where(
-                            matched[cpu_col] != 0,
-                            np.abs((matched[cpu_col] - matched[gpu_col]) / matched[cpu_col] * 100),
-                            0
-                        )
-
-                        max_diff = matched[f'{field}_diff'].max()
-                        mean_diff = matched[f'{field}_diff'].mean()
-                        max_rel_diff = matched[f'{field}_rel_diff'].max()
-
-                        within_tol = (matched[f'{field}_diff'] < tolerance).sum()
-                        pct_within = within_tol / len(matched) * 100
-
-                        status = "✅" if max_diff < tolerance else "⚠️"
-
-                        print(f"\n{status} {field}:")
-                        print(f"  Max absolute diff: {max_diff:.6f}")
-                        print(f"  Mean absolute diff: {mean_diff:.6f}")
-                        print(f"  Max relative diff: {max_rel_diff:.4f}%")
-                        print(f"  Within tolerance: {within_tol}/{len(matched)} ({pct_within:.1f}%)")
-
-                        if max_diff >= tolerance:
-                            # Show worst cases
-                            worst = matched.nlargest(3, f'{field}_diff')
-                            print(f"  Worst cases:")
-                            for idx, row in worst.iterrows():
-                                print(f"    Account {int(row['ID_COMPTE'])}, "
-                                      f"Scenario {int(row['scn_eval'])}, "
-                                      f"Year {int(row['an_proj'])}: "
-                                      f"CPU={row[cpu_col]:.2f}, "
-                                      f"GPU={row[gpu_col]:.2f}, "
-                                      f"Diff={row[f'{field}_diff']:.2f}")
-
-                # Save comparison
-                comparison_file = 'test/detailed_comparison.csv'
-                matched.to_csv(comparison_file, index=False)
-                print(f"\n✓ Detailed comparison saved to: {comparison_file}")
-
-    except FileNotFoundError as e:
-        print(f"\n❌ Error: File not found - {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-def compare_csv_results(gpu_file: str, cpu_file: str, tolerance: float = 1e-6):
-    """
-    Compare GPU and CPU CSV results with detailed diagnostics
-    """
-    print("\n" + "=" * 80)
-    print("GPU vs CPU RESULTS COMPARISON")
-    print("=" * 80)
-
-    try:
-        gpu_df = pd.read_csv(gpu_file)
-        cpu_df = pd.read_csv(cpu_file)
-
-        print(f"\n📊 BASIC STATISTICS")
-        print("-" * 80)
-        print(f"GPU Results: {len(gpu_df)} rows")
-        print(f"CPU Results: {len(cpu_df)} rows")
-
-        if len(gpu_df) != len(cpu_df):
-            print(f"\n⚠️  WARNING: Different number of rows!")
-            print(f"   GPU: {len(gpu_df)}, CPU: {len(cpu_df)}")
-
-        # Check columns
-        print(f"\n📋 COLUMNS")
-        print("-" * 80)
-        gpu_cols = set(gpu_df.columns)
-        cpu_cols = set(cpu_df.columns)
-
-        common_cols = gpu_cols & cpu_cols
-        gpu_only = gpu_cols - cpu_cols
-        cpu_only = cpu_cols - gpu_cols
-
-        print(f"Common columns: {sorted(common_cols)}")
-        if gpu_only:
-            print(f"GPU only: {sorted(gpu_only)}")
-        if cpu_only:
-            print(f"CPU only: {sorted(cpu_only)}")
-
-        # Merge on key columns
-        merge_cols = ['ID_COMPTE', 'scn_eval']
-        if all(col in common_cols for col in merge_cols):
-            merged = pd.merge(
-                gpu_df, cpu_df,
-                on=merge_cols,
-                suffixes=('_gpu', '_cpu'),
-                how='outer',
-                indicator=True
-            )
-
-            print(f"\n🔗 MERGE RESULTS")
-            print("-" * 80)
-            print(f"Both: {len(merged[merged['_merge'] == 'both'])}")
-            print(f"GPU only: {len(merged[merged['_merge'] == 'left_only'])}")
-            print(f"CPU only: {len(merged[merged['_merge'] == 'right_only'])}")
-
-            # Compare values
-            if 'VP_FLUX_DISTRIBUABLES_gpu' in merged.columns and 'VP_FLUX_DISTRIBUABLES_cpu' in merged.columns:
-                matched = merged[merged['_merge'] == 'both'].copy()
-
-                if len(matched) > 0:
-                    matched['diff'] = matched['VP_FLUX_DISTRIBUABLES_gpu'] - matched['VP_FLUX_DISTRIBUABLES_cpu']
-                    matched['abs_diff'] = np.abs(matched['diff'])
-                    matched['rel_diff'] = np.abs(matched['diff'] / matched['VP_FLUX_DISTRIBUABLES_gpu']) * 100
-
-                    print(f"\n📈 VP_FLUX_DISTRIBUABLES COMPARISON")
-                    print("-" * 80)
-                    print(f"GPU Mean: {matched['VP_FLUX_DISTRIBUABLES_gpu'].mean():,.2f}")
-                    print(f"CPU Mean: {matched['VP_FLUX_DISTRIBUABLES_cpu'].mean():,.2f}")
-                    print(f"\nDifference Statistics:")
-                    print(f"  Mean absolute difference: {matched['abs_diff'].mean():,.6f}")
-                    print(f"  Max absolute difference: {matched['abs_diff'].max():,.6f}")
-                    print(f"  Mean relative difference: {matched['rel_diff'].mean():.4f}%")
-                    print(f"  Max relative difference: {matched['rel_diff'].max():.4f}%")
-
-                    # Check tolerance
-                    within_tolerance = (matched['abs_diff'] < tolerance).sum()
-                    print(f"\nWithin tolerance ({tolerance}): {within_tolerance}/{len(matched)} "
-                          f"({within_tolerance / len(matched) * 100:.2f}%)")
-
-                    # Show largest differences
-                    if matched['abs_diff'].max() > tolerance:
-                        print(f"\n⚠️  LARGEST DIFFERENCES (Top 5):")
-                        print("-" * 80)
-                        top_diffs = matched.nlargest(5, 'abs_diff')
-                        for idx, row in top_diffs.iterrows():
-                            print(f"\nAccount {int(row['ID_COMPTE'])}, Scenario {int(row['scn_eval'])}:")
-                            print(f"  GPU: {row['VP_FLUX_DISTRIBUABLES_gpu']:,.2f}")
-                            print(f"  CPU: {row['VP_FLUX_DISTRIBUABLES_cpu']:,.2f}")
-                            print(f"  Difference: {row['diff']:,.2f} ({row['rel_diff']:.4f}%)")
-                    else:
-                        print(f"\n✅ All differences are within tolerance!")
-
-                    # Account-by-account comparison
-                    print(f"\n📊 BY ACCOUNT COMPARISON")
-                    print("-" * 80)
-                    for account_id in sorted(matched['ID_COMPTE'].unique()):
-                        account_data = matched[matched['ID_COMPTE'] == account_id]
-                        gpu_mean = account_data['VP_FLUX_DISTRIBUABLES_gpu'].mean()
-                        cpu_mean = account_data['VP_FLUX_DISTRIBUABLES_cpu'].mean()
-                        diff = gpu_mean - cpu_mean
-                        rel_diff = abs(diff / gpu_mean * 100) if gpu_mean != 0 else 0
-
-                        status = "✅" if abs(diff) < tolerance else "⚠️"
-                        print(f"\n{status} Account {int(account_id)}:")
-                        print(f"  GPU Mean: {gpu_mean:,.2f}")
-                        print(f"  CPU Mean: {cpu_mean:,.2f}")
-                        print(f"  Difference: {diff:,.2f} ({rel_diff:.4f}%)")
-                        print(f"  Scenarios: {len(account_data)}")
-
-        # Statistical tests
-        if 'VP_FLUX_DISTRIBUABLES' in gpu_df.columns and 'VP_FLUX_DISTRIBUABLES' in cpu_df.columns:
-            print(f"\n📉 DISTRIBUTION COMPARISON")
-            print("-" * 80)
-
-            gpu_values = gpu_df['VP_FLUX_DISTRIBUABLES'].values
-            cpu_values = cpu_df['VP_FLUX_DISTRIBUABLES'].values
-
-            print(f"GPU: Min={gpu_values.min():,.2f}, Max={gpu_values.max():,.2f}, "
-                  f"Median={np.median(gpu_values):,.2f}, Std={gpu_values.std():,.2f}")
-            print(f"CPU: Min={cpu_values.min():,.2f}, Max={cpu_values.max():,.2f}, "
-                  f"Median={np.median(cpu_values):,.2f}, Std={cpu_values.std():,.2f}")
-
-        print("\n" + "=" * 80)
-        print("COMPARISON COMPLETE")
-        print("=" * 80)
-
-    except FileNotFoundError as e:
-        print(f"\n❌ Error: File not found - {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n❌ Error during comparison: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-def create_detailed_comparison_report(gpu_file: str, cpu_file: str, output_file: str = 'comparison_report.csv'):
-    """
-    Create a detailed CSV report comparing GPU and CPU results
-    """
-    try:
-        gpu_df = pd.read_csv(gpu_file)
-        cpu_df = pd.read_csv(cpu_file)
-
-        merged = pd.merge(
-            gpu_df, cpu_df,
-            on=['ID_COMPTE', 'scn_eval'],
-            suffixes=('_gpu', '_cpu'),
-            how='outer',
-            indicator=True
-        )
-
-        if 'VP_FLUX_DISTRIBUABLES_gpu' in merged.columns and 'VP_FLUX_DISTRIBUABLES_cpu' in merged.columns:
-            merged['abs_diff'] = np.abs(
-                merged['VP_FLUX_DISTRIBUABLES_gpu'] - merged['VP_FLUX_DISTRIBUABLES_cpu']
-            )
-            merged['rel_diff_pct'] = np.abs(
-                (merged['VP_FLUX_DISTRIBUABLES_gpu'] - merged['VP_FLUX_DISTRIBUABLES_cpu']) /
-                merged['VP_FLUX_DISTRIBUABLES_gpu']
-            ) * 100
-
-        merged.to_csv(output_file, index=False)
-        print(f"\n📄 Detailed comparison report saved to: {output_file}")
-
-        return merged
+        return population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait
 
     except Exception as e:
-        print(f"\n❌ Error creating report: {e}")
-        return None
+        logger.error(f"Error loading input files: {e}")
+        raise
 
 
-def extract_gpu_detailed_results(gpu_results_array, account_ids, nb_scenarios, nb_years,
-                                 reserve_results, capital_results, hurdle_rt=0.10,
-                                 output_file='test/gpu_detailed_yearly.csv'):
+def load_input_data(data_path: str = ".", verbose: bool = True):
+    """Load all input data files and create lookup dictionaries"""
+    population, rendement, tx_deces, tx_interet, tx_interet_int, tx_retrait = load_input_files(data_path, verbose)
+
+    return {
+        'population': population,
+        'rendement': rendement,
+        'tx_deces': tx_deces,
+        'tx_interet': tx_interet,
+        'tx_interet_int': tx_interet_int,
+        'tx_retrait': tx_retrait
+    }
+
+
+def create_lookup_tables(data: Dict, verbose: bool = True) -> Dict:
+    """Create hash table lookups for O(1) access"""
+    if verbose:
+        print("\n🔍 CREATING LOOKUP TABLES")
+        print("-" * 50)
+
+    lookups = {}
+
+    if verbose:
+        print("Building mortality lookup table...")
+    lookups['mortality'] = dict(zip(data['tx_deces']['AGE'], data['tx_deces']['QX']))
+    if verbose:
+        print(f"  ✓ {len(lookups['mortality'])} mortality rates loaded")
+
+    if verbose:
+        print("Building lapse lookup table...")
+    lookups['lapse'] = dict(zip(data['tx_retrait']['an_proj'], data['tx_retrait']['WX']))
+    if verbose:
+        print(f"  ✓ {len(lookups['lapse'])} lapse rates loaded")
+
+    if verbose:
+        print("Building discount rate lookup tables...")
+    lookups['discount_ext'] = dict(zip(data['tx_interet']['an_proj'], data['tx_interet']['TX_ACTU']))
+    lookups['discount_int'] = dict(zip(data['tx_interet_int']['an_eval'], data['tx_interet_int']['TX_ACTU_INT']))
+    if verbose:
+        print(f"  ✓ {len(lookups['discount_ext'])} external rates, {len(lookups['discount_int'])} internal rates")
+
+    if verbose:
+        print("Building returns lookup table...")
+    lookups['returns'] = {}
+
+    if len(data['rendement']) > 5000 and verbose:
+        iterator = tqdm(data['rendement'].iterrows(),
+                        desc="Processing returns",
+                        total=len(data['rendement']),
+                        unit="rows")
+    else:
+        iterator = data['rendement'].iterrows()
+
+    for _, row in iterator:
+        key = (int(row['an_proj']), int(row['scn_proj']), row['TYPE'])
+        lookups['returns'][key] = row['RENDEMENT']
+
+    if verbose:
+        print(f"  ✓ {len(lookups['returns'])} return scenarios loaded")
+        print("✅ All lookup tables created successfully!")
+
+    return lookups
+
+
+def hash_find(hash_table: dict, key, default_value=None):
+    """Mimic SAS hash.find() behavior"""
+    return hash_table.get(key, default_value if default_value is not None else 0.0)
+
+
+def project_cash_flows_exact_sas_logic(account_data: pd.Series, scenario: int, projection_type: str,
+                                       lookups: Dict, nb_years: int, fund_shock: float = 0.0,
+                                       start_year: int = 0, verbose: bool = False,
+                                       log_account_id: int = None) -> List[Dict]:
     """
-    Extract detailed year-by-year results from GPU arrays and save to CSV
-    This function should be called from the GPU code after calculations
-
-    Parameters:
-    -----------
-    gpu_results_array : numpy array with shape (n_combinations * (nb_years+1), 9)
-        Contains: [account_id, scenario, year, age, fund_value, death_benefit, survival, flux_net, vp_flux_net]
-    account_ids : array of account IDs
-    nb_scenarios : number of scenarios
-    nb_years : number of projection years
-    reserve_results : array of reserve values
-    capital_results : array of capital values
-    hurdle_rt : hurdle rate for PV calculation
-    output_file : path to save CSV
+    Exact replication of SAS cash flow calculation logic with detailed logging
     """
-    detailed_rows = []
 
-    # Group results by account and scenario
-    from collections import defaultdict
-    grouped = defaultdict(lambda: defaultdict(list))
+    # Determine if we should log details for this account
+    should_log = verbose and (log_account_id is None or account_data.get('ID_COMPTE') == log_account_id)
 
-    for row in gpu_results_array:
-        if row[0] == 0:  # Skip invalid rows
+    # Initialize retained variables exactly as in SAS
+    MT_VM_PROJ = 0.0
+    MT_GAR_DECES_PROJ = 0.0
+    TX_SURVIE = 0.0
+
+    results = []
+
+    # Determine projection parameters
+    if projection_type == "EXTERNE":
+        max_years = min(nb_years, 99 - int(account_data['age_deb']))
+        year_range = range(max_years + 1)
+    else:  # INTERNE
+        max_years = min(nb_years, 99 - int(account_data['age_deb']) - start_year)
+        year_range = range(max_years + 1)
+
+    if should_log and projection_type == "EXTERNE":
+        print(f"\n{'=' * 80}")
+        print(f"PROJECTION DETAILS - Account {account_data.get('ID_COMPTE')}, Scenario {scenario}")
+        print(f"{'=' * 80}")
+        print(f"Type: {projection_type}")
+        print(f"Starting Age: {int(account_data['age_deb'])}")
+        print(f"Initial Fund Value: {account_data['MT_VM']:,.2f}")
+        print(f"Initial Death Benefit: {account_data['MT_GAR_DECES']:,.2f}")
+        print(f"Max Projection Years: {max_years}")
+        print(f"\nYear-by-Year Progression:")
+        print(
+            f"{'Year':<6} {'Age':<5} {'Fund Value':<14} {'Death Ben':<14} {'Survival':<12} {'Net CF':<14} {'PV Net CF':<14}")
+        print(f"{'-' * 6} {'-' * 5} {'-' * 14} {'-' * 14} {'-' * 12} {'-' * 14} {'-' * 14}")
+
+    for year_idx, current_year in enumerate(year_range):
+
+        # ***********************************************
+        # *** Initialization for year 0 ***
+        # ***********************************************
+
+        if current_year == 0 and projection_type == "EXTERNE":
+            AGE = int(account_data['age_deb'])
+            MT_VM_PROJ = float(account_data['MT_VM'])
+            MT_GAR_DECES_PROJ = float(account_data['MT_GAR_DECES'])
+            TX_SURVIE = 1.0
+            TX_SURVIE_DEB = 1.0
+            TX_ACTU = 1.0
+            QX = 0.0
+            WX = 0.0
+            an_proj = 0
+
+            # Year 0 cash flows
+            COMMISSIONS = -float(account_data.get('TX_COMM_VENTE', 0.0)) * MT_VM_PROJ
+            VP_COMMISSIONS = COMMISSIONS
+            FRAIS_GEN = -float(account_data['FRAIS_ACQUI'])
+            VP_FRAIS_GEN = FRAIS_GEN
+            FLUX_NET = FRAIS_GEN + COMMISSIONS
+            VP_FLUX_NET = FLUX_NET
+
+            # Zero out other components
+            REVENUS = 0.0
+            FRAIS_GEST = 0.0
+            PMT_GARANTIE = 0.0
+            VP_REVENUS = 0.0
+            VP_FRAIS_GEST = 0.0
+            VP_PMT_GARANTIE = 0.0
+
+        elif current_year == 0 and projection_type == "INTERNE":
+            if fund_shock > 0:
+                MT_VM_PROJ = float(account_data['MT_VM']) * (1 - fund_shock)
+            else:
+                MT_VM_PROJ = float(account_data['MT_VM'])
+
+            AGE = int(account_data['age_deb']) + start_year
+            MT_GAR_DECES_PROJ = float(account_data['MT_GAR_DECES'])
+            TX_SURVIE = float(account_data.get('TX_SURVIE_DEB', 1.0))
+            TX_ACTU = 1.0
+            QX = 0.0
+            WX = 0.0
+            an_proj = start_year
+
+            # Zero out all cash flows
+            COMMISSIONS = 0.0
+            VP_COMMISSIONS = 0.0
+            FRAIS_GEN = 0.0
+            VP_FRAIS_GEN = 0.0
+            FLUX_NET = 0.0
+            VP_FLUX_NET = 0.0
+            REVENUS = 0.0
+            FRAIS_GEST = 0.0
+            PMT_GARANTIE = 0.0
+            VP_REVENUS = 0.0
+            VP_FRAIS_GEST = 0.0
+            VP_PMT_GARANTIE = 0.0
+
+        elif TX_SURVIE == 0 or MT_VM_PROJ == 0:
             continue
-        account_id = int(row[0])
-        scenario = int(row[1])
-        year = int(row[2])
-        flux_net = row[7]
 
-        grouped[account_id][scenario].append({
-            'year': year,
-            'flux_net': flux_net
-        })
+        # ***********************************************************************
+        # *** Cash flow calculations for all projection years ***
+        # ***********************************************************************
+        else:
+            scn_proj = scenario
 
-    # Process each account/scenario combination
-    idx = 0
-    for account_id in sorted(grouped.keys()):
-        for scenario in sorted(grouped[account_id].keys()):
-            years_data = sorted(grouped[account_id][scenario], key=lambda x: x['year'])
+            if projection_type == "INTERNE":
+                AGE = int(account_data['age_deb']) + start_year + current_year
+                an_proj = start_year + current_year
+            else:
+                AGE = int(account_data['age_deb']) + current_year
+                an_proj = current_year
 
+            # Fund Value Projection
+            MT_VM_DEB = MT_VM_PROJ
+            RENDEMENT_rate = hash_find(lookups['returns'], (an_proj, scn_proj, projection_type), 0.0)
+            RENDEMENT = MT_VM_DEB * RENDEMENT_rate
+            FRAIS = -(MT_VM_DEB + RENDEMENT / 2) * float(account_data['PC_REVENU_FDS'])
+            MT_VM_PROJ = MT_VM_PROJ + RENDEMENT + FRAIS
+            MT_VM_PROJ = max(MT_VM_PROJ, 0)
+
+            # Death Benefit Reset
+            FREQ_RESET_DECES = float(account_data['FREQ_RESET_DECES'])
+            MAX_RESET_DECES = float(account_data['MAX_RESET_DECES'])
+
+            if FREQ_RESET_DECES == 1 and AGE <= MAX_RESET_DECES:
+                MT_GAR_DECES_PROJ = max(MT_GAR_DECES_PROJ, MT_VM_PROJ)
+
+            # Survival Probability
+            QX = hash_find(lookups['mortality'], AGE, 0.0)
+            WX = hash_find(lookups['lapse'], an_proj, 0.0)
+            TX_SURVIE_DEB = TX_SURVIE
+            TX_SURVIE = TX_SURVIE_DEB * (1 - QX) * (1 - WX)
+
+            # Cash Flows
+            REVENUS = -FRAIS * TX_SURVIE_DEB
+            FRAIS_GEST = -(MT_VM_DEB + RENDEMENT / 2) * float(account_data['PC_HONORAIRES_GEST']) * TX_SURVIE_DEB
+            COMMISSIONS = -(MT_VM_DEB + RENDEMENT / 2) * float(account_data['TX_COMM_MAINTIEN']) * TX_SURVIE_DEB
+            FRAIS_GEN = -float(account_data['FRAIS_ADMIN']) * TX_SURVIE_DEB
+            PMT_GARANTIE = -max(0, MT_GAR_DECES_PROJ - MT_VM_PROJ) * QX * TX_SURVIE_DEB
+            FLUX_NET = REVENUS + FRAIS_GEST + COMMISSIONS + FRAIS_GEN + PMT_GARANTIE
+
+            # Present Values
+            TX_ACTU = hash_find(lookups['discount_ext'], an_proj, 1.0)
+            VP_REVENUS = REVENUS * TX_ACTU
+            VP_FRAIS_GEST = FRAIS_GEST * TX_ACTU
+            VP_COMMISSIONS = COMMISSIONS * TX_ACTU
+            VP_FRAIS_GEN = FRAIS_GEN * TX_ACTU
+            VP_PMT_GARANTIE = PMT_GARANTIE * TX_ACTU
+            VP_FLUX_NET = FLUX_NET * TX_ACTU
+
+            # Internal Adjustment
+            if projection_type == "INTERNE" and start_year > 0:
+                TX_ACTU_INT = hash_find(lookups['discount_int'], start_year, 1.0)
+                if TX_ACTU_INT != 0:
+                    VP_REVENUS = VP_REVENUS / TX_ACTU_INT
+                    VP_FRAIS_GEST = VP_FRAIS_GEST / TX_ACTU_INT
+                    VP_COMMISSIONS = VP_COMMISSIONS / TX_ACTU_INT
+                    VP_FRAIS_GEN = VP_FRAIS_GEN / TX_ACTU_INT
+                    VP_PMT_GARANTIE = VP_PMT_GARANTIE / TX_ACTU_INT
+                    VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
+
+        # Log detailed year information
+        if should_log and projection_type == "EXTERNE" and current_year <= 5:
+            print(f"{current_year:<6} {AGE:<5} {MT_VM_PROJ:>14,.2f} {MT_GAR_DECES_PROJ:>14,.2f} "
+                  f"{TX_SURVIE:>12.6f} {FLUX_NET:>14,.2f} {VP_FLUX_NET:>14,.2f}")
+
+        # Store results
+        result_row = {
+            'year': current_year,
+            'an_proj': an_proj,
+            'AGE': AGE,
+            'MT_VM_PROJ': MT_VM_PROJ,
+            'MT_GAR_DECES_PROJ': MT_GAR_DECES_PROJ,
+            'TX_SURVIE': TX_SURVIE,
+            'TX_SURVIE_DEB': TX_SURVIE_DEB if 'TX_SURVIE_DEB' in locals() else TX_SURVIE,
+            'FLUX_NET': FLUX_NET,
+            'VP_FLUX_NET': VP_FLUX_NET
+        }
+
+        results.append(result_row)
+
+    if should_log and projection_type == "EXTERNE" and len(results) > 5:
+        print(f"{'...':<6} {'...':<5} {'...':<14} {'...':<14} {'...':<12} {'...':<14} {'...':<14}")
+        last_year = results[-1]
+        print(f"{last_year['year']:<6} {last_year['AGE']:<5} {last_year['MT_VM_PROJ']:>14,.2f} "
+              f"{last_year['MT_GAR_DECES_PROJ']:>14,.2f} {last_year['TX_SURVIE']:>12.6f} "
+              f"{last_year['FLUX_NET']:>14,.2f} {last_year['VP_FLUX_NET']:>14,.2f}")
+
+    return results
+
+
+def kahan_sum(numbers):
+    sum_val = 0.0
+    compensation = 0.0
+    for x in numbers:
+        y = x - compensation
+        t = sum_val + y
+        compensation = (t - sum_val) - y
+        sum_val = t
+    return sum_val
+
+
+def run_internal_calculations_exact(external_projection: List[Dict], account_data: pd.Series,
+                                    scenario: int, lookups: Dict, calculation_type: str,
+                                    NB_SC_INT: int, NB_AN_PROJECTION_INT: int,
+                                    CHOC_CAPITAL: float, verbose: bool = False,
+                                    log_account_id: int = None) -> Dict:
+    """
+    Internal calculations with detailed logging
+    """
+    should_log = verbose and (log_account_id is None or account_data.get('ID_COMPTE') == log_account_id)
+
+    year_results = {}
+    valid_years = [ext_data for ext_data in external_projection if ext_data['year'] > 0]
+
+    if should_log and valid_years:
+        print(f"\n{'=' * 80}")
+        print(f"{calculation_type} CALCULATION - Account {account_data.get('ID_COMPTE')}, Scenario {scenario}")
+        print(f"{'=' * 80}")
+        print(f"Processing {len(valid_years)} years × {NB_SC_INT} internal scenarios")
+        shock_text = f"with {CHOC_CAPITAL:.1%} shock" if calculation_type == 'CAPITAL' else "no shock"
+        print(f"Fund shock: {shock_text}")
+
+    for ext_data in valid_years:
+        year = ext_data['year']
+        fund_value = ext_data['MT_VM_PROJ']
+        death_benefit = ext_data['MT_GAR_DECES_PROJ']
+        survival_prob = ext_data['TX_SURVIE']
+
+        if survival_prob <= 0.0001 or fund_value <= 0:
+            year_results[year] = 0.0
+            continue
+
+        modified_account = account_data.copy()
+        modified_account['MT_VM'] = fund_value
+        modified_account['MT_GAR_DECES'] = death_benefit
+        modified_account['TX_SURVIE_DEB'] = survival_prob
+
+        fund_shock = CHOC_CAPITAL if calculation_type == 'CAPITAL' else 0.0
+
+        internal_scenarios_sum = []
+
+        for internal_scenario in range(1, NB_SC_INT + 1):
+            internal_results = project_cash_flows_exact_sas_logic(
+                modified_account, internal_scenario, 'INTERNE', lookups,
+                NB_AN_PROJECTION_INT, fund_shock, start_year=year, verbose=False
+            )
+
+            if internal_results:
+                total_vp = kahan_sum([row['VP_FLUX_NET'] for row in internal_results])
+                internal_scenarios_sum.append(total_vp)
+
+        if internal_scenarios_sum:
+            year_results[year] = np.mean(internal_scenarios_sum)
+            if should_log and year <= 3:
+                print(f"  Year {year}: Mean across {len(internal_scenarios_sum)} scenarios = {year_results[year]:,.2f}")
+        else:
+            year_results[year] = 0.0
+
+    year_results[0] = 0.0
+
+    if should_log:
+        print(f"\n{calculation_type} results summary:")
+        for yr in sorted(year_results.keys())[:5]:
+            print(f"  Year {yr}: {year_results[yr]:,.2f}")
+        if len(year_results) > 5:
+            print(f"  ...")
+
+    return year_results
+
+
+def calculate_distributable_flows_exact(external_results: List[Dict], lookups: Dict,
+                                        NB_SC_INT: int, NB_AN_PROJECTION_INT: int,
+                                        CHOC_CAPITAL: float, HURDLE_RT: float,
+                                        verbose: bool = True,
+                                        log_account_id: int = None) -> Tuple[List[Dict], List[Dict]]:
+    """
+    Calculate distributable cash flows with detailed logging
+
+    Returns:
+    --------
+    Tuple of (summary_results, detailed_results)
+    - summary_results: List of dicts with total VP_FLUX_DISTRIBUABLES per account-scenario
+    - detailed_results: List of dicts with year-by-year details
+    """
+
+    final_results = []
+    detailed_results = []
+
+    if verbose:
+        print("\n💰 CALCULATING DISTRIBUTABLE FLOWS")
+        print("-" * 50)
+        print(f"Processing {len(external_results)} account×scenario combinations...")
+
+    account_groups = {}
+    for ext_result in external_results:
+        account_id = ext_result['account_id']
+        if account_id not in account_groups:
+            account_groups[account_id] = []
+        account_groups[account_id].append(ext_result)
+
+    account_progress = tqdm(account_groups.items(),
+                            desc="Processing accounts",
+                            unit="account",
+                            disable=not verbose)
+
+    for account_id, account_scenarios in account_progress:
+        if verbose:
+            account_progress.set_postfix({"Account": account_id})
+
+        for scenario_idx, ext_result in enumerate(account_scenarios, 1):
+            scenario = ext_result['scenario']
+            external_projection = ext_result['projection']
+            account_data = ext_result['account_data']
+
+            should_log = verbose and (log_account_id is None or account_id == log_account_id) and scenario == 1
+
+            # Calculate reserves and capital
+            reserve_by_year = run_internal_calculations_exact(
+                external_projection, account_data, scenario, lookups, 'RESERVE',
+                NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL,
+                verbose=should_log, log_account_id=log_account_id
+            )
+
+            capital_results = run_internal_calculations_exact(
+                external_projection, account_data, scenario, lookups, 'CAPITAL',
+                NB_SC_INT, NB_AN_PROJECTION_INT, CHOC_CAPITAL,
+                verbose=should_log, log_account_id=log_account_id
+            )
+
+            capital_by_year = {}
+            for year in capital_results:
+                reserve_value = reserve_by_year.get(year, 0.0)
+                capital_value = capital_results[year] - reserve_value
+                capital_by_year[year] = capital_value
+
+            # Calculate distributable flows
+            if should_log:
+                print(f"\n{'=' * 80}")
+                print(f"DISTRIBUTABLE FLOWS - Account {account_id}, Scenario {scenario}")
+                print(f"{'=' * 80}")
+                print(f"{'Year':<6} {'Ext CF':<14} {'Reserve':<14} {'ΔReserve':<14} {'Capital':<14} "
+                      f"{'ΔCapital':<14} {'Profit':<14} {'Distrib':<14} {'PV Dist':<14}")
+                print(
+                    f"{'-' * 6} {'-' * 14} {'-' * 14} {'-' * 14} {'-' * 14} {'-' * 14} {'-' * 14} {'-' * 14} {'-' * 14}")
+
+            distributable_pvs = []
             prev_reserve = 0.0
             prev_capital = 0.0
 
-            for year_data in years_data:
-                year = year_data['year']
-                flux_net_ext = year_data['flux_net']
+            for ext_data in external_projection:
+                year = ext_data['year']
+                an_proj = ext_data.get('an_proj', year)
+                external_cf = ext_data['FLUX_NET']
 
-                # Get reserve and capital for this combination and year
-                # Index calculation: combination_idx * (nb_years+1) + year
-                result_idx = idx * (nb_years + 1) + year
-
-                if result_idx < len(reserve_results):
-                    current_reserve = reserve_results[result_idx]
-                    current_capital = capital_results[result_idx] - reserve_results[result_idx]
-                else:
-                    current_reserve = 0.0
-                    current_capital = 0.0
+                current_reserve = reserve_by_year.get(year, 0.0)
+                current_capital = capital_by_year.get(year, 0.0)
 
                 if year == 0:
+                    profit = external_cf + current_reserve
+                    distributable = profit + current_capital
                     delta_reserve = current_reserve
                     delta_capital = current_capital
-                    profit = flux_net_ext + current_reserve
-                    distributable = profit + current_capital
                 else:
                     delta_reserve = current_reserve - prev_reserve
                     delta_capital = current_capital - prev_capital
-                    profit = flux_net_ext + delta_reserve
+                    profit = external_cf + delta_reserve
                     distributable = profit + delta_capital
 
                 if year > 0:
-                    pv_distributable = distributable / ((1 + hurdle_rt) ** year)
+                    pv_distributable = distributable / ((1 + HURDLE_RT) ** year)
                 else:
                     pv_distributable = distributable
 
-                detailed_rows.append({
+                distributable_pvs.append(pv_distributable)
+
+                # Store detailed year-by-year results
+                detailed_results.append({
                     'ID_COMPTE': account_id,
                     'scn_eval': scenario,
-                    'an_proj': year,
-                    'FLUX_NET_EXT': flux_net_ext,
+                    'an_proj': an_proj,
+                    'FLUX_NET_EXT': external_cf,
                     'RESERVE': current_reserve,
                     'CAPITAL_REQUIREMENT': current_capital,
-                    'DELTA_RESERVE': delta_reserve,
-                    'DELTA_CAPITAL': delta_capital,
                     'PROFIT': profit,
                     'FLUX_DISTRIBUABLE': distributable,
                     'VP_FLUX_DISTRIBUABLE_YEARLY': pv_distributable
                 })
 
+                if should_log and (year <= 5 or year == len(external_projection) - 1):
+                    print(f"{year:<6} {external_cf:>14,.2f} {current_reserve:>14,.2f} {delta_reserve:>14,.2f} "
+                          f"{current_capital:>14,.2f} {delta_capital:>14,.2f} {profit:>14,.2f} "
+                          f"{distributable:>14,.2f} {pv_distributable:>14,.2f}")
+                elif should_log and year == 6:
+                    print(f"{'...':<6} {'...':<14} {'...':<14} {'...':<14} {'...':<14} "
+                          f"{'...':<14} {'...':<14} {'...':<14} {'...':<14}")
+
                 prev_reserve = current_reserve
                 prev_capital = current_capital
 
-            idx += 1
+            total_pv_distributable = sum(distributable_pvs)
 
-    # Save to CSV
-    df = pd.DataFrame(detailed_rows)
-    df.to_csv(output_file, index=False)
-    print(f"✓ GPU detailed results saved to: {output_file}")
+            if should_log:
+                print(f"{'TOTAL':<6} {'':<14} {'':<14} {'':<14} {'':<14} {'':<14} "
+                      f"{'':<14} {'':<14} {total_pv_distributable:>14,.2f}")
 
-    return df
+            final_results.append({
+                'ID_COMPTE': account_id,
+                'scn_eval': scenario,
+                'VP_FLUX_DISTRIBUABLES': total_pv_distributable
+            })
+
+    if verbose:
+        print(f"\n✅ Completed {len(final_results)} distributable flow calculations")
+
+    return final_results, detailed_results
 
 
-def create_detailed_comparison_report(gpu_file: str, cpu_file: str, output_file: str = 'comparison_report.csv'):
-    """
-    Create a detailed CSV report comparing GPU and CPU results
-    """
-    try:
-        gpu_df = pd.read_csv(gpu_file)
-        cpu_df = pd.read_csv(cpu_file)
+def run_external_calculations_exact(data: Dict, lookups: Dict, NBCPT: int, NB_SC: int,
+                                    NB_AN_PROJECTION: int, verbose: bool = True,
+                                    log_account_id: int = None) -> List[Dict]:
+    """Run external calculations with detailed logging"""
 
-        merged = pd.merge(
-            gpu_df, cpu_df,
-            on=['ID_COMPTE', 'scn_eval'],
-            suffixes=('_gpu', '_cpu'),
-            how='outer',
-            indicator=True
-        )
+    external_results = []
+    total_accounts = min(NBCPT, len(data['population']))
 
-        if 'VP_FLUX_DISTRIBUABLES_gpu' in merged.columns and 'VP_FLUX_DISTRIBUABLES_cpu' in merged.columns:
-            merged['abs_diff'] = np.abs(
-                merged['VP_FLUX_DISTRIBUABLES_gpu'] - merged['VP_FLUX_DISTRIBUABLES_cpu']
+    if verbose:
+        print(f"\n🌍 RUNNING EXTERNAL CALCULATIONS")
+        print("-" * 50)
+        print(f"Processing {total_accounts} accounts × {NB_SC} scenarios = {total_accounts * NB_SC:,} projections")
+
+    account_progress = tqdm(range(total_accounts), desc="Processing accounts", unit="account", disable=not verbose)
+
+    for account_idx in account_progress:
+        account_data = data['population'].iloc[account_idx]
+        account_id = account_data['ID_COMPTE']
+
+        if verbose:
+            account_progress.set_postfix({"Account": account_id})
+
+        should_log = verbose and (log_account_id is None or account_id == log_account_id)
+
+        if should_log:
+            print(f"\n{'=' * 80}")
+            print(f"ACCOUNT {account_id} - INITIAL DATA")
+            print(f"{'=' * 80}")
+            print(f"  MT_VM (Initial Fund Value):       {account_data['MT_VM']:,.2f}")
+            print(f"  MT_GAR_DECES (Death Benefit):     {account_data['MT_GAR_DECES']:,.2f}")
+            print(f"  AGE_DEB (Starting Age):           {int(account_data['age_deb'])}")
+            print(f"  TX_COMM_VENTE (Sales Commission): {account_data.get('TX_COMM_VENTE', 0.0):.4f}")
+            print(f"  FRAIS_ACQUI (Acquisition Fee):    {account_data['FRAIS_ACQUI']:.2f}")
+            print(f"  PC_REVENU_FDS (Fund Revenue):     {account_data['PC_REVENU_FDS']:.4f}")
+            print(f"  PC_HONORAIRES_GEST (Mgmt Fee):    {account_data['PC_HONORAIRES_GEST']:.4f}")
+            print(f"  TX_COMM_MAINTIEN (Ongoing Comm):  {account_data['TX_COMM_MAINTIEN']:.4f}")
+            print(f"  FRAIS_ADMIN (Admin Fee):          {account_data['FRAIS_ADMIN']:.2f}")
+            print(f"  FREQ_RESET_DECES (Reset Freq):    {account_data['FREQ_RESET_DECES']:.0f}")
+            print(f"  MAX_RESET_DECES (Max Reset Age):  {account_data['MAX_RESET_DECES']:.0f}")
+
+        scenario_progress = tqdm(range(1, NB_SC + 1),
+                                 desc=f"    Scenarios for {account_id}",
+                                 unit="scenario",
+                                 leave=False,
+                                 disable=not verbose or should_log)
+
+        for scenario in scenario_progress:
+            projection = project_cash_flows_exact_sas_logic(
+                account_data, scenario, 'EXTERNE', lookups, NB_AN_PROJECTION,
+                verbose=should_log and scenario == 1, log_account_id=log_account_id
             )
-            merged['rel_diff_pct'] = np.abs(
-                (merged['VP_FLUX_DISTRIBUABLES_gpu'] - merged['VP_FLUX_DISTRIBUABLES_cpu']) /
-                merged['VP_FLUX_DISTRIBUABLES_gpu']
-            ) * 100
 
-        merged.to_csv(output_file, index=False)
-        print(f"\n📄 Detailed comparison report saved to: {output_file}")
+            external_results.append({
+                'account_id': account_id,
+                'scenario': scenario,
+                'projection': projection,
+                'account_data': account_data
+            })
 
-        return merged
+    if verbose:
+        print(f"\n✅ Completed {len(external_results)} external projections")
 
-    except Exception as e:
-        print(f"\n❌ Error creating report: {e}")
-        return None
+    return external_results
 
 
-if __name__ == "__main__":
-    import argparse
+def acfc_algorithm_fully_fixed(data_path: str = ".", NBCPT: int = 4, NB_SC: int = 10, NB_AN_PROJECTION: int = 10,
+                               NB_SC_INT: int = 10, NB_AN_PROJECTION_INT: int = 10,
+                               CHOC_CAPITAL: float = 0.35, HURDLE_RT: float = 0.10,
+                               verbose: bool = True, log_account_id: int = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Fully Fixed ACFC Algorithm with detailed logging
 
-    parser = argparse.ArgumentParser(description='Compare GPU and CPU results')
-    parser.add_argument('--mode', choices=['summary', 'detailed', 'both'], default='both',
-                        help='Comparison mode: summary, detailed, or both')
-    parser.add_argument('--tolerance', type=float, default=1e-2,
-                        help='Tolerance for numerical comparisons')
+    Parameters:
+    -----------
+    verbose : bool
+        Enable detailed progress logging
+    log_account_id : int, optional
+        If specified, only show detailed calculations for this account ID
 
-    args = parser.parse_args()
+    Returns:
+    --------
+    Tuple of (summary_df, detailed_df)
+    - summary_df: DataFrame with total VP_FLUX_DISTRIBUABLES per account-scenario
+    - detailed_df: DataFrame with year-by-year details including all cash flow components
+    """
 
-    if args.mode in ['summary', 'both']:
-        # Compare summary results
-        gpu_file = 'test/gpu_results_complete.csv'
-        cpu_file = 'test/cpu_results_complete.csv'
+    start_time = time.time()
 
-        print("=" * 80)
-        print("COMPARING SUMMARY RESULTS")
-        print("=" * 80)
-        compare_csv_results(gpu_file, cpu_file, tolerance=args.tolerance)
-
-        print("\nCreating detailed summary report...")
-        report = create_detailed_comparison_report(gpu_file, cpu_file, 'test/comparison_report.csv')
-
-    if args.mode in ['detailed', 'both']:
-        # Compare detailed yearly results
-        cpu_detailed = 'test/cpu_detailed_yearly.csv'
-        gpu_detailed = 'test/gpu_detailed_yearly.csv'  # If you create one from GPU
-
+    if verbose:
         print("\n" + "=" * 80)
-        print("COMPARING DETAILED YEAR-BY-YEAR RESULTS")
+        print("🚀 ACFC ALGORITHM - DETAILED EXECUTION LOG")
+        print("=" * 80)
+        print(f"📊 Configuration:")
+        print(f"   • Accounts to process: {NBCPT}")
+        print(f"   • External scenarios: {NB_SC}")
+        print(f"   • Projection years: {NB_AN_PROJECTION}")
+        print(f"   • Internal scenarios: {NB_SC_INT}")
+        print(f"   • Internal projection years: {NB_AN_PROJECTION_INT}")
+        print(f"   • Capital shock: {CHOC_CAPITAL:.1%}")
+        print(f"   • Hurdle rate: {HURDLE_RT:.1%}")
+        if log_account_id:
+            print(f"   • Detailed logging for Account ID: {log_account_id}")
         print("=" * 80)
 
-        # Check if GPU detailed file exists
-        import os
+    # Phase 1: Data Loading
+    data = load_input_data(data_path, verbose=verbose)
+    lookups = create_lookup_tables(data, verbose=verbose)
 
-        if os.path.exists(gpu_detailed):
-            compare_detailed_yearly_results(cpu_detailed, gpu_detailed, tolerance=args.tolerance)
-        else:
-            print(f"\n⚠️  GPU detailed file not found: {gpu_detailed}")
-            print("Analyzing CPU detailed results only...")
-            compare_detailed_yearly_results(cpu_detailed, gpu_file=None, tolerance=args.tolerance)
+    # Phase 2: External Calculations
+    external_results = run_external_calculations_exact(
+        data, lookups, NBCPT, NB_SC, NB_AN_PROJECTION,
+        verbose=verbose, log_account_id=log_account_id
+    )
 
-    print("\n" + "=" * 80)
-    print("COMPARISON COMPLETE")
-    print("=" * 80)
-    print("\nGenerated files:")
-    print("  1. test/comparison_report.csv - Summary comparison")
-    print("  2. test/detailed_comparison.csv - Year-by-year comparison (if GPU data available)")
-    print("\nTo view specific differences, sort CSVs by diff columns")
+    # Phase 3-5: Internal Calculations and Distributable Flows
+    final_results, detailed_results = calculate_distributable_flows_exact(
+        external_results, lookups, NB_SC_INT, NB_AN_PROJECTION_INT,
+        CHOC_CAPITAL, HURDLE_RT, verbose=verbose, log_account_id=log_account_id
+    )
+
+    # Phase 6: Output Generation
+    if verbose:
+        print(f"\n📄 GENERATING OUTPUT")
+        print("-" * 50)
+
+    output_df = pd.DataFrame(final_results)
+    detailed_df = pd.DataFrame(detailed_results)
+
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    if verbose:
+        print(f"\n{'=' * 80}")
+        print(f"✅ ALGORITHM COMPLETED SUCCESSFULLY!")
+        print(f"{'=' * 80}")
+        print(f"📈 Results Summary:")
+        print(f"   • Total calculations: {len(output_df):,}")
+        print(f"   • Detailed year-by-year records: {len(detailed_df):,}")
+        print(f"   • Processing time: {total_time:.1f} seconds")
+        print(f"   • Average time per calculation: {total_time / len(output_df):.3f} seconds")
+
+        if len(output_df) > 0:
+            print(f"   • Mean VP_FLUX_DISTRIBUABLES: ${output_df['VP_FLUX_DISTRIBUABLES'].mean():,.2f}")
+            print(f"   • Range: ${output_df['VP_FLUX_DISTRIBUABLES'].min():,.2f} to "
+                  f"${output_df['VP_FLUX_DISTRIBUABLES'].max():,.2f}")
+            print(f"\n   Results by Account:")
+            for account_id in sorted(output_df['ID_COMPTE'].unique()):
+                account_data = output_df[output_df['ID_COMPTE'] == account_id]
+                print(f"     Account {account_id}: Mean = ${account_data['VP_FLUX_DISTRIBUABLES'].mean():,.2f}, "
+                      f"Scenarios = {len(account_data)}")
+        print("=" * 80)
+
+    return output_df, detailed_df
+
+
+# Example usage
+if __name__ == "__main__":
+    summary_results, detailed_results = acfc_algorithm_fully_fixed(
+        data_path=HERE.joinpath("data_in"),
+        NBCPT=2,
+        NB_SC=2,
+        NB_AN_PROJECTION=100,
+        NB_SC_INT=2,
+        NB_AN_PROJECTION_INT=100,
+        CHOC_CAPITAL=0.35,
+        HURDLE_RT=0.10,
+        verbose=True,  # Enable detailed logging
+        log_account_id=None  # Set to specific account ID to see only that account's details
+    )
+
+    print(f"\n📋 Sample Summary Results:")
+    print(summary_results.head(10))
+
+    print(f"\n📋 Sample Detailed Results:")
+    print(detailed_results.head(10))
+
+    # Save both outputs
+    summary_results.to_csv(HERE.joinpath('test/acfc_results_summary.csv'), index=False)
+    detailed_results.to_csv(HERE.joinpath('test/acfc_results_detailed.csv'), index=False)
+
+    print(f"\n💾 Saved outputs:")
+    print(f"   • Summary: test/acfc_results_summary.csv ({len(summary_results)} rows)")
+    print(f"   • Detailed: test/acfc_results_detailed.csv ({len(detailed_results)} rows)")
