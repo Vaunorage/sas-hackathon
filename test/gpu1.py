@@ -945,7 +945,7 @@ if __name__ == "__main__":
 
     results = gpu_acfc_algorithm_complete(
         data_path=data_path,
-        nb_accounts=2,
+        nb_accounts=1,
         nb_scenarios=2,
         nb_years=100,
         nb_sc_int=2,

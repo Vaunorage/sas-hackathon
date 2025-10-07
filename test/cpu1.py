@@ -714,7 +714,7 @@ def acfc_algorithm_fully_fixed(data_path: str = ".", NBCPT: int = 4, NB_SC: int 
 if __name__ == "__main__":
     summary_results, detailed_results = acfc_algorithm_fully_fixed(
         data_path=HERE.joinpath("data_in"),
-        NBCPT=2,
+        NBCPT=1,
         NB_SC=2,
         NB_AN_PROJECTION=100,
         NB_SC_INT=2,

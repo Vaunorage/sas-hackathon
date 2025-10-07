@@ -538,7 +538,7 @@ def parallelized_acfc_algorithm_fixed(data_path: str = ".", nb_accounts: int = 4
 if __name__ == "__main__":
     results = parallelized_acfc_algorithm_fixed(
         data_path=HERE.joinpath("data_in"),  # Update with your data path
-        nb_accounts=30,
+        nb_accounts=1,
         nb_scenarios=50,
         nb_years=50,
         nb_sc_int=50,
