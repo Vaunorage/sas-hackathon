@@ -7,6 +7,7 @@ import warnings
 import logging
 import math
 
+
 def _initialize_cuda():
     """Initialize CUDA at module import time"""
     if cuda.is_available():
@@ -21,6 +22,7 @@ def _initialize_cuda():
             print(f"Warning: Could not initialize CUDA context: {e}")
             return False
     return False
+
 
 # Initialize CUDA context when module loads
 _CUDA_INITIALIZED = _initialize_cuda()
@@ -238,7 +240,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
                                   lookups_discount_ext, lookups_discount_int, lookups_returns_ext,
                                   lookups_returns_int, results, year, projection_type, fund_shock, start_year,
                                   max_years):
-    """GPU kernel for year transition calculations"""
+    """GPU kernel for year transition calculations - NOW STORES RENDEMENT"""
 
     combination_idx = cuda.grid(1)
     if combination_idx >= states.shape[0]:
@@ -261,6 +263,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             MT_GAR_DECES_PROJ = initial_data[account_idx, DATA_MT_GAR_DECES]
             TX_SURVIE = 1.0
             AGE = initial_data[account_idx, DATA_AGE_DEB]
+            RENDEMENT = 0.0  # No return at year 0
 
             COMMISSIONS = -initial_data[account_idx, DATA_TX_COMM_VENTE] * MT_VM_PROJ
             FRAIS_GEN = -initial_data[account_idx, DATA_FRAIS_ACQUI]
@@ -275,6 +278,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             MT_GAR_DECES_PROJ = initial_data[account_idx, DATA_MT_GAR_DECES]
             TX_SURVIE = 1.0
             AGE = initial_data[account_idx, DATA_AGE_DEB] + start_year
+            RENDEMENT = 0.0  # No return at year 0
 
             FLUX_NET = 0.0
             VP_FLUX_NET = 0.0
@@ -296,6 +300,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             results[result_idx, 6] = TX_SURVIE
             results[result_idx, 7] = FLUX_NET
             results[result_idx, 8] = VP_FLUX_NET
+            results[result_idx, 9] = RENDEMENT  # Store RENDEMENT
         return
 
     current_survie = states[combination_idx, STATE_TX_SURVIE]
@@ -315,6 +320,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             results[result_idx, 6] = 0.0
             results[result_idx, 7] = 0.0
             results[result_idx, 8] = 0.0
+            results[result_idx, 9] = 0.0  # RENDEMENT = 0
         return
 
     if projection_type == 1:  # INTERNE
@@ -341,7 +347,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
                 an_proj >= 0 and an_proj < lookups_returns_int.shape[0]):
             RENDEMENT_rate = lookups_returns_int[an_proj, scenario]
 
-    RENDEMENT = MT_VM_DEB * RENDEMENT_rate
+    RENDEMENT = MT_VM_DEB * RENDEMENT_rate  # Calculate actual RENDEMENT amount
     FRAIS = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[account_idx, DATA_PC_REVENU_FDS]
     new_MT_VM_PROJ = max(0.0, states[combination_idx, STATE_MT_VM_PROJ] + RENDEMENT + FRAIS)
 
@@ -400,6 +406,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
         results[result_idx, 6] = new_TX_SURVIE
         results[result_idx, 7] = FLUX_NET
         results[result_idx, 8] = VP_FLUX_NET
+        results[result_idx, 9] = RENDEMENT  # Store RENDEMENT
 
 
 def log_external_year_details(external_results, year, account_id=None, scenario=None):
@@ -418,12 +425,13 @@ def log_external_year_details(external_results, year, account_id=None, scenario=
 
     print(f"\n--- Year {year} Details ---")
     for row in valid_year_data:
-        acc_id, scn, yr, age, vm, death_ben, survie, flux, vp_flux = row
+        acc_id, scn, yr, age, vm, death_ben, survie, flux, vp_flux, rendement = row
         print(f"  Account {int(acc_id)}, Scenario {int(scn)}:")
         print(f"    Age: {int(age)}")
         print(f"    Fund Value: {vm:,.2f}")
         print(f"    Death Benefit: {death_ben:,.2f}")
         print(f"    Survival Prob: {survie:.6f}")
+        print(f"    Rendement: {rendement:,.2f}")
         print(f"    Net Cash Flow: {flux:,.2f}")
         print(f"    PV Net Cash Flow: {vp_flux:,.2f}")
 
@@ -433,8 +441,9 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
     """Run projection on GPU with detailed logging"""
     proj_type_num = 0 if projection_type == "EXTERNE" else 1
 
+    # CHANGED: Now 10 columns instead of 9 to include RENDEMENT
     max_results = states.shape[0] * (nb_years + 1)
-    results = np.zeros((max_results, 9), dtype=np.float64)
+    results = np.zeros((max_results, 10), dtype=np.float64)
 
     if verbose:
         print(f"\n{'=' * 80}")
@@ -622,9 +631,16 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
 def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_scenarios: int = 10,
                                 nb_years: int = 10, nb_sc_int: int = 10, nb_an_projection_int: int = 10,
                                 choc_capital: float = 0.35, hurdle_rt: float = 0.10,
-                                verbose: bool = True) -> pd.DataFrame:
+                                verbose: bool = True,
+                                log_account_id: int = None, log_scenario: int = None,
+                                log_max_years: int = None) -> pd.DataFrame:
     """
-    Complete GPU-Accelerated ACFC Algorithm with detailed logging
+    Complete GPU-Accelerated ACFC Algorithm with detailed logging including TX_SURVIE and RENDEMENT
+
+    Args:
+        log_account_id: If specified, only log details for this account ID
+        log_scenario: If specified, only log details for this scenario
+        log_max_years: If specified, only log details up to this year (e.g., 10 for years 0-9)
     """
 
     if verbose:
@@ -639,6 +655,10 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
         print(f"  Internal Projection Years: {nb_an_projection_int}")
         print(f"  Capital Shock: {choc_capital}")
         print(f"  Hurdle Rate: {hurdle_rt}")
+        print(f"\nDetailed Logging Filters:")
+        print(f"  Account ID Filter: {log_account_id if log_account_id is not None else 'All accounts'}")
+        print(f"  Scenario Filter: {log_scenario if log_scenario is not None else 'All scenarios'}")
+        print(f"  Max Years Filter: {log_max_years if log_max_years is not None else 'All years'}")
 
     print("\nPhase 1: Loading input data...")
     data = load_input_data(data_path, nb_accounts)
@@ -681,6 +701,7 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
                     print(f"    Fund Value: {row[4]:,.2f}")
                     print(f"    Death Benefit: {row[5]:,.2f}")
                     print(f"    Survival Prob: {row[6]:.6f}")
+                    print(f"    Rendement: {row[9]:,.2f}")
                     print(f"    Net Cash Flow: {row[7]:,.2f}")
                     print(f"    PV Cash Flow: {row[8]:,.2f}")
     else:
@@ -736,7 +757,7 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
     print("\nPhase 6: Calculating distributable flows...")
 
     final_results = []
-    detailed_results = []  # NEW: For year-by-year detailed output
+    detailed_results = []
     from collections import defaultdict
     grouped_external = defaultdict(list)
     grouped_reserves = defaultdict(list)
@@ -750,6 +771,8 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
 
         grouped_external[key].append({
             'year': year,
+            'TX_SURVIE': row[6],  # Extract TX_SURVIE
+            'RENDEMENT': row[9],  # Extract RENDEMENT
             'FLUX_NET': row[7],
             'VP_FLUX_NET': row[8]
         })
@@ -760,6 +783,14 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
         print(f"\n{'=' * 80}")
         print("DISTRIBUTABLE FLOWS CALCULATION")
         print(f"{'=' * 80}")
+        if log_account_id is not None or log_scenario is not None or log_max_years is not None:
+            print(f"Detailed logging filters:")
+            if log_account_id is not None:
+                print(f"  Account ID: {log_account_id}")
+            if log_scenario is not None:
+                print(f"  Scenario: {log_scenario}")
+            if log_max_years is not None:
+                print(f"  Max Years: {log_max_years}")
 
     for key in grouped_external:
         account_id, scenario = key.split('_')
@@ -770,11 +801,12 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
         reserve_data = dict(sorted(grouped_reserves[key], key=lambda x: x[0]))
         capital_data = dict(sorted(grouped_capital[key], key=lambda x: x[0]))
 
-        if verbose and scenario == 1:  # Log first scenario in detail
+        if verbose and scenario == 1:
             print(f"\nAccount {account_id}, Scenario {scenario}:")
             print(
-                f"  {'Year':<6} {'Ext CF':<12} {'Reserve':<12} {'Capital':<12} {'Profit':<12} {'Distrib':<12} {'PV Distrib':<12}")
-            print(f"  {'-' * 6} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12}")
+                f"  {'Year':<6} {'TX_SURVIE':<12} {'Rendement':<15} {'Ext CF':<12} {'Reserve':<12} {'Capital':<12} {'Profit':<12} {'Distrib':<12} {'PV Distrib':<12}")
+            print(
+                f"  {'-' * 6} {'-' * 12} {'-' * 15} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12}")
 
         distributable_pvs = []
         prev_reserve = 0.0
@@ -782,6 +814,8 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
 
         for ext_data in external_data:
             year = ext_data['year']
+            tx_survie = ext_data['TX_SURVIE']
+            rendement = ext_data['RENDEMENT']
             external_cf = ext_data['FLUX_NET']
 
             current_reserve = reserve_data.get(year, 0.0)
@@ -801,22 +835,35 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
 
             distributable_pvs.append(pv_distributable)
 
-            # NEW: Store detailed year-by-year results
-            detailed_results.append({
-                'ID_COMPTE': account_id,
-                'scn_eval': scenario,
-                'an_proj': year,
-                'FLUX_NET_EXT': external_cf,
-                'RESERVE': current_reserve,
-                'CAPITAL_REQUIREMENT': current_capital,
-                'PROFIT': profit,
-                'FLUX_DISTRIBUABLE': distributable,
-                'VP_FLUX_DISTRIBUABLE_YEARLY': pv_distributable
-            })
+            # Apply filtering for detailed logging
+            should_log = True
+            if log_account_id is not None and account_id != log_account_id:
+                should_log = False
+            if log_scenario is not None and scenario != log_scenario:
+                should_log = False
+            if log_max_years is not None and year >= log_max_years:
+                should_log = False
+
+            # Store detailed year-by-year results with TX_SURVIE and RENDEMENT (if passes filter)
+            if should_log:
+                detailed_results.append({
+                    'ID_COMPTE': account_id,
+                    'scn_eval': scenario,
+                    'an_proj': year,
+                    'TX_SURVIE': tx_survie,  # Added
+                    'RENDEMENT': rendement,  # Added
+                    'FLUX_NET_EXT': external_cf,
+                    'RESERVE': current_reserve,
+                    'CAPITAL_REQUIREMENT': current_capital,
+                    'PROFIT': profit,
+                    'FLUX_DISTRIBUABLE': distributable,
+                    'VP_FLUX_DISTRIBUABLE_YEARLY': pv_distributable
+                })
 
             if verbose and scenario == 1:
-                print(f"  {year:<6} {external_cf:>12,.2f} {current_reserve:>12,.2f} {current_capital:>12,.2f} "
-                      f"{profit:>12,.2f} {distributable:>12,.2f} {pv_distributable:>12,.2f}")
+                print(
+                    f"  {year:<6} {tx_survie:>12.6f} {rendement:>15,.2f} {external_cf:>12,.2f} {current_reserve:>12,.2f} {current_capital:>12,.2f} "
+                    f"{profit:>12,.2f} {distributable:>12,.2f} {pv_distributable:>12,.2f}")
 
             prev_reserve = current_reserve
             prev_capital = current_capital
@@ -824,7 +871,8 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
         total_pv_distributable = sum(distributable_pvs)
 
         if verbose and scenario == 1:
-            print(f"  {'TOTAL':<6} {'':<12} {'':<12} {'':<12} {'':<12} {'':<12} {total_pv_distributable:>12,.2f}")
+            print(
+                f"  {'TOTAL':<6} {'':<12} {'':<15} {'':<12} {'':<12} {'':<12} {'':<12} {'':<12} {total_pv_distributable:>12,.2f}")
 
         final_results.append({
             'ID_COMPTE': account_id,
@@ -834,7 +882,7 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
 
     print("\nPhase 7: Converting to DataFrame...")
     output_df = pd.DataFrame(final_results)
-    detailed_df = pd.DataFrame(detailed_results)  # NEW: Detailed DataFrame
+    detailed_df = pd.DataFrame(detailed_results)
 
     if verbose:
         print(f"\n{'=' * 80}")
@@ -849,7 +897,7 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
             account_data = output_df[output_df['ID_COMPTE'] == account_id]
             print(f"  Account {account_id}: Mean = {account_data['VP_FLUX_DISTRIBUABLES'].mean():,.2f}, "
                   f"Scenarios = {len(account_data)}")
-        
+
         print(f"\n{'=' * 80}")
         print("DETAILED RESULTS")
         print(f"{'=' * 80}")
@@ -857,19 +905,15 @@ def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_s
         print(f"\nFirst few rows:")
         print(detailed_df.head(10))
 
-    return output_df, detailed_df  # Return both DataFrames
+    return output_df, detailed_df
 
 
 def initialize_cuda_context():
     """Initialize CUDA context explicitly"""
     try:
-        # Explicitly select device 0 and create context
         device = cuda.select_device(0)
-
-        # Force context creation by accessing the context
         ctx = cuda.current_context()
 
-        # Verify context is valid by running a simple kernel
         @cuda.jit
         def dummy_kernel(output):
             output[0] = 1.0
@@ -897,14 +941,12 @@ def initialize_cuda_context():
         return False
 
 
-# Add this diagnostic function
 def check_cuda_environment():
     """Comprehensive CUDA environment check"""
     print("\n" + "=" * 80)
     print("CUDA ENVIRONMENT DIAGNOSTICS")
     print("=" * 80)
 
-    # Check if CUDA is available
     print(f"CUDA Available: {cuda.is_available()}")
 
     if cuda.is_available():
@@ -915,10 +957,8 @@ def check_cuda_environment():
         except Exception as e:
             print(f"Error accessing GPU info: {e}")
 
-    # Check Numba version
     print(f"Numba version: {numba.__version__}")
 
-    # Try to detect CUDA toolkit
     try:
         from numba.cuda.cudadrv.libs import test
         test()
@@ -941,11 +981,9 @@ if __name__ == "__main__":
         print("Attempting manual initialization...")
 
         try:
-            # Try manual initialization
-            cuda.close()  # Close any partial context
+            cuda.close()
             cuda.select_device(0)
 
-            # Simple test
             test = cuda.device_array(10, dtype=np.float32)
             del test
 
@@ -968,19 +1006,32 @@ if __name__ == "__main__":
     results, detailed_results = gpu_acfc_algorithm_complete(
         data_path=data_path,
         nb_accounts=1,
-        nb_scenarios=2,
+        nb_scenarios=1,
         nb_years=100,
-        nb_sc_int=2,
+        nb_sc_int=1,
         nb_an_projection_int=100,
         choc_capital=0.35,
         hurdle_rt=0.10,
-        verbose=True
+        verbose=True,
+        log_account_id=1,  # Only log account 1
+        log_scenario=1,  # Only log scenario 1
+        log_max_years=10  # Only log first 10 years (0-9)
     )
 
     print("\nFinal Summary Results:")
     print(results)
     results.to_csv('test/gpu_results_complete.csv', index=False)
-    
+
     print("\nSaving detailed year-by-year results...")
     detailed_results.to_csv('test/gpu_results_detailed.csv', index=False)
-    print(f"✓ Detailed results saved to 'test/gpu_results_detailed.csv' ({len(detailed_results)} rows)")
+    filter_msg = ""
+    if log_account_id is not None or log_scenario is not None or log_max_years is not None:
+        filters = []
+        if log_account_id is not None:
+            filters.append(f"account={log_account_id}")
+        if log_scenario is not None:
+            filters.append(f"scenario={log_scenario}")
+        if log_max_years is not None:
+            filters.append(f"years=0-{log_max_years - 1}")
+        filter_msg = f" [Filtered: {', '.join(filters)}]"
+    print(f"✓ Detailed results saved to 'test/gpu_results_detailed.csv' ({len(detailed_results)} rows{filter_msg})")
