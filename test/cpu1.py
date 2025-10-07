@@ -800,9 +800,14 @@ def acfc_algorithm_fully_fixed(data_path: str = ".", NBCPT: int = 4, NB_SC: int 
     return output_df, detailed_df
 
 
-# Example usage
+# Example usage with filtered output
 if __name__ == "__main__":
-    # Example 1: Log only account 1, scenario 1, showing first 10 years
+    # Configuration
+    log_account_id = 1
+    log_scenario = 1
+    log_max_years = 100
+
+    # Run the algorithm
     summary_results, detailed_results = acfc_algorithm_fully_fixed(
         data_path=HERE.joinpath("data_in"),
         NBCPT=1,
@@ -813,22 +818,38 @@ if __name__ == "__main__":
         CHOC_CAPITAL=0.35,
         HURDLE_RT=0.10,
         verbose=True,
-        log_account_id=1,  # Only log
-        log_scenario=1,  # Only log scenario 1
-        log_max_years=100,  # Show first 10 years in detail
-        log_internal_scenarios=False  # Don't show each internal scenario
+        log_account_id=log_account_id,
+        log_scenario=log_scenario,
+        log_max_years=log_max_years,
+        log_internal_scenarios=False
     )
 
     print(f"\n📋 Sample Summary Results:")
     print(summary_results.head(10))
 
-    print(f"\n📋 Sample Detailed Results:")
-    print(detailed_results.head(10))
+    # Filter detailed results based on logging configuration
+    filtered_detailed = detailed_results.copy()
+
+    # Apply filters
+    if log_account_id is not None:
+        filtered_detailed = filtered_detailed[filtered_detailed['ID_COMPTE'] == log_account_id]
+
+    if log_scenario is not None:
+        filtered_detailed = filtered_detailed[filtered_detailed['scn_eval'] == log_scenario]
+
+    if log_max_years is not None:
+        filtered_detailed = filtered_detailed[filtered_detailed['an_proj'] <= log_max_years]
+
+    print(f"\n📋 Filtered Detailed Results ({len(filtered_detailed)} rows):")
+    print(filtered_detailed.head(10))
 
     # Save both outputs
     summary_results.to_csv(HERE.joinpath('test/acfc_results_summary.csv'), index=False)
-    detailed_results.to_csv(HERE.joinpath('test/acfc_results_detailed.csv'), index=False)
+    filtered_detailed.to_csv(HERE.joinpath('test/acfc_results_detailed.csv'), index=False)
 
     print(f"\n💾 Saved outputs:")
     print(f"   • Summary: test/acfc_results_summary.csv ({len(summary_results)} rows)")
-    print(f"   • Detailed: test/acfc_results_detailed.csv ({len(detailed_results)} rows)")
+    print(f"   • Detailed (filtered): test/acfc_results_detailed.csv ({len(filtered_detailed)} rows)")
+    print(f"     - Account ID: {log_account_id if log_account_id else 'All'}")
+    print(f"     - Scenario: {log_scenario if log_scenario else 'All'}")
+    print(f"     - Years: 0-{log_max_years if log_max_years else 'All'}")
