@@ -1013,7 +1013,7 @@ if __name__ == "__main__":
         choc_capital=0.35,
         hurdle_rt=0.10,
         verbose=True,
-        log_account_id=1,  # Only log account 1
+        log_account_id=1,  # Only log acco
         log_scenario=1,  # Only log scenario 1
         log_max_years=10  # Only log first 10 years (0-9)
     )
