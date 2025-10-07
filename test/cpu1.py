@@ -813,7 +813,7 @@ if __name__ == "__main__":
         CHOC_CAPITAL=0.35,
         HURDLE_RT=0.10,
         verbose=True,
-        log_account_id=1,  # Only log account 1
+        log_account_id=1,  # Only log
         log_scenario=1,  # Only log scenario 1
         log_max_years=100,  # Show first 10 years in detail
         log_internal_scenarios=False  # Don't show each internal scenario
