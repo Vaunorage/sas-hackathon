@@ -688,8 +688,8 @@ if __name__ == "__main__":
         NB_AN_PROJECTION_INT=100,
         CHOC_CAPITAL=0.35,
         HURDLE_RT=0.10,
-        verbose=True,  # Enable detailed logging
-        log_account_id=None  # Set to specific account ID to see only that account's details
+        verbose=True,
+        log_account_id=None
     )
 
     print(f"\n📋 Sample Results:")
