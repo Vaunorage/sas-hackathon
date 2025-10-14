@@ -4,6 +4,7 @@ import json
 import threading
 from datetime import datetime
 from flask import Flask, jsonify, request
+from flask_cors import CORS  # Add this import
 from werkzeug.exceptions import HTTPException
 import pandas as pd
 import sqlite3
@@ -20,6 +21,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# Enable CORS for all routes
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # Configuration
 PORT = int(os.environ.get('PORT', 80))

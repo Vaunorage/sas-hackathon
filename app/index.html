@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACFC Algorithm API Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-healthy {
+            background: #10b981;
+            color: white;
+        }
+
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 20px;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        label {
+            font-size: 14px;
+            font-weight: 500;
+            color: #555;
+            margin-bottom: 5px;
+        }
+
+        input {
+            padding: 10px;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .jobs-list {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .job-item {
+            background: #f9fafb;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .job-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .job-id {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .job-status {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-pending {
+            background: #fbbf24;
+            color: #78350f;
+        }
+
+        .status-running {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .status-completed {
+            background: #10b981;
+            color: white;
+        }
+
+        .status-failed {
+            background: #ef4444;
+            color: white;
+        }
+
+        .job-info {
+            font-size: 13px;
+            color: #666;
+        }
+
+        .job-actions {
+            margin-top: 10px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+
+        .results-container {
+            background: #f9fafb;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            max-height: 400px;
+            overflow: auto;
+        }
+
+        pre {
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .alert {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+        }
+
+        .alert-success {
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #10b981;
+        }
+
+        .alert-error {
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #ef4444;
+        }
+
+        .alert-info {
+            background: #dbeafe;
+            color: #1e40af;
+            border: 1px solid #3b82f6;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .api-url {
+            background: #f3f4f6;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 13px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 ACFC Algorithm API Dashboard</h1>
+            <p style="color: #666; margin-top: 5px;">
+                API Status: <span id="apiStatus" class="status-badge">Checking...</span>
+            </p>
+            <div class="api-url">API Endpoint: <span id="apiEndpoint">https://12fkbziz4ylzxx-80.proxy.runpod.net</span></div>
+        </div>
+
+        <div id="alertContainer"></div>
+
+        <div class="card">
+            <h2>📝 Create New Job</h2>
+            <form id="jobForm">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Number of Accounts</label>
+                        <input type="number" id="nb_accounts" value="4" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Number of Scenarios</label>
+                        <input type="number" id="nb_scenarios" value="10" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Number of Years</label>
+                        <input type="number" id="nb_years" value="10" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Scenarios Internal</label>
+                        <input type="number" id="nb_sc_int" value="10" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Projection Years Internal</label>
+                        <input type="number" id="nb_an_projection_int" value="10" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Capital Shock</label>
+                        <input type="number" id="choc_capital" value="0.35" step="0.01">
+                    </div>
+                    <div class="form-group">
+                        <label>Hurdle Rate</label>
+                        <input type="number" id="hurdle_rt" value="0.10" step="0.01">
+                    </div>
+                </div>
+                <button type="submit" id="submitBtn">Create Job</button>
+            </form>
+        </div>
+
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0;">📋 Jobs List</h2>
+                <button onclick="refreshJobs()" class="btn-small">Refresh</button>
+            </div>
+            <div id="jobsList" class="jobs-list">
+                <div class="empty-state">Loading jobs...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'https://12fkbziz4ylzxx-80.proxy.runpod.net';
+        let autoRefreshInterval = null;
+
+        document.getElementById('apiEndpoint').textContent = API_BASE;
+
+        function showAlert(message, type = 'info') {
+            const alertContainer = document.getElementById('alertContainer');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            alertContainer.appendChild(alert);
+
+            setTimeout(() => {
+                alert.remove();
+            }, 5000);
+        }
+
+        async function checkApiStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/ping`);
+                const data = await response.json();
+                const statusEl = document.getElementById('apiStatus');
+                if (data.status === 'healthy') {
+                    statusEl.textContent = 'Healthy';
+                    statusEl.className = 'status-badge status-healthy';
+                }
+            } catch (error) {
+                const statusEl = document.getElementById('apiStatus');
+                statusEl.textContent = 'Offline';
+                statusEl.className = 'status-badge status-failed';
+            }
+        }
+
+        document.getElementById('jobForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const params = {
+                nb_accounts: parseInt(document.getElementById('nb_accounts').value),
+                nb_scenarios: parseInt(document.getElementById('nb_scenarios').value),
+                nb_years: parseInt(document.getElementById('nb_years').value),
+                nb_sc_int: parseInt(document.getElementById('nb_sc_int').value),
+                nb_an_projection_int: parseInt(document.getElementById('nb_an_projection_int').value),
+                choc_capital: parseFloat(document.getElementById('choc_capital').value),
+                hurdle_rt: parseFloat(document.getElementById('hurdle_rt').value)
+            };
+
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Creating...';
+
+            try {
+                const response = await fetch(`${API_BASE}/jobs`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(params)
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showAlert(`Job created successfully: ${data.job_id}`, 'success');
+                    refreshJobs();
+                } else {
+                    showAlert(`Error: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                showAlert(`Failed to create job: ${error.message}`, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Create Job';
+            }
+        });
+
+        async function refreshJobs() {
+            try {
+                const response = await fetch(`${API_BASE}/jobs`);
+                const data = await response.json();
+
+                const jobsList = document.getElementById('jobsList');
+
+                if (data.jobs && data.jobs.length > 0) {
+                    jobsList.innerHTML = data.jobs.map(job => `
+                        <div class="job-item">
+                            <div class="job-header">
+                                <span class="job-id">${job.job_id}</span>
+                                <span class="job-status status-${job.status}">${job.status.toUpperCase()}</span>
+                            </div>
+                            <div class="job-info">
+                                <div>Created: ${new Date(job.created_at).toLocaleString()}</div>
+                                ${job.started_at ? `<div>Started: ${new Date(job.started_at).toLocaleString()}</div>` : ''}
+                                ${job.completed_at ? `<div>Completed: ${new Date(job.completed_at).toLocaleString()}</div>` : ''}
+                                ${job.error ? `<div style="color: #ef4444;">Error: ${job.error}</div>` : ''}
+                            </div>
+                            <div class="job-actions">
+                                <button class="btn-small" onclick="viewJobDetails('${job.job_id}')">View Details</button>
+                                ${job.status === 'completed' ? `
+                                    <button class="btn-small" onclick="viewResults('${job.job_id}', 'summary')">Summary Results</button>
+                                    <button class="btn-small" onclick="viewResults('${job.job_id}', 'detailed')">Detailed Results</button>
+                                    <button class="btn-small" onclick="viewResults('${job.job_id}', 'internal')">Internal Results</button>
+                                ` : ''}
+                            </div>
+                            <div id="details-${job.job_id}"></div>
+                        </div>
+                    `).join('');
+                } else {
+                    jobsList.innerHTML = '<div class="empty-state">No jobs found</div>';
+                }
+            } catch (error) {
+                document.getElementById('jobsList').innerHTML =
+                    '<div class="empty-state">Failed to load jobs</div>';
+            }
+        }
+
+        async function viewJobDetails(jobId) {
+            const detailsContainer = document.getElementById(`details-${jobId}`);
+
+            if (detailsContainer.innerHTML) {
+                detailsContainer.innerHTML = '';
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
+                const job = await response.json();
+
+                detailsContainer.innerHTML = `
+                    <div class="results-container">
+                        <strong>Parameters:</strong>
+                        <pre>${JSON.stringify(job.parameters, null, 2)}</pre>
+                    </div>
+                `;
+            } catch (error) {
+                showAlert(`Failed to load job details: ${error.message}`, 'error');
+            }
+        }
+
+        async function viewResults(jobId, type) {
+            const detailsContainer = document.getElementById(`details-${jobId}`);
+
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`);
+                const result = await response.json();
+
+                if (response.ok) {
+                    detailsContainer.innerHTML = `
+                        <div class="results-container">
+                            <strong>${type.toUpperCase()} Results:</strong>
+                            <pre>${JSON.stringify(result.data, null, 2)}</pre>
+                        </div>
+                    `;
+                } else {
+                    showAlert(`Error loading results: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showAlert(`Failed to load results: ${error.message}`, 'error');
+            }
+        }
+
+        // Initialize
+        checkApiStatus();
+        refreshJobs();
+
+        // Auto-refresh jobs every 5 seconds
+        autoRefreshInterval = setInterval(refreshJobs, 5000);
+    </script>
+</body>
+</html>
