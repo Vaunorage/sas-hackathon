@@ -205,15 +205,6 @@
             overflow: auto;
         }
 
-        .results-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-            padding-bottom: 5px;
-            border-bottom: 1px solid #000000;
-        }
-
         .download-btn {
             padding: 4px 8px;
             font-size: 11px;
@@ -294,15 +285,6 @@
             padding: 30px;
             color: #808080;
             font-style: italic;
-        }
-
-        .api-url {
-            background: #ffffff;
-            padding: 5px;
-            border: 2px inset #808080;
-            font-family: "Courier New", Courier, monospace;
-            font-size: 11px;
-            margin-top: 5px;
         }
 
         .modal {
@@ -405,10 +387,6 @@
             <p style="color: #000000; margin-top: 5px;">
                 API Status: <span id="apiStatus" class="status-badge">Checking...</span>
             </p>
-            <div class="form-group" style="margin-top: 10px;">
-                <label for="apiToken">API Token</label>
-                <input type="password" id="apiToken" name="apiToken" style="width: 100%;" placeholder="Enter your API token">
-            </div>
         </div>
 
         <div id="alertContainer"></div>
@@ -557,19 +535,19 @@
         }
 
         function getHeaders() {
-            const headers = {
-                'accept': 'application/json',
-            };
+            const headers = {};
             const apiToken = document.getElementById('apiToken').value;
             if (apiToken) {
-                headers['authorization'] = `${apiToken}`;
+                headers['Authorization'] = apiToken;
             }
             return headers;
         }
 
         async function checkApiStatus() {
             try {
-                const response = await fetch(`${API_BASE}/ping`, { headers: getHeaders() });
+                const response = await fetch(`${API_BASE}/ping`, {
+                    headers: getHeaders()
+                });
                 const data = await response.json();
                 const statusEl = document.getElementById('apiStatus');
                 if (data.status === 'healthy') {
@@ -593,55 +571,32 @@
             submitBtn.disabled = true;
             submitBtn.textContent = 'Creating...';
 
+            // Create FormData with files and parameters
             const formData = new FormData(e.target);
-            const json_input = {};
-            const parameters = {};
 
-            for (const [key, value] of formData.entries()) {
-                if (value !== '' && value !== null) {
-                    if (key.startsWith('log_')) {
-                        if (!parameters.logging_params) parameters.logging_params = {};
-                        parameters.logging_params[key] = isNaN(Number(value)) ? value : Number(value);
-                    } else if (['population', 'rendement', 'tx_deces', 'tx_interet', 'tx_interet_int', 'tx_retrait'].includes(key) && value.size > 0) {
-                        // Files will be handled separately
-                    } else if (!['population', 'rendement', 'tx_deces', 'tx_interet', 'tx_interet_int', 'tx_retrait'].includes(key)) {
-                        parameters[key] = isNaN(Number(value)) ? value : Number(value);
-                    }
-                }
-            }
-            json_input.parameters = parameters;
-
-            const files = {};
+            // Remove empty file inputs
             const fileInputIds = ['population', 'rendement', 'tx_deces', 'tx_interet', 'tx_interet_int', 'tx_retrait'];
-            const fileReadPromises = fileInputIds.map(id => {
+            fileInputIds.forEach(id => {
                 const fileInput = document.getElementById(id);
-                if (fileInput.files.length > 0) {
-                    return new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onload = (event) => {
-                            files[id] = event.target.result;
-                            resolve();
-                        };
-                        reader.onerror = reject;
-                        reader.readAsText(fileInput.files[0]);
-                    });
+                if (!fileInput.files.length) {
+                    formData.delete(id);
                 }
-                return Promise.resolve();
+            });
+
+            // Remove empty optional parameters
+            const optionalParams = ['log_account_id', 'log_scenario', 'log_max_years', 'log_internal_scenario'];
+            optionalParams.forEach(param => {
+                const value = formData.get(param);
+                if (!value || value === '') {
+                    formData.delete(param);
+                }
             });
 
             try {
-                await Promise.all(fileReadPromises);
-                if (Object.keys(files).length > 0) {
-                    json_input.files = files;
-                }
-
-                const headers = getHeaders();
-                headers['content-type'] = 'application/json';
-
-                const response = await fetch(`${API_BASE}/runsync`, {
+                const response = await fetch(`${API_BASE}/jobs`, {
                     method: 'POST',
-                    headers: headers,
-                    body: JSON.stringify({ input: json_input })
+                    body: formData
+                    // Don't set Content-Type header - browser will set it with boundary for multipart/form-data
                 });
 
                 const data = await response.json();
@@ -651,7 +606,7 @@
                     refreshJobs();
                     e.target.reset();
                 } else {
-                    showAlert(`Error: ${data.error}`, 'error');
+                    showAlert(`Error: ${data.error || 'Failed to create job'}`, 'error');
                 }
             } catch (error) {
                 showAlert(`Failed to create job: ${error.message}`, 'error');
@@ -663,7 +618,7 @@
 
         async function refreshJobs() {
             try {
-                const response = await fetch(`${API_BASE}/jobs`, { headers: getHeaders() });
+                const response = await fetch(`${API_BASE}/jobs`);
                 const data = await response.json();
 
                 const jobsList = document.getElementById('jobsList');
@@ -704,7 +659,7 @@
 
         async function viewJobDetails(jobId) {
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}`, { headers: getHeaders() });
+                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -736,7 +691,7 @@
             openModal('resultsModal');
 
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`, { headers: getHeaders() });
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`);
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -745,7 +700,7 @@
 
                 if (Array.isArray(data) && data.length > 0) {
                     const headers = Object.keys(data[0]);
-                    const tableRows = data.map(row => `<tr>${headers.map(h => `<td>${row[h]}</td>`).join('')}</tr>`).join('');
+                    const tableRows = data.map(row => `<tr>${headers.map(h => `<td>${row[h] !== null && row[h] !== undefined ? row[h] : ''}</td>`).join('')}</tr>`).join('');
 
                     modalBody.innerHTML = `
                         <div class="table-container">
@@ -777,7 +732,7 @@
             openModal('filesModal');
 
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`, { headers: getHeaders() });
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -807,12 +762,16 @@
             container.innerHTML = '<div class="empty-state">Loading file content...</div>';
 
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`, { headers: getHeaders() });
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`);
                 const csvText = await response.text();
 
                 if (!response.ok) {
-                    const errorJson = JSON.parse(csvText);
-                    throw new Error(errorJson.error || `Failed to load ${fileName}.`);
+                    try {
+                        const errorJson = JSON.parse(csvText);
+                        throw new Error(errorJson.error || `Failed to load ${fileName}.`);
+                    } catch {
+                        throw new Error(`Failed to load ${fileName}.`);
+                    }
                 }
 
                 const rows = csvText.trim().split('\n');

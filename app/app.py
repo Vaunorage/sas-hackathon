@@ -232,14 +232,6 @@ def log_request():
     logger.info(f"{request.method} {request.path} - {request.remote_addr}")
 
 
-@app.after_request
-def after_request(response):
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'DENY'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
-    return response
-
-
 # Routes
 @app.route('/')
 def hello():
