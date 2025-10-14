@@ -36,11 +36,11 @@ def init_db():
         'job_id', 'status', 'created_at', 'started_at',
         'completed_at', 'error', 'parameters'
     ])
-    jobs_df.to_sql('jobs', conn, if_exists='ignore', index=False)
+    jobs_df.to_sql('jobs', conn, if_exists='fail', index=False)
 
     # Create results table using pandas
     results_df = pd.DataFrame(columns=['job_id', 'result_type', 'data'])
-    results_df.to_sql('results', conn, if_exists='ignore', index=False)
+    results_df.to_sql('results', conn, if_exists='fail', index=False)
 
     conn.close()
 
