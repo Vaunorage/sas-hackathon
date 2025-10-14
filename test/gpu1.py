@@ -727,7 +727,7 @@ def gpu_acfc_algorithm_complete(data_path: Path = None, nb_accounts: int = 4, nb
         data['population'] = data['population'].head(nb_accounts)
 
     print("\nPhase 2: Creating GPU lookup tables...")
-    lookups = create_gpu_lookup_tables(data)
+    lookups = create_gpu_lookup_tables(data, max_year=max(nb_years, nb_an_projection_int))
 
     print("\nPhase 3: Preparing GPU data...")
     states, initial_data, account_ids, account_mapping = prepare_gpu_data(
