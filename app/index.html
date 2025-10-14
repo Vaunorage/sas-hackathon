@@ -388,6 +388,14 @@
             justify-content: flex-end;
             gap: 5px;
         }
+
+        input[type="file"] {
+            background: #ffffff;
+            border: 2px inset #808080;
+            padding: 2px;
+            font-family: "Courier New", Courier, monospace;
+            font-size: 11px;
+        }
     </style>
 </head>
 <body>
@@ -407,52 +415,80 @@
             <form id="jobForm">
                 <div class="form-grid">
                     <div class="form-group">
-                        <label>Number of Accounts</label>
-                        <input type="number" id="nb_accounts" value="4" min="1">
+                        <label for="nb_accounts">Number of Accounts</label>
+                        <input type="number" id="nb_accounts" name="nb_accounts" value="4" min="1">
                     </div>
                     <div class="form-group">
-                        <label>Number of Scenarios</label>
-                        <input type="number" id="nb_scenarios" value="10" min="1">
+                        <label for="nb_scenarios">Number of Scenarios</label>
+                        <input type="number" id="nb_scenarios" name="nb_scenarios" value="10" min="1">
                     </div>
                     <div class="form-group">
-                        <label>Number of Years</label>
-                        <input type="number" id="nb_years" value="10" min="1">
+                        <label for="nb_years">Number of Years</label>
+                        <input type="number" id="nb_years" name="nb_years" value="10" min="1">
                     </div>
                     <div class="form-group">
-                        <label>Scenarios Internal</label>
-                        <input type="number" id="nb_sc_int" value="10" min="1">
+                        <label for="nb_sc_int">Scenarios Internal</label>
+                        <input type="number" id="nb_sc_int" name="nb_sc_int" value="10" min="1">
                     </div>
                     <div class="form-group">
-                        <label>Projection Years Internal</label>
-                        <input type="number" id="nb_an_projection_int" value="10" min="1">
+                        <label for="nb_an_projection_int">Projection Years Internal</label>
+                        <input type="number" id="nb_an_projection_int" name="nb_an_projection_int" value="10" min="1">
                     </div>
                     <div class="form-group">
-                        <label>Capital Shock</label>
-                        <input type="number" id="choc_capital" value="0.35" step="0.01">
+                        <label for="choc_capital">Capital Shock</label>
+                        <input type="number" id="choc_capital" name="choc_capital" value="0.35" step="0.01">
                     </div>
                     <div class="form-group">
-                        <label>Hurdle Rate</label>
-                        <input type="number" id="hurdle_rt" value="0.10" step="0.01">
+                        <label for="hurdle_rt">Hurdle Rate</label>
+                        <input type="number" id="hurdle_rt" name="hurdle_rt" value="0.10" step="0.01">
                     </div>
                 </div>
 
                 <h3 style="margin: 15px 0 10px 0; color: #000000; font-size: 14px;">[ Logging Parameters - Optional ]</h3>
                 <div class="form-grid">
                     <div class="form-group">
-                        <label>Log Account ID</label>
-                        <input type="number" id="log_account_id" placeholder="Leave empty for none" min="0">
+                        <label for="log_account_id">Log Account ID</label>
+                        <input type="number" id="log_account_id" name="log_account_id" placeholder="Leave empty for none" min="0">
                     </div>
                     <div class="form-group">
-                        <label>Log Scenario</label>
-                        <input type="number" id="log_scenario" placeholder="Leave empty for none" min="0">
+                        <label for="log_scenario">Log Scenario</label>
+                        <input type="number" id="log_scenario" name="log_scenario" placeholder="Leave empty for none" min="0">
                     </div>
                     <div class="form-group">
-                        <label>Log Max Years</label>
-                        <input type="number" id="log_max_years" placeholder="Leave empty for none" min="0">
+                        <label for="log_max_years">Log Max Years</label>
+                        <input type="number" id="log_max_years" name="log_max_years" placeholder="Leave empty for none" min="0">
                     </div>
                     <div class="form-group">
-                        <label>Log Internal Scenario</label>
-                        <input type="number" id="log_internal_scenario" placeholder="Leave empty for none" min="0">
+                        <label for="log_internal_scenario">Log Internal Scenario</label>
+                        <input type="number" id="log_internal_scenario" name="log_internal_scenario" placeholder="Leave empty for none" min="0">
+                    </div>
+                </div>
+
+                <h3 style="margin: 15px 0 10px 0; color: #000000; font-size: 14px;">[ Optional Custom Data Files ]</h3>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="population">Population File</label>
+                        <input type="file" id="population" name="population" accept=".csv">
+                    </div>
+                    <div class="form-group">
+                        <label for="rendement">Rendement File</label>
+                        <input type="file" id="rendement" name="rendement" accept=".csv">
+                    </div>
+                    <div class="form-group">
+                        <label for="tx_deces">Tx Deces File</label>
+                        <input type="file" id="tx_deces" name="tx_deces" accept=".csv">
+                    </div>
+                    <div class="form-group">
+                        <label for="tx_interet">Tx Interet File</label>
+                        <input type="file" id="tx_interet" name="tx_interet" accept=".csv">
+                    </div>
+                    <div class="form-group">
+                        <label for="tx_interet_int">Tx Interet Int File</label>
+                        <input type="file" id="tx_interet_int" name="tx_interet_int" accept=".csv">
+                    </div>
+                    <div class="form-group">
+                        <label for="tx_retrait">Tx Retrait File</label>
+                        <input type="file" id="tx_retrait" name="tx_retrait" accept=".csv">
                     </div>
                 </div>
 
@@ -475,14 +511,29 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3 id="modalTitle">Results</h3>
-                <button class="modal-close" onclick="closeModal()">&times;</button>
+                <button class="modal-close" onclick="closeModal('resultsModal')">&times;</button>
             </div>
             <div class="modal-body" id="modalBody">
                 <div class="empty-state">Loading...</div>
             </div>
             <div class="modal-actions">
                 <button class="download-btn" id="modalDownloadBtn" style="display: none;">Download CSV</button>
-                <button onclick="closeModal()" class="btn-small">Close</button>
+                <button onclick="closeModal('resultsModal')" class="btn-small">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="filesModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="filesModalTitle">Job Files</h3>
+                <button class="modal-close" onclick="closeModal('filesModal')">&times;</button>
+            </div>
+            <div class="modal-body" id="filesModalBody">
+                <!-- File content will be loaded here -->
+            </div>
+            <div class="modal-actions">
+                <button onclick="closeModal('filesModal')" class="btn-small">Close</button>
             </div>
         </div>
     </div>
@@ -512,6 +563,9 @@
                 if (data.status === 'healthy') {
                     statusEl.textContent = 'Healthy';
                     statusEl.className = 'status-badge status-healthy';
+                } else {
+                    statusEl.textContent = 'Offline';
+                    statusEl.className = 'status-badge status-failed';
                 }
             } catch (error) {
                 const statusEl = document.getElementById('apiStatus');
@@ -523,37 +577,24 @@
         document.getElementById('jobForm').addEventListener('submit', async (e) => {
             e.preventDefault();
 
-            const params = {
-                nb_accounts: parseInt(document.getElementById('nb_accounts').value),
-                nb_scenarios: parseInt(document.getElementById('nb_scenarios').value),
-                nb_years: parseInt(document.getElementById('nb_years').value),
-                nb_sc_int: parseInt(document.getElementById('nb_sc_int').value),
-                nb_an_projection_int: parseInt(document.getElementById('nb_an_projection_int').value),
-                choc_capital: parseFloat(document.getElementById('choc_capital').value),
-                hurdle_rt: parseFloat(document.getElementById('hurdle_rt').value)
-            };
-
-            const logAccountId = document.getElementById('log_account_id').value;
-            const logScenario = document.getElementById('log_scenario').value;
-            const logMaxYears = document.getElementById('log_max_years').value;
-            const logInternalScenario = document.getElementById('log_internal_scenario').value;
-
-            if (logAccountId !== '') params.log_account_id = parseInt(logAccountId);
-            if (logScenario !== '') params.log_scenario = parseInt(logScenario);
-            if (logMaxYears !== '') params.log_max_years = parseInt(logMaxYears);
-            if (logInternalScenario !== '') params.log_internal_scenario = parseInt(logInternalScenario);
-
             const submitBtn = document.getElementById('submitBtn');
             submitBtn.disabled = true;
             submitBtn.textContent = 'Creating...';
 
+            const formData = new FormData(e.target);
+
+            // Ensure optional empty number fields are not sent as empty strings
+            ['log_account_id', 'log_scenario', 'log_max_years', 'log_internal_scenario'].forEach(id => {
+                const input = document.getElementById(id);
+                if (input && input.value === '') {
+                    formData.delete(id);
+                }
+            });
+
             try {
                 const response = await fetch(`${API_BASE}/jobs`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(params)
+                    body: formData
                 });
 
                 const data = await response.json();
@@ -561,6 +602,255 @@
                 if (response.ok) {
                     showAlert(`Job created successfully: ${data.job_id}`, 'success');
                     refreshJobs();
+                    e.target.reset();
+                } else {
+                    showAlert(`Error: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                showAlert(`Failed to create job: ${error.message}`, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Create Job';
+            }
+        });
+
+        async function refreshJobs() {
+            try {
+                const response = await fetch(`${API_BASE}/jobs`);
+                const data = await response.json();
+
+                const jobsList = document.getElementById('jobsList');
+
+                if (data.jobs && data.jobs.length > 0) {
+                    jobsList.innerHTML = data.jobs.map(job => {
+                        return `
+                        <div class="job-item">
+                            <div class="job-header">
+                                <span class="job-id">${job.job_id}</span>
+                                <span class="job-status status-${job.status}">${job.status.toUpperCase()}</span>
+                            </div>
+                            <div class="job-info">
+                                <div>Created: ${new Date(job.created_at).toLocaleString()}</div>
+                                ${job.started_at ? `<div>Started: ${new Date(job.started_at).toLocaleString()}</div>` : ''}
+                                ${job.completed_at ? `<div>Completed: ${new Date(job.completed_at).toLocaleString()}</div>` : ''}
+                                ${job.error ? `<div style="color: #ef4444;">Error: ${job.error}</div>` : ''}
+                            </div>
+                            <div class="job-actions">
+                                <button class="btn-small" onclick="viewJobDetails('${job.job_id}')">View Details</button>
+                                ${job.status === 'completed' ? `
+                                    <button class="btn-small" onclick="viewResults('${job.job_id}', 'summary')">Summary Results</button>
+                                    <button class="btn-small" onclick="viewResults('${job.job_id}', 'detailed')">Detailed Results</button>
+                                    <button class="btn-small" onclick="viewResults('${job.job_id}', 'internal')">Internal Results</button>
+                                ` : ''}
+                                <button class="btn-small" onclick="viewFiles('${job.job_id}')">View Input Files</button>
+                            </div>
+                        </div>
+                    `}).join('');
+                } else {
+                    jobsList.innerHTML = '<div class="empty-state">No jobs found. Create one to get started.</div>';
+                }
+            } catch (error) {
+                const jobsList = document.getElementById('jobsList');
+                jobsList.innerHTML = '<div class="alert alert-error">Failed to load jobs. API might be offline.</div>';
+            }
+        }
+
+        async function viewJobDetails(jobId) {
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch job details.');
+                }
+
+                const modalTitle = document.getElementById('modalTitle');
+                const modalBody = document.getElementById('modalBody');
+
+                modalTitle.textContent = `Details for Job: ${jobId}`;
+                let paramsHtml = '<h3>Parameters</h3><pre>' + JSON.stringify(data.parameters, null, 2) + '</pre>';
+                modalBody.innerHTML = paramsHtml;
+                openModal('resultsModal');
+
+            } catch (error) {
+                showAlert(error.message, 'error');
+            }
+        }
+
+        async function viewResults(jobId, type) {
+            const modalTitle = document.getElementById('modalTitle');
+            const modalBody = document.getElementById('modalBody');
+            const downloadBtn = document.getElementById('modalDownloadBtn');
+
+            modalTitle.textContent = `Results for Job: ${jobId} - ${type}`;
+            modalBody.innerHTML = '<div class="empty-state">Loading...</div>';
+            downloadBtn.style.display = 'none';
+
+            openModal('resultsModal');
+
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch results.');
+                }
+
+                if (Array.isArray(data) && data.length > 0) {
+                    const headers = Object.keys(data[0]);
+                    const tableRows = data.map(row => `<tr>${headers.map(h => `<td>${row[h]}</td>`).join('')}</tr>`).join('');
+
+                    modalBody.innerHTML = `
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
+                                </thead>
+                                <tbody>${tableRows}</tbody>
+                            </table>
+                        </div>
+                    `;
+
+                    downloadBtn.style.display = 'inline-block';
+                    downloadBtn.onclick = () => downloadCSV(data, `${jobId}_${type}_results.csv`);
+                } else {
+                    modalBody.innerHTML = '<div class="empty-state">No results data found.</div>';
+                }
+            } catch (error) {
+                modalBody.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
+        
+        async function viewFiles(jobId) {
+            const modalTitle = document.getElementById('filesModalTitle');
+            const modalBody = document.getElementById('filesModalBody');
+
+            modalTitle.textContent = `Input Files for Job: ${jobId}`;
+            modalBody.innerHTML = '<div class="empty-state">Loading file list...</div>';
+            openModal('filesModal');
+
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to load file list.');
+                }
+
+                if (data.files && data.files.length > 0) {
+                    modalBody.innerHTML = `
+                        <div style="margin-bottom: 10px;">Select a file to view its content:</div>
+                        <div id="fileButtonContainer" style="display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 15px;">
+                            ${data.files.map(file => `<button class="btn-small" onclick="viewFileContent('${jobId}', '${file}')">${file}</button>`).join('')}
+                        </div>
+                        <div id="fileContentContainer"></div>
+                    `;
+                } else {
+                    modalBody.innerHTML = '<div class="empty-state">No custom input files were uploaded for this job.</div>';
+                }
+            } catch (error) {
+                modalBody.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
+
+        async function viewFileContent(jobId, fileName) {
+            const container = document.getElementById('fileContentContainer');
+            if (!container) return;
+
+            container.innerHTML = '<div class="empty-state">Loading file content...</div>';
+
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`);
+                const csvText = await response.text();
+
+                if (!response.ok) {
+                    const errorJson = JSON.parse(csvText); // Try to parse error from body
+                    throw new Error(errorJson.error || `Failed to load ${fileName}.`);
+                }
+
+                // Basic CSV to HTML table conversion
+                const rows = csvText.trim().split('\n');
+                const headers = rows[0].split(',');
+                const tableRows = rows.slice(1).map(row => {
+                    const values = row.split(',');
+                    return `<tr>${values.map(val => `<td>${val}</td>`).join('')}</tr>`;
+                }).join('');
+
+                container.innerHTML = `
+                    <h3 style="margin-bottom: 10px;">${fileName}</h3>
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
+                            </thead>
+                            <tbody>
+                                ${tableRows}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            } catch (error) {
+                container.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
+
+        function downloadCSV(data, filename) {
+            const csvRows = [];
+            const headers = Object.keys(data[0]);
+            csvRows.push(headers.join(','));
+
+            for (const row of data) {
+                const values = headers.map(header => {
+                    const escaped = ('' + row[header]).replace(/"/g, '\"');
+                    return `"${escaped}"`;
+                });
+                csvRows.push(values.join(','));
+            }
+
+            const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.setAttribute('hidden', '');
+            a.setAttribute('href', url);
+            a.setAttribute('download', filename);
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        function openModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) modal.classList.add('active');
+        }
+
+        function closeModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) modal.classList.remove('active');
+        }
+
+        // Close modal when clicking outside
+        window.addEventListener('click', (event) => {
+            if (event.target.classList.contains('modal')) {
+                closeModal(event.target.id);
+            }
+        });
+
+        window.onload = () => {
+            checkApiStatus();
+            refreshJobs();
+            setInterval(refreshJobs, 15000); // Refresh jobs every 15 seconds
+        };
+    </script>
+</body>                    method: 'POST',
+                    body: formData // The browser will automatically set the Content-Type to multipart/form-data
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showAlert(`Job created successfully: ${data.job_id}`, 'success');
+                    refreshJobs();
+                    e.target.reset(); // Clear the form on success
                 } else {
                     showAlert(`Error: ${data.error}`, 'error');
                 }
@@ -599,6 +889,7 @@
                                     <button class="btn-small" onclick="viewResults('${job.job_id}', 'detailed')">Detailed Results</button>
                                     <button class="btn-small" onclick="viewResults('${job.job_id}', 'internal')">Internal Results</button>
                                 ` : ''}
+                                <button class="btn-small" onclick="viewFiles('${job.job_id}')">View Input Files</button>
                             </div>
                         </div>
                     `).join('');
@@ -702,9 +993,88 @@
             }
         }
 
-        function closeModal() {
-            const modal = document.getElementById('resultsModal');
-            modal.classList.remove('active');
+        async function viewFiles(jobId) {
+            const modalTitle = document.getElementById('filesModalTitle');
+            const modalBody = document.getElementById('filesModalBody');
+
+            modalTitle.textContent = `Input Files for Job: ${jobId}`;
+            modalBody.innerHTML = '<div class="empty-state">Loading file list...</div>';
+            openModal('filesModal');
+
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to load file list.');
+                }
+
+                if (data.files && data.files.length > 0) {
+                    modalBody.innerHTML = `
+                        <div style="margin-bottom: 10px;">Select a file to view its content:</div>
+                        <div id="fileButtonContainer" style="display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 15px;">
+                            ${data.files.map(file => `<button class="btn-small" onclick="viewFileContent('${jobId}', '${file}')">${file}</button>`).join('')}
+                        </div>
+                        <div id="fileContentContainer"></div>
+                    `;
+                } else {
+                    modalBody.innerHTML = '<div class="empty-state">No custom input files were uploaded for this job.</div>';
+                }
+            } catch (error) {
+                modalBody.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
+
+        async function viewFileContent(jobId, fileName) {
+            const container = document.getElementById('fileContentContainer');
+            if (!container) return;
+
+            container.innerHTML = '<div class="empty-state">Loading file content...</div>';
+
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`);
+                const csvText = await response.text();
+
+                if (!response.ok) {
+                    const errorJson = JSON.parse(csvText); // Try to parse error from body
+                    throw new Error(errorJson.error || `Failed to load ${fileName}.`);
+                }
+
+                // Basic CSV to HTML table conversion
+                const rows = csvText.trim().split('\n');
+                const headers = rows[0].split(',');
+                const tableRows = rows.slice(1).map(row => {
+                    const values = row.split(',');
+                    return `<tr>${values.map(val => `<td>${val}</td>`).join('')}</tr>`;
+                }).join('');
+
+                container.innerHTML = `
+                    <h3 style="margin-bottom: 10px;">${fileName}</h3>
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
+                            </thead>
+                            <tbody>
+                                ${tableRows}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            } catch (error) {
+                container.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
+            }
+        }
+
+        function openModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) modal.classList.add('active');
+        }
+
+        function closeModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) modal.classList.remove('active');
+            }
         }
 
         // Close modal when clicking outside

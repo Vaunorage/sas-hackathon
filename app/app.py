@@ -3,12 +3,13 @@ import logging
 import json
 import threading
 from datetime import datetime
-from flask import Flask, jsonify, request
-from flask_cors import CORS  # Add this import
+from flask import Flask, request, jsonify, Response
+from flask_cors import CORS  
 from werkzeug.exceptions import HTTPException
 import pandas as pd
 import sqlite3
 from paths import HERE
+import io
 
 # Import your ACFC algorithm
 from test.gpu1 import gpu_acfc_algorithm_complete
@@ -93,6 +94,18 @@ def init_db():
                        )
                    ''')
 
+    # Create job_files table to store uploaded files
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS job_files
+        (
+            file_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT,
+            file_name TEXT,
+            file_content TEXT,
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id)
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -101,7 +114,7 @@ init_db()
 
 
 # Job execution function
-def run_job(job_id, params):
+def run_job(job_id, params, dataframes):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -115,9 +128,9 @@ def run_job(job_id, params):
                        ''', ('running', datetime.utcnow().isoformat(), job_id))
         conn.commit()
 
-        # Run the algorithm
+        # Run the algorithm, passing dataframes directly
         results, detailed_results, internal_results = gpu_acfc_algorithm_complete(
-            data_path=DATA_PATH,
+            data_path=DATA_PATH,  # Always provide default path for fallback
             nb_accounts=params.get('nb_accounts', 4),
             nb_scenarios=params.get('nb_scenarios', 10),
             nb_years=params.get('nb_years', 10),
@@ -129,7 +142,8 @@ def run_job(job_id, params):
             log_scenario=params.get('log_scenario'),
             log_max_years=params.get('log_max_years'),
             log_internal_scenario=params.get('log_internal_scenario'),
-            verbose=False
+            verbose=False,
+            **dataframes
         )
 
         # Store results
@@ -156,19 +170,19 @@ def run_job(job_id, params):
                        WHERE job_id = ?
                        ''', ('completed', datetime.utcnow().isoformat(), job_id))
 
-        conn.commit()
-
     except Exception as e:
-        logger.error(f"Job {job_id} failed: {str(e)}")
+        logger.error(f"Job {job_id} failed: {e}", exc_info=True)
+        # Update status to failed
         cursor.execute('''
                        UPDATE jobs
                        SET status       = ?,
-                           error        = ?,
-                           completed_at = ?
+                           completed_at = ?,
+                           error        = ?
                        WHERE job_id = ?
-                       ''', ('failed', str(e), datetime.utcnow().isoformat(), job_id))
-        conn.commit()
+                       ''', ('failed', datetime.utcnow().isoformat(), str(e), job_id))
+
     finally:
+        conn.commit()
         conn.close()
 
 
@@ -228,22 +242,60 @@ def ready():
 
 @app.route('/jobs', methods=['POST'])
 def create_job():
-    params = request.json or {}
     job_id = f"job_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}"
+    params = {}
+    dataframes = {}
 
+    # Handle file uploads by reading them into dataframes and saving to DB
+    if request.files:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        for key, file in request.files.items():
+            if file and file.filename:
+                try:
+                    # Read file content once
+                    content = file.stream.read().decode('utf-8')
+                    
+                    # Save to database
+                    cursor.execute('''
+                        INSERT INTO job_files (job_id, file_name, file_content)
+                        VALUES (?, ?, ?)
+                    ''', (job_id, key, content))
+
+                    # Use content to create dataframe
+                    dataframes[key] = pd.read_csv(io.StringIO(content))
+
+                except Exception as e:
+                    conn.close()
+                    return jsonify({"error": f"Failed to read or save {file.filename}: {e}"}), 400
+        
+        conn.commit()
+        conn.close()
+
+    # Handle form parameters
+    form_params = request.form.to_dict()
+    for key, value in form_params.items():
+        try:
+            params[key] = int(value)
+        except (ValueError, TypeError):
+            try:
+                params[key] = float(value)
+            except (ValueError, TypeError):
+                params[key] = value
+
+    # We don't store the dataframes in the DB, only the params
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-
     cursor.execute('''
                    INSERT INTO jobs (job_id, status, created_at, started_at, completed_at, error, parameters)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
                    ''', (job_id, 'pending', datetime.utcnow().isoformat(), None, None, None, json.dumps(params)))
-
     conn.commit()
     conn.close()
 
-    # Start job in background thread
-    thread = threading.Thread(target=run_job, args=(job_id, params))
+    # Start job in background thread, passing dataframes in memory
+    thread = threading.Thread(target=run_job, args=(job_id, params, dataframes))
     thread.start()
 
     return jsonify({"job_id": job_id, "status": "pending"}), 201
@@ -296,38 +348,51 @@ def list_jobs():
 
 
 @app.route('/jobs/<job_id>/results', methods=['GET'])
-def get_results(job_id):
+def get_job_results(job_id):
     result_type = request.args.get('type', 'summary')
 
     conn = sqlite3.connect(DB_PATH)
-
-    # Check job exists and is completed
-    job_df = pd.read_sql('SELECT status FROM jobs WHERE job_id = ?', conn, params=(job_id,))
-
-    if job_df.empty:
-        conn.close()
-        return jsonify({"error": "Job not found"}), 404
-
-    if job_df.iloc[0]['status'] != 'completed':
-        conn.close()
-        return jsonify({"error": f"Job status is {job_df.iloc[0]['status']}, not completed"}), 400
-
-    # Get results
-    results_df = pd.read_sql(
-        'SELECT data FROM results WHERE job_id = ? AND result_type = ?',
-        conn,
-        params=(job_id, result_type)
-    )
+    results_df = pd.read_sql('''
+                           SELECT data FROM results
+                           WHERE job_id = ? AND result_type = ?
+                           ''', conn, params=(job_id, result_type))
     conn.close()
 
     if results_df.empty:
-        return jsonify({"error": f"No results found for type {result_type}"}), 404
+        return jsonify({"error": f"No '{result_type}' results found for job {job_id}"}), 404
 
-    return jsonify({
-        "job_id": job_id,
-        "type": result_type,
-        "data": json.loads(results_df.iloc[0]['data'])
-    })
+    # Data is stored as a JSON string, so we need to parse it
+    results_data = json.loads(results_df['data'].iloc[0])
+    return jsonify(results_data)
+
+
+@app.route('/jobs/<job_id>/files', methods=['GET'])
+def get_job_files(job_id):
+    """Get a list of file names associated with a job."""
+    conn = sqlite3.connect(DB_PATH)
+    files_df = pd.read_sql('SELECT file_name FROM job_files WHERE job_id = ?', conn, params=(job_id,))
+    conn.close()
+
+    if files_df.empty:
+        return jsonify({"files": []})
+
+    return jsonify({"files": files_df['file_name'].tolist()})
+
+
+@app.route('/jobs/<job_id>/files/<file_name>', methods=['GET'])
+def get_job_file_content(job_id, file_name):
+    """Get the content of a specific file for a job."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT file_content FROM job_files WHERE job_id = ? AND file_name = ?', (job_id, file_name))
+    result = cursor.fetchone()
+    conn.close()
+
+    if not result:
+        return jsonify({"error": f"File '{file_name}' not found for job {job_id}"}), 404
+
+    # Return the content as plain text, which can be rendered as a table
+    return Response(result[0], mimetype='text/plain')
 
 
 if __name__ == '__main__':

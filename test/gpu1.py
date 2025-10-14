@@ -650,12 +650,18 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
     internal_results[external_idx] = sum_vp / float(nb_sc_int)
 
 
-def gpu_acfc_algorithm_complete(data_path: Path, nb_accounts: int = 4, nb_scenarios: int = 10,
+def gpu_acfc_algorithm_complete(data_path: Path = None, nb_accounts: int = 4, nb_scenarios: int = 10,
                                 nb_years: int = 10, nb_sc_int: int = 10, nb_an_projection_int: int = 10,
                                 choc_capital: float = 0.35, hurdle_rt: float = 0.10,
                                 verbose: bool = True,
                                 log_account_id: int = None, log_scenario: int = None,
-                                log_max_years: int = None, log_internal_scenario: int = None) -> pd.DataFrame:
+                                log_max_years: int = None, log_internal_scenario: int = None,
+                                population: pd.DataFrame = None,
+                                rendement: pd.DataFrame = None,
+                                tx_deces: pd.DataFrame = None,
+                                tx_interet: pd.DataFrame = None,
+                                tx_interet_int: pd.DataFrame = None,
+                                tx_retrait: pd.DataFrame = None) -> pd.DataFrame:
     """
     Complete GPU-Accelerated ACFC Algorithm with detailed logging including internal scenarios
 
@@ -686,7 +692,39 @@ def gpu_acfc_algorithm_complete(data_path: Path, nb_accounts: int = 4, nb_scenar
             f"  Internal Scenario Filter: {log_internal_scenario if log_internal_scenario is not None else 'None (averaged)'}")
 
     print("\nPhase 1: Loading input data...")
-    data = load_input_data(data_path, nb_accounts)
+    data = {}
+    df_map = {
+        'population': population,
+        'rendement': rendement,
+        'tx_deces': tx_deces,
+        'tx_interet': tx_interet,
+        'tx_interet_int': tx_interet_int,
+        'tx_retrait': tx_retrait
+    }
+
+    for name, df in df_map.items():
+        if df is not None:
+            data[name] = df
+
+    if len(data) < len(df_map):
+        if data_path is None:
+            raise ValueError("Must provide either data_path or all dataframes")
+        
+        files_to_load = {
+            'population': "population_fixed.csv",
+            'rendement': "rendement1.csv",
+            'tx_deces': "tx_deces_fixed.csv",
+            'tx_interet': "tx_interet_fixed.csv",
+            'tx_interet_int': "tx_interet_int_fixed.csv",
+            'tx_retrait': "tx_retrait_fixed.csv"
+        }
+
+        for name, filename in files_to_load.items():
+            if name not in data:
+                data[name] = pd.read_csv(data_path.joinpath(filename))
+
+    if nb_accounts is not None:
+        data['population'] = data['population'].head(nb_accounts)
 
     print("\nPhase 2: Creating GPU lookup tables...")
     lookups = create_gpu_lookup_tables(data)
