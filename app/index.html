@@ -252,7 +252,7 @@
             <p style="color: #666; margin-top: 5px;">
                 API Status: <span id="apiStatus" class="status-badge">Checking...</span>
             </p>
-            <div class="api-url">API Endpoint: <span id="apiEndpoint">https://12fkbziz4ylzxx-80.proxy.runpod.net</span></div>
+            <div class="api-url">API Endpoint: <span id="apiEndpoint">http://localhost:80</span></div>
         </div>
 
         <div id="alertContainer"></div>
@@ -290,6 +290,27 @@
                         <input type="number" id="hurdle_rt" value="0.10" step="0.01">
                     </div>
                 </div>
+
+                <h3 style="margin: 20px 0 15px 0; color: #666; font-size: 16px;">🔍 Logging Parameters (Optional)</h3>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Log Account ID</label>
+                        <input type="number" id="log_account_id" placeholder="Leave empty for none" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label>Log Scenario</label>
+                        <input type="number" id="log_scenario" placeholder="Leave empty for none" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label>Log Max Years</label>
+                        <input type="number" id="log_max_years" placeholder="Leave empty for none" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label>Log Internal Scenario</label>
+                        <input type="number" id="log_internal_scenario" placeholder="Leave empty for none" min="0">
+                    </div>
+                </div>
+
                 <button type="submit" id="submitBtn">Create Job</button>
             </form>
         </div>

@@ -80,6 +80,10 @@ def run_job(job_id, params):
             nb_an_projection_int=params.get('nb_an_projection_int', 10),
             choc_capital=params.get('choc_capital', 0.35),
             hurdle_rt=params.get('hurdle_rt', 0.10),
+            log_account_id=params.get('log_account_id'),
+            log_scenario=params.get('log_scenario'),
+            log_max_years=params.get('log_max_years'),
+            log_internal_scenario=params.get('log_internal_scenario'),
             verbose=False
         )
 
