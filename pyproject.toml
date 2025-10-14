@@ -17,4 +17,5 @@ dependencies = [
     "seaborn",
     "tqdm",
     "xgboost",
+    "gunicorn>=23.0.0",
 ]
