@@ -7,6 +7,8 @@ import warnings
 import logging
 import math
 
+from paths import HERE
+
 
 def _initialize_cuda():
     """Initialize CUDA at module import time"""
@@ -1057,7 +1059,7 @@ if __name__ == "__main__":
     for i, gpu in enumerate(cuda.gpus):
         print(f"  Device {i}: {gpu.name.decode()}")
 
-    data_path = "data_in"
+    data_path = HERE.joinpath("data_in")
 
     results, detailed_results, internal_scenario_results = gpu_acfc_algorithm_complete(
         data_path=data_path,
