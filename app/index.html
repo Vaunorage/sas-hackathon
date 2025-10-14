@@ -328,8 +328,7 @@
 
     <script>
         const API_BASE = 'https://12fkbziz4ylzxx-80.proxy.runpod.net';
-        let autoRefreshInterval = null;
-        let expandedJobs = new Set(); // Track which jobs have expanded details
+        let expandedJobsContent = {}; // Store content for expanded jobs
 
         document.getElementById('apiEndpoint').textContent = API_BASE;
 
@@ -445,6 +444,16 @@
                             <div id="details-${job.job_id}"></div>
                         </div>
                     `).join('');
+
+                    // Restore expanded content after DOM is rebuilt
+                    setTimeout(() => {
+                        Object.keys(expandedJobsContent).forEach(jobId => {
+                            const detailsContainer = document.getElementById(`details-${jobId}`);
+                            if (detailsContainer && expandedJobsContent[jobId]) {
+                                detailsContainer.innerHTML = expandedJobsContent[jobId];
+                            }
+                        });
+                    }, 0);
                 } else {
                     jobsList.innerHTML = '<div class="empty-state">No jobs found</div>';
                 }
@@ -457,8 +466,10 @@
         async function viewJobDetails(jobId) {
             const detailsContainer = document.getElementById(`details-${jobId}`);
 
-            if (detailsContainer.innerHTML) {
+            if (expandedJobsContent[jobId]) {
+                // Collapse
                 detailsContainer.innerHTML = '';
+                delete expandedJobsContent[jobId];
                 return;
             }
 
@@ -466,12 +477,15 @@
                 const response = await fetch(`${API_BASE}/jobs/${jobId}`);
                 const job = await response.json();
 
-                detailsContainer.innerHTML = `
+                const content = `
                     <div class="results-container">
                         <strong>Parameters:</strong>
                         <pre>${JSON.stringify(job.parameters, null, 2)}</pre>
                     </div>
                 `;
+
+                detailsContainer.innerHTML = content;
+                expandedJobsContent[jobId] = content;
             } catch (error) {
                 showAlert(`Failed to load job details: ${error.message}`, 'error');
             }
@@ -485,12 +499,15 @@
                 const result = await response.json();
 
                 if (response.ok) {
-                    detailsContainer.innerHTML = `
+                    const content = `
                         <div class="results-container">
                             <strong>${type.toUpperCase()} Results:</strong>
                             <pre>${JSON.stringify(result.data, null, 2)}</pre>
                         </div>
                     `;
+
+                    detailsContainer.innerHTML = content;
+                    expandedJobsContent[jobId] = content;
                 } else {
                     showAlert(`Error loading results: ${result.error}`, 'error');
                 }
@@ -502,9 +519,6 @@
         // Initialize
         checkApiStatus();
         refreshJobs();
-
-        // Auto-refresh jobs every 5 seconds
-        autoRefreshInterval = setInterval(refreshJobs, 5000);
     </script>
 </body>
 </html>

@@ -40,19 +40,60 @@ DATA_PATH = HERE.joinpath("data_in")
 
 # Database initialization
 def init_db():
+    """Initialize database tables if they don't exist"""
     conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
 
-    # Create jobs table using pandas
-    jobs_df = pd.DataFrame(columns=[
-        'job_id', 'status', 'created_at', 'started_at',
-        'completed_at', 'error', 'parameters'
-    ])
-    jobs_df.to_sql('jobs', conn, if_exists='fail', index=False)
+    # Create jobs table if not exists
+    cursor.execute('''
+                   CREATE TABLE IF NOT EXISTS jobs
+                   (
+                       job_id
+                       TEXT
+                       PRIMARY
+                       KEY,
+                       status
+                       TEXT,
+                       created_at
+                       TEXT,
+                       started_at
+                       TEXT,
+                       completed_at
+                       TEXT,
+                       error
+                       TEXT,
+                       parameters
+                       TEXT
+                   )
+                   ''')
 
-    # Create results table using pandas
-    results_df = pd.DataFrame(columns=['job_id', 'result_type', 'data'])
-    results_df.to_sql('results', conn, if_exists='fail', index=False)
+    # Create results table if not exists
+    cursor.execute('''
+                   CREATE TABLE IF NOT EXISTS results
+                   (
+                       id
+                       INTEGER
+                       PRIMARY
+                       KEY
+                       AUTOINCREMENT,
+                       job_id
+                       TEXT,
+                       result_type
+                       TEXT,
+                       data
+                       TEXT,
+                       FOREIGN
+                       KEY
+                   (
+                       job_id
+                   ) REFERENCES jobs
+                   (
+                       job_id
+                   )
+                       )
+                   ''')
 
+    conn.commit()
     conn.close()
 
 
@@ -62,13 +103,17 @@ init_db()
 # Job execution function
 def run_job(job_id, params):
     conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
 
     try:
         # Update status to running
-        jobs_df = pd.read_sql('SELECT * FROM jobs WHERE job_id = ?', conn, params=(job_id,))
-        jobs_df.loc[0, 'status'] = 'running'
-        jobs_df.loc[0, 'started_at'] = datetime.utcnow().isoformat()
-        jobs_df.to_sql('jobs', conn, if_exists='replace', index=False)
+        cursor.execute('''
+                       UPDATE jobs
+                       SET status     = ?,
+                           started_at = ?
+                       WHERE job_id = ?
+                       ''', ('running', datetime.utcnow().isoformat(), job_id))
+        conn.commit()
 
         # Run the algorithm
         results, detailed_results, internal_results = gpu_acfc_algorithm_complete(
@@ -88,26 +133,41 @@ def run_job(job_id, params):
         )
 
         # Store results
-        results_data = pd.DataFrame([
-            {'job_id': job_id, 'result_type': 'summary', 'data': results.to_json(orient='records')},
-            {'job_id': job_id, 'result_type': 'detailed', 'data': detailed_results.to_json(orient='records')},
-            {'job_id': job_id, 'result_type': 'internal', 'data': internal_results.to_json(orient='records')}
-        ])
-        results_data.to_sql('results', conn, if_exists='append', index=False)
+        cursor.execute('''
+                       INSERT INTO results (job_id, result_type, data)
+                       VALUES (?, ?, ?)
+                       ''', (job_id, 'summary', results.to_json(orient='records')))
+
+        cursor.execute('''
+                       INSERT INTO results (job_id, result_type, data)
+                       VALUES (?, ?, ?)
+                       ''', (job_id, 'detailed', detailed_results.to_json(orient='records')))
+
+        cursor.execute('''
+                       INSERT INTO results (job_id, result_type, data)
+                       VALUES (?, ?, ?)
+                       ''', (job_id, 'internal', internal_results.to_json(orient='records')))
 
         # Update status to completed
-        jobs_df = pd.read_sql('SELECT * FROM jobs WHERE job_id = ?', conn, params=(job_id,))
-        jobs_df.loc[0, 'status'] = 'completed'
-        jobs_df.loc[0, 'completed_at'] = datetime.utcnow().isoformat()
-        jobs_df.to_sql('jobs', conn, if_exists='replace', index=False)
+        cursor.execute('''
+                       UPDATE jobs
+                       SET status       = ?,
+                           completed_at = ?
+                       WHERE job_id = ?
+                       ''', ('completed', datetime.utcnow().isoformat(), job_id))
+
+        conn.commit()
 
     except Exception as e:
         logger.error(f"Job {job_id} failed: {str(e)}")
-        jobs_df = pd.read_sql('SELECT * FROM jobs WHERE job_id = ?', conn, params=(job_id,))
-        jobs_df.loc[0, 'status'] = 'failed'
-        jobs_df.loc[0, 'error'] = str(e)
-        jobs_df.loc[0, 'completed_at'] = datetime.utcnow().isoformat()
-        jobs_df.to_sql('jobs', conn, if_exists='replace', index=False)
+        cursor.execute('''
+                       UPDATE jobs
+                       SET status       = ?,
+                           error        = ?,
+                           completed_at = ?
+                       WHERE job_id = ?
+                       ''', ('failed', str(e), datetime.utcnow().isoformat(), job_id))
+        conn.commit()
     finally:
         conn.close()
 
@@ -172,16 +232,14 @@ def create_job():
     job_id = f"job_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}"
 
     conn = sqlite3.connect(DB_PATH)
-    job_df = pd.DataFrame([{
-        'job_id': job_id,
-        'status': 'pending',
-        'created_at': datetime.utcnow().isoformat(),
-        'started_at': None,
-        'completed_at': None,
-        'error': None,
-        'parameters': json.dumps(params)
-    }])
-    job_df.to_sql('jobs', conn, if_exists='append', index=False)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+                   INSERT INTO jobs (job_id, status, created_at, started_at, completed_at, error, parameters)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ''', (job_id, 'pending', datetime.utcnow().isoformat(), None, None, None, json.dumps(params)))
+
+    conn.commit()
     conn.close()
 
     # Start job in background thread
