@@ -536,7 +536,7 @@
 
         function getHeaders() {
             const headers = {};
-            const apiToken = document.getElementById('apiToken').value;
+
             if (apiToken) {
                 headers['Authorization'] = apiToken;
             }
@@ -595,6 +595,7 @@
             try {
                 const response = await fetch(`${API_BASE}/jobs`, {
                     method: 'POST',
+                    headers: getHeaders(),
                     body: formData
                     // Don't set Content-Type header - browser will set it with boundary for multipart/form-data
                 });
@@ -618,7 +619,9 @@
 
         async function refreshJobs() {
             try {
-                const response = await fetch(`${API_BASE}/jobs`);
+                const response = await fetch(`${API_BASE}/jobs`, {
+                    headers: getHeaders()
+                });
                 const data = await response.json();
 
                 const jobsList = document.getElementById('jobsList');
@@ -659,7 +662,9 @@
 
         async function viewJobDetails(jobId) {
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
+                    headers: getHeaders()
+                });
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -691,7 +696,9 @@
             openModal('resultsModal');
 
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`, {
+                    headers: getHeaders()
+                });
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -732,7 +739,9 @@
             openModal('filesModal');
 
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`, {
+                    headers: getHeaders()
+                });
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -762,7 +771,9 @@
             container.innerHTML = '<div class="empty-state">Loading file content...</div>';
 
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`, {
+                    headers: getHeaders()
+                });
                 const csvText = await response.text();
 
                 if (!response.ok) {

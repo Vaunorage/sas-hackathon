@@ -19,4 +19,6 @@ dependencies = [
     "xgboost",
     "gunicorn>=23.0.0",
     "flask-cors>=6.0.1",
+    "psycopg[binary]",
+    "python-dotenv"
 ]
