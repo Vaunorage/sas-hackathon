@@ -364,7 +364,7 @@ def project_cash_flows_exact_sas_logic(account_data: pd.Series, scenario: int, p
             'MT_GAR_DECES_PROJ': MT_GAR_DECES_PROJ,
             'TX_SURVIE': TX_SURVIE,
             'TX_SURVIE_DEB': TX_SURVIE_DEB if 'TX_SURVIE_DEB' in locals() else TX_SURVIE,
-            'RENDEMENT': RENDEMENT if 'RENDEMENT' in locals() else 0.0,  # ADD THIS LINE
+            'RENDEMENT': RENDEMENT if 'RENDEMENT' in locals() else 0.0,
             'FLUX_NET': FLUX_NET,
             'VP_FLUX_NET': VP_FLUX_NET
         }
@@ -571,8 +571,8 @@ def calculate_distributable_flows_exact(external_results: List[Dict], lookups: D
                     'ID_COMPTE': account_id,
                     'scn_eval': scenario,
                     'an_proj': an_proj,
-                    'TX_SURVIE': ext_data['TX_SURVIE'],  # ADD THIS LINE
-                    'RENDEMENT': ext_data.get('RENDEMENT', 0.0),  # ADD THIS LINE
+                    'TX_SURVIE': ext_data['TX_SURVIE'],
+                    'RENDEMENT': ext_data.get('RENDEMENT', 0.0),
                     'FLUX_NET_EXT': external_cf,
                     'RESERVE': current_reserve,
                     'CAPITAL_REQUIREMENT': current_capital,
@@ -803,17 +803,17 @@ def acfc_algorithm_fully_fixed(data_path: str = ".", NBCPT: int = 4, NB_SC: int 
 # Example usage with filtered output
 if __name__ == "__main__":
     # Configuration
-    log_account_id = 1
-    log_scenario = 1
+    log_account_id = 3
+    log_scenario = 2
     log_max_years = 100
 
     # Run the algorithm
     summary_results, detailed_results = acfc_algorithm_fully_fixed(
         data_path=HERE.joinpath("data_in"),
-        NBCPT=1,
-        NB_SC=1,
+        NBCPT=5,
+        NB_SC=5,
         NB_AN_PROJECTION=100,
-        NB_SC_INT=1,
+        NB_SC_INT=5,
         NB_AN_PROJECTION_INT=100,
         CHOC_CAPITAL=0.35,
         HURDLE_RT=0.10,
@@ -824,31 +824,34 @@ if __name__ == "__main__":
         log_internal_scenarios=False
     )
 
-    print(f"\n📋 Sample Summary Results:")
-    print(summary_results.head(10))
+    # Filter summary results based on logging configuration
+    filtered_summary = summary_results.copy()
+    if log_account_id is not None:
+        filtered_summary = filtered_summary[filtered_summary['ID_COMPTE'] == log_account_id]
+    if log_scenario is not None:
+        filtered_summary = filtered_summary[filtered_summary['scn_eval'] == log_scenario]
+
+    print(f"\n📋 Filtered Summary Results ({len(filtered_summary)} rows):")
+    print(filtered_summary.head(10))
 
     # Filter detailed results based on logging configuration
     filtered_detailed = detailed_results.copy()
-
-    # Apply filters
     if log_account_id is not None:
         filtered_detailed = filtered_detailed[filtered_detailed['ID_COMPTE'] == log_account_id]
-
     if log_scenario is not None:
         filtered_detailed = filtered_detailed[filtered_detailed['scn_eval'] == log_scenario]
-
     if log_max_years is not None:
         filtered_detailed = filtered_detailed[filtered_detailed['an_proj'] <= log_max_years]
 
     print(f"\n📋 Filtered Detailed Results ({len(filtered_detailed)} rows):")
     print(filtered_detailed.head(10))
 
-    # Save both outputs
-    summary_results.to_csv(HERE.joinpath('test/acfc_results_summary.csv'), index=False)
+    # Save filtered outputs only
+    filtered_summary.to_csv(HERE.joinpath('test/acfc_results_summary.csv'), index=False)
     filtered_detailed.to_csv(HERE.joinpath('test/acfc_results_detailed.csv'), index=False)
 
     print(f"\n💾 Saved outputs:")
-    print(f"   • Summary: test/acfc_results_summary.csv ({len(summary_results)} rows)")
+    print(f"   • Summary (filtered): test/acfc_results_summary.csv ({len(filtered_summary)} rows)")
     print(f"   • Detailed (filtered): test/acfc_results_detailed.csv ({len(filtered_detailed)} rows)")
     print(f"     - Account ID: {log_account_id if log_account_id else 'All'}")
     print(f"     - Scenario: {log_scenario if log_scenario else 'All'}")
