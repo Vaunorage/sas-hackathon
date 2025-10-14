@@ -7,7 +7,11 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN uv pip install --system -e .
 
+# Copy ALL necessary files
+COPY paths.py .
 COPY app ./app
+COPY test ./test
+COPY data_in ./data_in
 
 # Simple startup
 CMD ["python", "app/app.py"]
