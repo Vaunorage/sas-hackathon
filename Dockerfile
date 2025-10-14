@@ -13,5 +13,8 @@ COPY app ./app
 COPY test ./test
 COPY data_in ./data_in
 
+# Add /app to PYTHONPATH so paths.py can be imported
+ENV PYTHONPATH=/app:$PYTHONPATH
+
 # Simple startup
 CMD ["python", "app/app.py"]
