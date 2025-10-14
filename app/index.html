@@ -329,6 +329,7 @@
     <script>
         const API_BASE = 'https://12fkbziz4ylzxx-80.proxy.runpod.net';
         let autoRefreshInterval = null;
+        let expandedJobs = new Set(); // Track which jobs have expanded details
 
         document.getElementById('apiEndpoint').textContent = API_BASE;
 
@@ -372,6 +373,17 @@
                 choc_capital: parseFloat(document.getElementById('choc_capital').value),
                 hurdle_rt: parseFloat(document.getElementById('hurdle_rt').value)
             };
+
+            // Add optional logging parameters if filled
+            const logAccountId = document.getElementById('log_account_id').value;
+            const logScenario = document.getElementById('log_scenario').value;
+            const logMaxYears = document.getElementById('log_max_years').value;
+            const logInternalScenario = document.getElementById('log_internal_scenario').value;
+
+            if (logAccountId !== '') params.log_account_id = parseInt(logAccountId);
+            if (logScenario !== '') params.log_scenario = parseInt(logScenario);
+            if (logMaxYears !== '') params.log_max_years = parseInt(logMaxYears);
+            if (logInternalScenario !== '') params.log_internal_scenario = parseInt(logInternalScenario);
 
             const submitBtn = document.getElementById('submitBtn');
             submitBtn.disabled = true;
@@ -433,6 +445,14 @@
                             <div id="details-${job.job_id}"></div>
                         </div>
                     `).join('');
+
+                    // Restore expanded details after refresh
+                    expandedJobs.forEach(jobId => {
+                        const detailsContainer = document.getElementById(`details-${jobId}`);
+                        if (detailsContainer && detailsContainer.dataset.content) {
+                            detailsContainer.innerHTML = detailsContainer.dataset.content;
+                        }
+                    });
                 } else {
                     jobsList.innerHTML = '<div class="empty-state">No jobs found</div>';
                 }
@@ -446,7 +466,10 @@
             const detailsContainer = document.getElementById(`details-${jobId}`);
 
             if (detailsContainer.innerHTML) {
+                // Collapse
                 detailsContainer.innerHTML = '';
+                detailsContainer.dataset.content = '';
+                expandedJobs.delete(jobId);
                 return;
             }
 
@@ -454,12 +477,16 @@
                 const response = await fetch(`${API_BASE}/jobs/${jobId}`);
                 const job = await response.json();
 
-                detailsContainer.innerHTML = `
+                const content = `
                     <div class="results-container">
                         <strong>Parameters:</strong>
                         <pre>${JSON.stringify(job.parameters, null, 2)}</pre>
                     </div>
                 `;
+
+                detailsContainer.innerHTML = content;
+                detailsContainer.dataset.content = content;
+                expandedJobs.add(jobId);
             } catch (error) {
                 showAlert(`Failed to load job details: ${error.message}`, 'error');
             }
@@ -473,12 +500,16 @@
                 const result = await response.json();
 
                 if (response.ok) {
-                    detailsContainer.innerHTML = `
+                    const content = `
                         <div class="results-container">
                             <strong>${type.toUpperCase()} Results:</strong>
                             <pre>${JSON.stringify(result.data, null, 2)}</pre>
                         </div>
                     `;
+
+                    detailsContainer.innerHTML = content;
+                    detailsContainer.dataset.content = content;
+                    expandedJobs.add(jobId);
                 } else {
                     showAlert(`Error loading results: ${result.error}`, 'error');
                 }
