@@ -12,10 +12,10 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: "Courier New", Courier, monospace;
+            background: #c0c0c0;
             min-height: 100vh;
-            padding: 20px;
+            padding: 10px;
         }
 
         .container {
@@ -24,50 +24,59 @@
         }
 
         .header {
-            background: white;
-            padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
+            background: #ffffff;
+            padding: 20px;
+            border: 3px ridge #808080;
+            margin-bottom: 10px;
         }
 
         h1 {
-            color: #333;
+            color: #000080;
             margin-bottom: 10px;
+            font-size: 24px;
         }
 
         .status-badge {
             display: inline-block;
-            padding: 4px 12px;
-            border-radius: 12px;
+            padding: 2px 8px;
+            border: 2px solid #000000;
             font-size: 12px;
-            font-weight: 600;
+            font-weight: bold;
         }
 
         .status-healthy {
-            background: #10b981;
-            color: white;
+            background: #00ff00;
+            color: #000000;
+        }
+
+        .status-failed {
+            background: #ff0000;
+            color: #ffffff;
         }
 
         .card {
-            background: white;
-            padding: 25px;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
+            background: #ffffff;
+            padding: 20px;
+            border: 3px ridge #808080;
+            margin-bottom: 10px;
         }
 
         h2 {
-            color: #333;
-            margin-bottom: 20px;
-            font-size: 20px;
+            color: #000080;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        h3 {
+            color: #000000;
+            font-size: 14px;
         }
 
         .form-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 15px;
-            margin-bottom: 20px;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
         }
 
         .form-group {
@@ -76,180 +85,316 @@
         }
 
         label {
-            font-size: 14px;
-            font-weight: 500;
-            color: #555;
-            margin-bottom: 5px;
+            font-size: 12px;
+            font-weight: bold;
+            color: #000000;
+            margin-bottom: 3px;
         }
 
         input {
-            padding: 10px;
-            border: 2px solid #e5e7eb;
-            border-radius: 6px;
-            font-size: 14px;
-            transition: border-color 0.3s;
+            padding: 4px;
+            border: 2px inset #808080;
+            font-size: 12px;
+            font-family: "Courier New", Courier, monospace;
+            background: #ffffff;
         }
 
         input:focus {
-            outline: none;
-            border-color: #667eea;
+            outline: 2px solid #000080;
         }
 
         button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 6px;
-            font-size: 16px;
-            font-weight: 600;
+            background: #c0c0c0;
+            color: #000000;
+            border: 2px outset #ffffff;
+            padding: 8px 16px;
+            font-size: 14px;
+            font-weight: bold;
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
+            font-family: "Courier New", Courier, monospace;
         }
 
         button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            background: #d0d0d0;
         }
 
         button:active {
-            transform: translateY(0);
+            border: 2px inset #808080;
         }
 
         button:disabled {
-            opacity: 0.6;
+            color: #808080;
             cursor: not-allowed;
-            transform: none;
         }
 
         .jobs-list {
             max-height: 500px;
             overflow-y: auto;
+            border: 2px inset #808080;
+            background: #ffffff;
+            padding: 10px;
         }
 
         .job-item {
-            background: #f9fafb;
-            padding: 15px;
-            border-radius: 8px;
+            background: #ffffff;
+            padding: 10px;
+            border: 2px solid #000000;
             margin-bottom: 10px;
-            border-left: 4px solid #667eea;
         }
 
         .job-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #000000;
+            padding-bottom: 5px;
         }
 
         .job-id {
-            font-weight: 600;
-            color: #333;
+            font-weight: bold;
+            color: #000000;
         }
 
         .job-status {
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 600;
+            padding: 2px 8px;
+            border: 2px solid #000000;
+            font-size: 11px;
+            font-weight: bold;
         }
 
         .status-pending {
-            background: #fbbf24;
-            color: #78350f;
+            background: #ffff00;
+            color: #000000;
         }
 
         .status-running {
-            background: #3b82f6;
-            color: white;
+            background: #00ffff;
+            color: #000000;
         }
 
         .status-completed {
-            background: #10b981;
-            color: white;
-        }
-
-        .status-failed {
-            background: #ef4444;
-            color: white;
+            background: #00ff00;
+            color: #000000;
         }
 
         .job-info {
-            font-size: 13px;
-            color: #666;
+            font-size: 11px;
+            color: #000000;
+            line-height: 1.6;
         }
 
         .job-actions {
-            margin-top: 10px;
+            margin-top: 8px;
             display: flex;
-            gap: 10px;
+            gap: 5px;
+            flex-wrap: wrap;
         }
 
         .btn-small {
-            padding: 6px 12px;
-            font-size: 13px;
+            padding: 4px 8px;
+            font-size: 11px;
         }
 
         .results-container {
-            background: #f9fafb;
-            padding: 15px;
-            border-radius: 8px;
-            margin-top: 15px;
+            background: #ffffff;
+            padding: 10px;
+            border: 2px inset #808080;
+            margin-top: 10px;
             max-height: 400px;
             overflow: auto;
         }
 
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #000000;
+        }
+
+        .download-btn {
+            padding: 4px 8px;
+            font-size: 11px;
+            background: #008000;
+            color: #ffffff;
+            border: 2px outset #008000;
+            cursor: pointer;
+        }
+
+        .download-btn:hover {
+            background: #00a000;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+            background: #ffffff;
+            border: 2px solid #000000;
+        }
+
+        th {
+            background: #000080;
+            color: #ffffff;
+            padding: 6px;
+            text-align: left;
+            border: 1px solid #000000;
+            position: sticky;
+            top: 0;
+            font-weight: bold;
+        }
+
+        td {
+            padding: 4px 6px;
+            border: 1px solid #808080;
+        }
+
+        tr:nth-child(even) {
+            background: #e0e0e0;
+        }
+
+        .table-container {
+            max-height: 350px;
+            overflow: auto;
+            border: 2px inset #808080;
+        }
+
         pre {
-            font-size: 12px;
+            font-size: 11px;
             white-space: pre-wrap;
             word-wrap: break-word;
+            font-family: "Courier New", Courier, monospace;
         }
 
         .alert {
-            padding: 12px;
-            border-radius: 6px;
-            margin-bottom: 15px;
+            padding: 10px;
+            border: 2px solid #000000;
+            margin-bottom: 10px;
         }
 
         .alert-success {
-            background: #d1fae5;
-            color: #065f46;
-            border: 1px solid #10b981;
+            background: #00ff00;
+            color: #000000;
         }
 
         .alert-error {
-            background: #fee2e2;
-            color: #991b1b;
-            border: 1px solid #ef4444;
+            background: #ff0000;
+            color: #ffffff;
         }
 
         .alert-info {
-            background: #dbeafe;
-            color: #1e40af;
-            border: 1px solid #3b82f6;
+            background: #ffff00;
+            color: #000000;
         }
 
         .empty-state {
             text-align: center;
-            padding: 40px;
-            color: #999;
+            padding: 30px;
+            color: #808080;
+            font-style: italic;
         }
 
         .api-url {
-            background: #f3f4f6;
-            padding: 8px 12px;
-            border-radius: 4px;
-            font-family: monospace;
-            font-size: 13px;
+            background: #ffffff;
+            padding: 5px;
+            border: 2px inset #808080;
+            font-family: "Courier New", Courier, monospace;
+            font-size: 11px;
             margin-top: 5px;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .modal-content {
+            background: #c0c0c0;
+            border: 3px ridge #ffffff;
+            max-width: 95vw;
+            max-height: 90vh;
+            width: 1200px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .modal-header {
+            padding: 10px 15px;
+            background: #000080;
+            color: #ffffff;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #000000;
+        }
+
+        .modal-header h3 {
+            margin: 0;
+            color: #ffffff;
+            font-size: 16px;
+        }
+
+        .modal-close {
+            background: #c0c0c0;
+            color: #000000;
+            border: 2px outset #ffffff;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 1;
+            font-weight: bold;
+        }
+
+        .modal-close:hover {
+            background: #d0d0d0;
+        }
+
+        .modal-close:active {
+            border: 2px inset #808080;
+        }
+
+        .modal-body {
+            padding: 15px;
+            overflow-y: auto;
+            flex: 1;
+            background: #ffffff;
+        }
+
+        .modal .table-container {
+            max-height: calc(90vh - 180px);
+        }
+
+        .modal-actions {
+            padding: 10px 15px;
+            background: #c0c0c0;
+            border-top: 2px solid #000000;
+            display: flex;
+            justify-content: flex-end;
+            gap: 5px;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🚀 ACFC Algorithm API Dashboard</h1>
-            <p style="color: #666; margin-top: 5px;">
+            <h1>*** ACFC Algorithm API Dashboard ***</h1>
+            <p style="color: #000000; margin-top: 5px;">
                 API Status: <span id="apiStatus" class="status-badge">Checking...</span>
             </p>
             <div class="api-url">API Endpoint: <span id="apiEndpoint">http://localhost:80</span></div>
@@ -258,7 +403,7 @@
         <div id="alertContainer"></div>
 
         <div class="card">
-            <h2>📝 Create New Job</h2>
+            <h2>[ Create New Job ]</h2>
             <form id="jobForm">
                 <div class="form-grid">
                     <div class="form-group">
@@ -291,7 +436,7 @@
                     </div>
                 </div>
 
-                <h3 style="margin: 20px 0 15px 0; color: #666; font-size: 16px;">🔍 Logging Parameters (Optional)</h3>
+                <h3 style="margin: 15px 0 10px 0; color: #000000; font-size: 14px;">[ Logging Parameters - Optional ]</h3>
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Log Account ID</label>
@@ -316,8 +461,8 @@
         </div>
 
         <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h2 style="margin: 0;">📋 Jobs List</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="margin: 0;">[ Jobs List ]</h2>
                 <button onclick="refreshJobs()" class="btn-small">Refresh</button>
             </div>
             <div id="jobsList" class="jobs-list">
@@ -326,9 +471,24 @@
         </div>
     </div>
 
+    <div id="resultsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Results</h3>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <div class="empty-state">Loading...</div>
+            </div>
+            <div class="modal-actions">
+                <button class="download-btn" id="modalDownloadBtn" style="display: none;">Download CSV</button>
+                <button onclick="closeModal()" class="btn-small">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const API_BASE = 'https://12fkbziz4ylzxx-80.proxy.runpod.net';
-        let expandedJobsContent = {}; // Store content for expanded jobs
 
         document.getElementById('apiEndpoint').textContent = API_BASE;
 
@@ -373,7 +533,6 @@
                 hurdle_rt: parseFloat(document.getElementById('hurdle_rt').value)
             };
 
-            // Add optional logging parameters if filled
             const logAccountId = document.getElementById('log_account_id').value;
             const logScenario = document.getElementById('log_scenario').value;
             const logMaxYears = document.getElementById('log_max_years').value;
@@ -441,19 +600,8 @@
                                     <button class="btn-small" onclick="viewResults('${job.job_id}', 'internal')">Internal Results</button>
                                 ` : ''}
                             </div>
-                            <div id="details-${job.job_id}"></div>
                         </div>
                     `).join('');
-
-                    // Restore expanded content after DOM is rebuilt
-                    setTimeout(() => {
-                        Object.keys(expandedJobsContent).forEach(jobId => {
-                            const detailsContainer = document.getElementById(`details-${jobId}`);
-                            if (detailsContainer && expandedJobsContent[jobId]) {
-                                detailsContainer.innerHTML = expandedJobsContent[jobId];
-                            }
-                        });
-                    }, 0);
                 } else {
                     jobsList.innerHTML = '<div class="empty-state">No jobs found</div>';
                 }
@@ -464,59 +612,139 @@
         }
 
         async function viewJobDetails(jobId) {
-            const detailsContainer = document.getElementById(`details-${jobId}`);
+            const modal = document.getElementById('resultsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalBody = document.getElementById('modalBody');
+            const downloadBtn = document.getElementById('modalDownloadBtn');
 
-            if (expandedJobsContent[jobId]) {
-                // Collapse
-                detailsContainer.innerHTML = '';
-                delete expandedJobsContent[jobId];
-                return;
-            }
+            modalTitle.textContent = `Job Details: ${jobId}`;
+            modalBody.innerHTML = '<div class="empty-state">Loading...</div>';
+            downloadBtn.style.display = 'none';
+            modal.classList.add('active');
 
             try {
                 const response = await fetch(`${API_BASE}/jobs/${jobId}`);
                 const job = await response.json();
 
-                const content = `
-                    <div class="results-container">
+                modalBody.innerHTML = `
+                    <div style="background: #f9fafb; padding: 15px; border-radius: 8px;">
                         <strong>Parameters:</strong>
                         <pre>${JSON.stringify(job.parameters, null, 2)}</pre>
                     </div>
                 `;
-
-                detailsContainer.innerHTML = content;
-                expandedJobsContent[jobId] = content;
             } catch (error) {
                 showAlert(`Failed to load job details: ${error.message}`, 'error');
+                closeModal();
             }
         }
 
         async function viewResults(jobId, type) {
-            const detailsContainer = document.getElementById(`details-${jobId}`);
+            const modal = document.getElementById('resultsModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalBody = document.getElementById('modalBody');
+            const downloadBtn = document.getElementById('modalDownloadBtn');
+
+            modalTitle.textContent = `${type.toUpperCase()} Results: ${jobId}`;
+            modalBody.innerHTML = '<div class="empty-state">Loading...</div>';
+            downloadBtn.style.display = 'none';
+            modal.classList.add('active');
 
             try {
                 const response = await fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`);
                 const result = await response.json();
 
                 if (response.ok) {
-                    const content = `
-                        <div class="results-container">
-                            <strong>${type.toUpperCase()} Results:</strong>
-                            <pre>${JSON.stringify(result.data, null, 2)}</pre>
-                        </div>
-                    `;
+                    const data = result.data;
 
-                    detailsContainer.innerHTML = content;
-                    expandedJobsContent[jobId] = content;
+                    if (data && data.length > 0) {
+                        const columns = Object.keys(data[0]);
+
+                        modalBody.innerHTML = `
+                            <div style="margin-bottom: 15px; color: #666;">
+                                <strong>Total Rows:</strong> ${data.length}
+                            </div>
+                            <div class="table-container">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            ${columns.map(col => `<th>${col}</th>`).join('')}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.map(row => `
+                                            <tr>
+                                                ${columns.map(col => {
+                                                    const value = row[col];
+                                                    const formatted = typeof value === 'number'
+                                                        ? (Number.isInteger(value) ? value : value.toFixed(4))
+                                                        : value;
+                                                    return `<td>${formatted}</td>`;
+                                                }).join('')}
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `;
+
+                        downloadBtn.style.display = 'block';
+                        downloadBtn.onclick = () => downloadCSV(jobId, type);
+                    } else {
+                        modalBody.innerHTML = '<div class="empty-state">No data available</div>';
+                    }
                 } else {
                     showAlert(`Error loading results: ${result.error}`, 'error');
+                    closeModal();
                 }
             } catch (error) {
                 showAlert(`Failed to load results: ${error.message}`, 'error');
+                closeModal();
             }
         }
 
-        // Initialize
+        function closeModal() {
+            const modal = document.getElementById('resultsModal');
+            modal.classList.remove('active');
+        }
+
+        // Close modal when clicking outside
+        document.getElementById('resultsModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeModal();
+            }
+        });
+
+        // Close modal with Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeModal();
+            }
+        });
+
+        function downloadCSV(jobId, type) {
+            fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`)
+                .then(response => response.json())
+                .then(result => {
+                    const data = result.data;
+                    if (!data || data.length === 0) return;
+
+                    const columns = Object.keys(data[0]);
+                    const csvContent = [
+                        columns.join(','),
+                        ...data.map(row => columns.map(col => row[col]).join(','))
+                    ].join('\n');
+
+                    const blob = new Blob([csvContent], { type: 'text/csv' });
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${jobId}_${type}_results.csv`;
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                })
+                .catch(error => showAlert(`Failed to download CSV: ${error.message}`, 'error'));
+        }
+
         checkApiStatus();
         refreshJobs();
     </script>
