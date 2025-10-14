@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+INITIALIZED = threading.Event()
+INITIALIZATION_ERROR = None
+
 # Enable CORS for all routes
 CORS(app, resources={
     r"/*": {
@@ -111,6 +114,25 @@ def init_db():
 
 
 init_db()
+
+@app.route('/ping')
+def ping():
+    """Health check endpoint - responds immediately even during initialization"""
+    return jsonify({"status": "healthy"}), 200
+
+
+@app.route('/ready')
+def ready():
+    """Readiness check - only returns success when fully initialized"""
+    if INITIALIZED.is_set() and INITIALIZATION_ERROR is None:
+        return jsonify({"status": "ready"}), 200
+    elif INITIALIZATION_ERROR:
+        return jsonify({
+            "status": "error",
+            "error": INITIALIZATION_ERROR
+        }), 503
+    else:
+        return jsonify({"status": "initializing"}), 503
 
 
 # Job execution function

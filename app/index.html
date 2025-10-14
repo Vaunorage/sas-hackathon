@@ -405,7 +405,10 @@
             <p style="color: #000000; margin-top: 5px;">
                 API Status: <span id="apiStatus" class="status-badge">Checking...</span>
             </p>
-            <div class="api-url">API Endpoint: <span id="apiEndpoint">https://12fkbziz4ylzxx-80.proxy.runpod.net</span></div>
+            <div class="form-group" style="margin-top: 10px;">
+                <label for="apiToken">API Token</label>
+                <input type="password" id="apiToken" name="apiToken" style="width: 100%;" placeholder="Enter your API token">
+            </div>
         </div>
 
         <div id="alertContainer"></div>
@@ -539,9 +542,7 @@
     </div>
 
     <script>
-        const API_BASE = 'https://12fkbziz4ylzxx-80.proxy.runpod.net';
-
-        document.getElementById('apiEndpoint').textContent = API_BASE;
+        const API_BASE = 'https://ih6zh424nwshz6.api.runpod.ai';
 
         function showAlert(message, type = 'info') {
             const alertContainer = document.getElementById('alertContainer');
@@ -555,9 +556,20 @@
             }, 5000);
         }
 
+        function getHeaders() {
+            const headers = {
+                'accept': 'application/json',
+            };
+            const apiToken = document.getElementById('apiToken').value;
+            if (apiToken) {
+                headers['authorization'] = `${apiToken}`;
+            }
+            return headers;
+        }
+
         async function checkApiStatus() {
             try {
-                const response = await fetch(`${API_BASE}/ping`);
+                const response = await fetch(`${API_BASE}/ping`, { headers: getHeaders() });
                 const data = await response.json();
                 const statusEl = document.getElementById('apiStatus');
                 if (data.status === 'healthy') {
@@ -582,18 +594,54 @@
             submitBtn.textContent = 'Creating...';
 
             const formData = new FormData(e.target);
+            const json_input = {};
+            const parameters = {};
 
-            ['log_account_id', 'log_scenario', 'log_max_years', 'log_internal_scenario'].forEach(id => {
-                const input = document.getElementById(id);
-                if (input && input.value === '') {
-                    formData.delete(id);
+            for (const [key, value] of formData.entries()) {
+                if (value !== '' && value !== null) {
+                    if (key.startsWith('log_')) {
+                        if (!parameters.logging_params) parameters.logging_params = {};
+                        parameters.logging_params[key] = isNaN(Number(value)) ? value : Number(value);
+                    } else if (['population', 'rendement', 'tx_deces', 'tx_interet', 'tx_interet_int', 'tx_retrait'].includes(key) && value.size > 0) {
+                        // Files will be handled separately
+                    } else if (!['population', 'rendement', 'tx_deces', 'tx_interet', 'tx_interet_int', 'tx_retrait'].includes(key)) {
+                        parameters[key] = isNaN(Number(value)) ? value : Number(value);
+                    }
                 }
+            }
+            json_input.parameters = parameters;
+
+            const files = {};
+            const fileInputIds = ['population', 'rendement', 'tx_deces', 'tx_interet', 'tx_interet_int', 'tx_retrait'];
+            const fileReadPromises = fileInputIds.map(id => {
+                const fileInput = document.getElementById(id);
+                if (fileInput.files.length > 0) {
+                    return new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                            files[id] = event.target.result;
+                            resolve();
+                        };
+                        reader.onerror = reject;
+                        reader.readAsText(fileInput.files[0]);
+                    });
+                }
+                return Promise.resolve();
             });
 
             try {
-                const response = await fetch(`${API_BASE}/jobs`, {
+                await Promise.all(fileReadPromises);
+                if (Object.keys(files).length > 0) {
+                    json_input.files = files;
+                }
+
+                const headers = getHeaders();
+                headers['content-type'] = 'application/json';
+
+                const response = await fetch(`${API_BASE}/runsync`, {
                     method: 'POST',
-                    body: formData
+                    headers: headers,
+                    body: JSON.stringify({ input: json_input })
                 });
 
                 const data = await response.json();
@@ -615,7 +663,7 @@
 
         async function refreshJobs() {
             try {
-                const response = await fetch(`${API_BASE}/jobs`);
+                const response = await fetch(`${API_BASE}/jobs`, { headers: getHeaders() });
                 const data = await response.json();
 
                 const jobsList = document.getElementById('jobsList');
@@ -656,7 +704,7 @@
 
         async function viewJobDetails(jobId) {
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}`, { headers: getHeaders() });
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -688,7 +736,7 @@
             openModal('resultsModal');
 
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`, { headers: getHeaders() });
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -729,7 +777,7 @@
             openModal('filesModal');
 
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`, { headers: getHeaders() });
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -759,7 +807,7 @@
             container.innerHTML = '<div class="empty-state">Loading file content...</div>';
 
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`, { headers: getHeaders() });
                 const csvText = await response.text();
 
                 if (!response.ok) {
