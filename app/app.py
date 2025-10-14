@@ -27,13 +27,11 @@ INITIALIZED = threading.Event()
 INITIALIZATION_ERROR = None
 
 # Enable CORS for all routes
-CORS(app, resources={
-    r"/*": {
-        "origins": "*",
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
-    }
-})
+CORS(app,
+     resources={r"/*": {"origins": "*"}},
+     allow_headers=["Content-Type", "Authorization"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+)
 
 # Configuration
 PORT = int(os.environ.get('PORT', 80))
