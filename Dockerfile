@@ -17,4 +17,4 @@ COPY data_in ./data_in
 ENV PYTHONPATH=/app:$PYTHONPATH
 
 # Simple startup
-CMD ["python", "app/app.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:80", "--workers", "4", "--threads", "2", "--timeout", "300", "--access-logfile", "-", "--error-logfile", "-", "app.app:app"]
