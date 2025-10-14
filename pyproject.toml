@@ -18,4 +18,5 @@ dependencies = [
     "tqdm",
     "xgboost",
     "gunicorn>=23.0.0",
+    "flask-cors>=6.0.1",
 ]
