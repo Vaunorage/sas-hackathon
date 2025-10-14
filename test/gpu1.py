@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 from numba import cuda, jit
@@ -60,17 +62,17 @@ DATA_MAX_RESET_DECES = 10
 DATA_SIZE = 11
 
 
-def load_input_data(data_path: str = ".", nb_accounts: int = None) -> Dict:
+def load_input_data(data_path:Path, nb_accounts: int = None) -> Dict:
     """Load all input data files"""
     try:
-        population = pd.read_csv(f"{data_path}/population_fixed.csv")
+        population = pd.read_csv(data_path.joinpath("population_fixed.csv"))
         if nb_accounts is not None:
             population = population.head(nb_accounts)
-        rendement = pd.read_csv(f"{data_path}/rendement1.csv")
-        tx_deces = pd.read_csv(f"{data_path}/tx_deces_fixed.csv")
-        tx_interet = pd.read_csv(f"{data_path}/tx_interet_fixed.csv")
-        tx_interet_int = pd.read_csv(f"{data_path}/tx_interet_int_fixed.csv")
-        tx_retrait = pd.read_csv(f"{data_path}/tx_retrait_fixed.csv")
+        rendement = pd.read_csv(data_path.joinpath("rendement1.csv"))
+        tx_deces = pd.read_csv(data_path.joinpath("tx_deces_fixed.csv"))
+        tx_interet = pd.read_csv(data_path.joinpath("tx_interet_fixed.csv"))
+        tx_interet_int = pd.read_csv(data_path.joinpath("tx_interet_int_fixed.csv"))
+        tx_retrait = pd.read_csv(data_path.joinpath("tx_retrait_fixed.csv"))
 
         if 'TYPE' in rendement.columns:
             rendement['TYPE'] = rendement['TYPE'].apply(
