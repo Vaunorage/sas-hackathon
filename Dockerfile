@@ -12,8 +12,27 @@ RUN uv pip install --system -e .
 # Copy the entire app directory
 COPY app ./app
 
-# Add debug output
-RUN python --version
-RUN python -c "import flask; print(f'Flask version: {flask.__version__}')"
+# Debug: List what files we have
+RUN echo "=== Files in /app ===" && ls -la
+RUN echo "=== Files in /app/app ===" && ls -la app/
 
-CMD ["python", "app/app.py"]
+# Test if we can run Python
+RUN python --version
+
+# Add a startup script for debugging
+RUN echo '#!/bin/bash\n\
+echo "========================================"\n\
+echo "CONTAINER STARTING"\n\
+echo "========================================"\n\
+echo "Python version:"\n\
+python --version\n\
+echo "Files in /app:"\n\
+ls -la /app\n\
+echo "Files in /app/app:"\n\
+ls -la /app/app\n\
+echo "========================================"\n\
+echo "STARTING FLASK"\n\
+echo "========================================"\n\
+exec python app/app.py' > /start.sh && chmod +x /start.sh
+
+CMD ["/start.sh"]
