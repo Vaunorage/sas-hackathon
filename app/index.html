@@ -445,14 +445,6 @@
                             <div id="details-${job.job_id}"></div>
                         </div>
                     `).join('');
-
-                    // Restore expanded details after refresh
-                    expandedJobs.forEach(jobId => {
-                        const detailsContainer = document.getElementById(`details-${jobId}`);
-                        if (detailsContainer && detailsContainer.dataset.content) {
-                            detailsContainer.innerHTML = detailsContainer.dataset.content;
-                        }
-                    });
                 } else {
                     jobsList.innerHTML = '<div class="empty-state">No jobs found</div>';
                 }
@@ -466,10 +458,7 @@
             const detailsContainer = document.getElementById(`details-${jobId}`);
 
             if (detailsContainer.innerHTML) {
-                // Collapse
                 detailsContainer.innerHTML = '';
-                detailsContainer.dataset.content = '';
-                expandedJobs.delete(jobId);
                 return;
             }
 
@@ -477,16 +466,12 @@
                 const response = await fetch(`${API_BASE}/jobs/${jobId}`);
                 const job = await response.json();
 
-                const content = `
+                detailsContainer.innerHTML = `
                     <div class="results-container">
                         <strong>Parameters:</strong>
                         <pre>${JSON.stringify(job.parameters, null, 2)}</pre>
                     </div>
                 `;
-
-                detailsContainer.innerHTML = content;
-                detailsContainer.dataset.content = content;
-                expandedJobs.add(jobId);
             } catch (error) {
                 showAlert(`Failed to load job details: ${error.message}`, 'error');
             }
@@ -500,16 +485,12 @@
                 const result = await response.json();
 
                 if (response.ok) {
-                    const content = `
+                    detailsContainer.innerHTML = `
                         <div class="results-container">
                             <strong>${type.toUpperCase()} Results:</strong>
                             <pre>${JSON.stringify(result.data, null, 2)}</pre>
                         </div>
                     `;
-
-                    detailsContainer.innerHTML = content;
-                    detailsContainer.dataset.content = content;
-                    expandedJobs.add(jobId);
                 } else {
                     showAlert(`Error loading results: ${result.error}`, 'error');
                 }
