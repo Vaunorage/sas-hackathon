@@ -5,9 +5,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Copy requirements and install with uv
-COPY requirements.txt .
-RUN uv pip install --system -r requirements.txt
+# Copy pyproject.toml and install dependencies with uv
+COPY pyproject.toml .
+RUN uv pip install --system -e .
 
 COPY app.py .
 
