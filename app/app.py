@@ -251,17 +251,6 @@ def hello():
         "environment": ENV
     })
 
-
-@app.route('/ping')
-def ping():
-    return jsonify({"status": "healthy"}), 200
-
-
-@app.route('/ready')
-def ready():
-    return jsonify({"status": "ready"}), 200
-
-
 @app.route('/jobs', methods=['POST'])
 def create_job():
     job_id = f"job_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}"
