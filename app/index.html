@@ -405,7 +405,7 @@
             <p style="color: #000000; margin-top: 5px;">
                 API Status: <span id="apiStatus" class="status-badge">Checking...</span>
             </p>
-            <div class="api-url">API Endpoint: <span id="apiEndpoint">http://localhost:80</span></div>
+            <div class="api-url">API Endpoint: <span id="apiEndpoint">https://12fkbziz4ylzxx-80.proxy.runpod.net</span></div>
         </div>
 
         <div id="alertContainer"></div>
@@ -583,7 +583,6 @@
 
             const formData = new FormData(e.target);
 
-            // Ensure optional empty number fields are not sent as empty strings
             ['log_account_id', 'log_scenario', 'log_max_years', 'log_internal_scenario'].forEach(id => {
                 const input = document.getElementById(id);
                 if (input && input.value === '') {
@@ -633,7 +632,7 @@
                                 <div>Created: ${new Date(job.created_at).toLocaleString()}</div>
                                 ${job.started_at ? `<div>Started: ${new Date(job.started_at).toLocaleString()}</div>` : ''}
                                 ${job.completed_at ? `<div>Completed: ${new Date(job.completed_at).toLocaleString()}</div>` : ''}
-                                ${job.error ? `<div style="color: #ef4444;">Error: ${job.error}</div>` : ''}
+                                ${job.error ? `<div style="color: #ff0000;">Error: ${job.error}</div>` : ''}
                             </div>
                             <div class="job-actions">
                                 <button class="btn-small" onclick="viewJobDetails('${job.job_id}')">View Details</button>
@@ -720,7 +719,7 @@
                 modalBody.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
             }
         }
-        
+
         async function viewFiles(jobId) {
             const modalTitle = document.getElementById('filesModalTitle');
             const modalBody = document.getElementById('filesModalBody');
@@ -764,11 +763,10 @@
                 const csvText = await response.text();
 
                 if (!response.ok) {
-                    const errorJson = JSON.parse(csvText); // Try to parse error from body
+                    const errorJson = JSON.parse(csvText);
                     throw new Error(errorJson.error || `Failed to load ${fileName}.`);
                 }
 
-                // Basic CSV to HTML table conversion
                 const rows = csvText.trim().split('\n');
                 const headers = rows[0].split(',');
                 const tableRows = rows.slice(1).map(row => {
@@ -801,7 +799,7 @@
 
             for (const row of data) {
                 const values = headers.map(header => {
-                    const escaped = ('' + row[header]).replace(/"/g, '\"');
+                    const escaped = ('' + row[header]).replace(/"/g, '\\"');
                     return `"${escaped}"`;
                 });
                 csvRows.push(values.join(','));
@@ -828,7 +826,6 @@
             if (modal) modal.classList.remove('active');
         }
 
-        // Close modal when clicking outside
         window.addEventListener('click', (event) => {
             if (event.target.classList.contains('modal')) {
                 closeModal(event.target.id);
@@ -838,285 +835,8 @@
         window.onload = () => {
             checkApiStatus();
             refreshJobs();
-            setInterval(refreshJobs, 15000); // Refresh jobs every 15 seconds
+            setInterval(refreshJobs, 15000);
         };
-    </script>
-</body>                    method: 'POST',
-                    body: formData // The browser will automatically set the Content-Type to multipart/form-data
-                });
-
-                const data = await response.json();
-
-                if (response.ok) {
-                    showAlert(`Job created successfully: ${data.job_id}`, 'success');
-                    refreshJobs();
-                    e.target.reset(); // Clear the form on success
-                } else {
-                    showAlert(`Error: ${data.error}`, 'error');
-                }
-            } catch (error) {
-                showAlert(`Failed to create job: ${error.message}`, 'error');
-            } finally {
-                submitBtn.disabled = false;
-                submitBtn.textContent = 'Create Job';
-            }
-        });
-
-        async function refreshJobs() {
-            try {
-                const response = await fetch(`${API_BASE}/jobs`);
-                const data = await response.json();
-
-                const jobsList = document.getElementById('jobsList');
-
-                if (data.jobs && data.jobs.length > 0) {
-                    jobsList.innerHTML = data.jobs.map(job => `
-                        <div class="job-item">
-                            <div class="job-header">
-                                <span class="job-id">${job.job_id}</span>
-                                <span class="job-status status-${job.status}">${job.status.toUpperCase()}</span>
-                            </div>
-                            <div class="job-info">
-                                <div>Created: ${new Date(job.created_at).toLocaleString()}</div>
-                                ${job.started_at ? `<div>Started: ${new Date(job.started_at).toLocaleString()}</div>` : ''}
-                                ${job.completed_at ? `<div>Completed: ${new Date(job.completed_at).toLocaleString()}</div>` : ''}
-                                ${job.error ? `<div style="color: #ef4444;">Error: ${job.error}</div>` : ''}
-                            </div>
-                            <div class="job-actions">
-                                <button class="btn-small" onclick="viewJobDetails('${job.job_id}')">View Details</button>
-                                ${job.status === 'completed' ? `
-                                    <button class="btn-small" onclick="viewResults('${job.job_id}', 'summary')">Summary Results</button>
-                                    <button class="btn-small" onclick="viewResults('${job.job_id}', 'detailed')">Detailed Results</button>
-                                    <button class="btn-small" onclick="viewResults('${job.job_id}', 'internal')">Internal Results</button>
-                                ` : ''}
-                                <button class="btn-small" onclick="viewFiles('${job.job_id}')">View Input Files</button>
-                            </div>
-                        </div>
-                    `).join('');
-                } else {
-                    jobsList.innerHTML = '<div class="empty-state">No jobs found</div>';
-                }
-            } catch (error) {
-                document.getElementById('jobsList').innerHTML =
-                    '<div class="empty-state">Failed to load jobs</div>';
-            }
-        }
-
-        async function viewJobDetails(jobId) {
-            const modal = document.getElementById('resultsModal');
-            const modalTitle = document.getElementById('modalTitle');
-            const modalBody = document.getElementById('modalBody');
-            const downloadBtn = document.getElementById('modalDownloadBtn');
-
-            modalTitle.textContent = `Job Details: ${jobId}`;
-            modalBody.innerHTML = '<div class="empty-state">Loading...</div>';
-            downloadBtn.style.display = 'none';
-            modal.classList.add('active');
-
-            try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
-                const job = await response.json();
-
-                modalBody.innerHTML = `
-                    <div style="background: #f9fafb; padding: 15px; border-radius: 8px;">
-                        <strong>Parameters:</strong>
-                        <pre>${JSON.stringify(job.parameters, null, 2)}</pre>
-                    </div>
-                `;
-            } catch (error) {
-                showAlert(`Failed to load job details: ${error.message}`, 'error');
-                closeModal();
-            }
-        }
-
-        async function viewResults(jobId, type) {
-            const modal = document.getElementById('resultsModal');
-            const modalTitle = document.getElementById('modalTitle');
-            const modalBody = document.getElementById('modalBody');
-            const downloadBtn = document.getElementById('modalDownloadBtn');
-
-            modalTitle.textContent = `${type.toUpperCase()} Results: ${jobId}`;
-            modalBody.innerHTML = '<div class="empty-state">Loading...</div>';
-            downloadBtn.style.display = 'none';
-            modal.classList.add('active');
-
-            try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`);
-                const result = await response.json();
-
-                if (response.ok) {
-                    const data = result.data;
-
-                    if (data && data.length > 0) {
-                        const columns = Object.keys(data[0]);
-
-                        modalBody.innerHTML = `
-                            <div style="margin-bottom: 15px; color: #666;">
-                                <strong>Total Rows:</strong> ${data.length}
-                            </div>
-                            <div class="table-container">
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            ${columns.map(col => `<th>${col}</th>`).join('')}
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${data.map(row => `
-                                            <tr>
-                                                ${columns.map(col => {
-                                                    const value = row[col];
-                                                    const formatted = typeof value === 'number'
-                                                        ? (Number.isInteger(value) ? value : value.toFixed(4))
-                                                        : value;
-                                                    return `<td>${formatted}</td>`;
-                                                }).join('')}
-                                            </tr>
-                                        `).join('')}
-                                    </tbody>
-                                </table>
-                            </div>
-                        `;
-
-                        downloadBtn.style.display = 'block';
-                        downloadBtn.onclick = () => downloadCSV(jobId, type);
-                    } else {
-                        modalBody.innerHTML = '<div class="empty-state">No data available</div>';
-                    }
-                } else {
-                    showAlert(`Error loading results: ${result.error}`, 'error');
-                    closeModal();
-                }
-            } catch (error) {
-                showAlert(`Failed to load results: ${error.message}`, 'error');
-                closeModal();
-            }
-        }
-
-        async function viewFiles(jobId) {
-            const modalTitle = document.getElementById('filesModalTitle');
-            const modalBody = document.getElementById('filesModalBody');
-
-            modalTitle.textContent = `Input Files for Job: ${jobId}`;
-            modalBody.innerHTML = '<div class="empty-state">Loading file list...</div>';
-            openModal('filesModal');
-
-            try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
-                const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(data.error || 'Failed to load file list.');
-                }
-
-                if (data.files && data.files.length > 0) {
-                    modalBody.innerHTML = `
-                        <div style="margin-bottom: 10px;">Select a file to view its content:</div>
-                        <div id="fileButtonContainer" style="display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 15px;">
-                            ${data.files.map(file => `<button class="btn-small" onclick="viewFileContent('${jobId}', '${file}')">${file}</button>`).join('')}
-                        </div>
-                        <div id="fileContentContainer"></div>
-                    `;
-                } else {
-                    modalBody.innerHTML = '<div class="empty-state">No custom input files were uploaded for this job.</div>';
-                }
-            } catch (error) {
-                modalBody.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
-            }
-        }
-
-        async function viewFileContent(jobId, fileName) {
-            const container = document.getElementById('fileContentContainer');
-            if (!container) return;
-
-            container.innerHTML = '<div class="empty-state">Loading file content...</div>';
-
-            try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`);
-                const csvText = await response.text();
-
-                if (!response.ok) {
-                    const errorJson = JSON.parse(csvText); // Try to parse error from body
-                    throw new Error(errorJson.error || `Failed to load ${fileName}.`);
-                }
-
-                // Basic CSV to HTML table conversion
-                const rows = csvText.trim().split('\n');
-                const headers = rows[0].split(',');
-                const tableRows = rows.slice(1).map(row => {
-                    const values = row.split(',');
-                    return `<tr>${values.map(val => `<td>${val}</td>`).join('')}</tr>`;
-                }).join('');
-
-                container.innerHTML = `
-                    <h3 style="margin-bottom: 10px;">${fileName}</h3>
-                    <div class="table-container">
-                        <table>
-                            <thead>
-                                <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
-                            </thead>
-                            <tbody>
-                                ${tableRows}
-                            </tbody>
-                        </table>
-                    </div>
-                `;
-            } catch (error) {
-                container.innerHTML = `<div class="alert alert-error">${error.message}</div>`;
-            }
-        }
-
-        function openModal(modalId) {
-            const modal = document.getElementById(modalId);
-            if (modal) modal.classList.add('active');
-        }
-
-        function closeModal(modalId) {
-            const modal = document.getElementById(modalId);
-            if (modal) modal.classList.remove('active');
-            }
-        }
-
-        // Close modal when clicking outside
-        document.getElementById('resultsModal').addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeModal();
-            }
-        });
-
-        // Close modal with Escape key
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                closeModal();
-            }
-        });
-
-        function downloadCSV(jobId, type) {
-            fetch(`${API_BASE}/jobs/${jobId}/results?type=${type}`)
-                .then(response => response.json())
-                .then(result => {
-                    const data = result.data;
-                    if (!data || data.length === 0) return;
-
-                    const columns = Object.keys(data[0]);
-                    const csvContent = [
-                        columns.join(','),
-                        ...data.map(row => columns.map(col => row[col]).join(','))
-                    ].join('\n');
-
-                    const blob = new Blob([csvContent], { type: 'text/csv' });
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `${jobId}_${type}_results.csv`;
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                })
-                .catch(error => showAlert(`Failed to download CSV: ${error.message}`, 'error'));
-        }
-
-        checkApiStatus();
-        refreshJobs();
     </script>
 </body>
 </html>
