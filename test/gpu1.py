@@ -650,7 +650,7 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
     internal_results[external_idx] = sum_vp / float(nb_sc_int)
 
 
-def gpu_acfc_algorithm_complete(data_path: str = ".", nb_accounts: int = 4, nb_scenarios: int = 10,
+def gpu_acfc_algorithm_complete(data_path: Path, nb_accounts: int = 4, nb_scenarios: int = 10,
                                 nb_years: int = 10, nb_sc_int: int = 10, nb_an_projection_int: int = 10,
                                 choc_capital: float = 0.35, hurdle_rt: float = 0.10,
                                 verbose: bool = True,

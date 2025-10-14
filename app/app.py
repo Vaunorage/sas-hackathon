@@ -25,6 +25,7 @@ app = Flask(__name__)
 PORT = int(os.environ.get('PORT', 80))
 ENV = os.environ.get('ENVIRONMENT', 'production')
 DB_PATH = HERE.joinpath('app/jobs.db')
+DATA_PATH = HERE.joinpath("data_in")
 
 
 # Database initialization
@@ -61,7 +62,7 @@ def run_job(job_id, params):
 
         # Run the algorithm
         results, detailed_results, internal_results = gpu_acfc_algorithm_complete(
-            data_path=params.get('data_path', '.'),
+            data_path=DATA_PATH,
             nb_accounts=params.get('nb_accounts', 4),
             nb_scenarios=params.get('nb_scenarios', 10),
             nb_years=params.get('nb_years', 10),
