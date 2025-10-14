@@ -5,10 +5,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Copy pyproject.toml and install dependencies with uv
+# Copy pyproject.toml and install dependencies
 COPY pyproject.toml .
-RUN uv pip install --system -e .
+RUN uv pip install --system flask
 
-COPY app.py .
+# Copy the entire app directory
+COPY app ./app
 
-CMD ["python", "app.py"]
+# Run the app from the app directory
+CMD ["python", "app/app.py"]
