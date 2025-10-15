@@ -672,6 +672,19 @@ def gpu_acfc_algorithm_complete(data_path: Path = None, nb_accounts: int = 4, nb
         log_internal_scenario: If specified, log detailed internal scenario calculations for this internal scenario ID
     """
 
+    log_params = [log_account_id, log_scenario, log_max_years]
+    num_specified = sum(p is not None for p in log_params)
+
+    # Check for a partial (and therefore invalid) specification.
+    if 0 < num_specified < len(log_params):
+        raise ValueError(
+            "Inconsistent detailed logging parameters. "
+            "Please specify all of the following parameters together, or none of them:\n"
+            " - log_account_id\n"
+            " - log_scenario\n"
+            " - log_max_years"
+        )
+
     if verbose:
         print("\n" + "=" * 80)
         print("GPU-ACCELERATED ACFC ALGORITHM - COMPLETE EXECUTION LOG")
@@ -935,13 +948,14 @@ def gpu_acfc_algorithm_complete(data_path: Path = None, nb_accounts: int = 4, nb
             distributable_pvs.append(pv_distributable)
 
             # Apply filtering for detailed logging
-            should_log = True
-            if log_account_id is not None and account_id != log_account_id:
-                should_log = False
-            if log_scenario is not None and scenario != log_scenario:
-                should_log = False
-            if log_max_years is not None and year >= log_max_years:
-                should_log = False
+            should_log = False  # Default to not logging
+
+            if log_account_id is not None:
+                # If one is set, we know all are set. Now we apply all filters at once.
+                if (account_id == log_account_id and
+                        scenario == log_scenario and
+                        year < log_max_years):
+                    should_log = True
 
             if should_log:
                 detailed_results.append({
