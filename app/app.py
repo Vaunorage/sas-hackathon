@@ -17,7 +17,7 @@ from paths import HERE
 
 ### NEW: DATABASE CONFIGURATION ###
 # Set this to True to use NeonDB (PostgreSQL), False to use SQLite
-USE_NEONDB = False
+USE_NEONDB = True
 
 # Conditionally import libraries and load environment variables for NeonDB
 if USE_NEONDB:
