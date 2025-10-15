@@ -9,6 +9,7 @@ import pandas as pd
 from numba import cuda
 import numba
 from paths import HERE
+import threading
 
 # --- Logger Setup ---
 # We initialize the logger here, but configure it in the __main__ block
@@ -16,25 +17,37 @@ from paths import HERE
 logger = logging.getLogger(__name__)
 
 
-def _initialize_cuda():
-    """Initialize CUDA at module import time"""
+_thread_local = threading.local()
+
+
+def initialize_cuda_for_thread():
+    """
+    Initializes the CUDA context for the current thread.
+    This should be called once at the beginning of any thread that will perform CUDA work.
+    It's safe to call this multiple times in the same thread.
+    """
+    # Check if this specific thread has already been initialized
+    if getattr(_thread_local, 'cuda_initialized', False):
+        return
+
+    logger.info(f"Initializing CUDA context for thread: {threading.get_ident()}")
     if cuda.is_available():
         try:
-            # Force context creation
+            # Force context creation on the current device for this thread
             cuda.select_device(0)
-            # Create a dummy device array to establish context
-            dummy = cuda.device_array(1, dtype=np.float32)
+            # A simple operation to confirm the context is active
+            dummy = cuda.device_array(1)
             del dummy
-            return True
+            _thread_local.cuda_initialized = True
+            logger.info(f"CUDA context successfully created for thread {threading.get_ident()}.")
         except Exception as e:
-            # Use WARNING for non-critical failures at import time
-            logger.warning(f"Could not initialize CUDA context on module load: {e}", exc_info=True)
-            return False
-    return False
-
-
-# Initialize CUDA context when module loads
-_CUDA_INITIALIZED = _initialize_cuda()
+            logger.error(f"Failed to initialize CUDA context for thread {threading.get_ident()}: {e}", exc_info=True)
+            _thread_local.cuda_initialized = False
+            # Re-raise the exception so the calling job knows it failed
+            raise
+    else:
+        _thread_local.cuda_initialized = False
+        raise RuntimeError("CUDA is not available on this system.")
 
 warnings.filterwarnings('ignore')
 
@@ -888,13 +901,12 @@ if __name__ == "__main__":
 
     check_cuda_environment()
 
-    if not cuda.is_available():
-        logger.critical("CUDA is not available. Please install CUDA and ensure your GPU supports it. Exiting.")
+    try:
+        # Manually initialize for the main thread when running as a script
+        initialize_cuda_for_thread()
+    except Exception as e:
+        logger.critical(f"CUDA initialization failed. Exiting. Error: {e}")
         exit(1)
-
-    if not _CUDA_INITIALIZED:
-        logger.warning("CUDA context was not initialized on module load. Manual re-initialization may be required.")
-        # Depending on the error, you might attempt a manual init here or just exit.
 
     data_path = HERE.joinpath("data_in")
 

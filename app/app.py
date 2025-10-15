@@ -5,12 +5,13 @@ import threading
 from datetime import datetime
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
+from numba import cuda
 from werkzeug.exceptions import HTTPException
 import pandas as pd
 import io
 
 # Import your ACFC algorithm
-from test.gpu1 import gpu_acfc_algorithm_complete
+from test.gpu1 import gpu_acfc_algorithm_complete, initialize_cuda_for_thread, _thread_local
 
 from paths import HERE
 
@@ -268,6 +269,9 @@ def run_job(job_id, params, dataframes):
 
     try:
         # Connect once and perform all operations
+
+        initialize_cuda_for_thread()
+
         with get_db_connection() as conn:
             # Update status to running
             with conn.cursor() as cursor:
@@ -307,6 +311,11 @@ def run_job(job_id, params, dataframes):
         except Exception as db_err:
             logger.error(f"CRITICAL: Could not update job {job_id} status to failed: {db_err}")
 
+    finally:
+        if cuda.is_available() and getattr(_thread_local, 'cuda_initialized', False):
+            logger.info(f"Closing CUDA context for thread: {threading.get_ident()}")
+            cuda.close()
+            _thread_local.cuda_initialized = False
 
 # Error handlers (no changes)
 @app.errorhandler(404)
