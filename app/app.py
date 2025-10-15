@@ -45,11 +45,11 @@ INITIALIZED = threading.Event()
 INITIALIZATION_ERROR = None
 
 # Enable CORS for all routes
-# CORS(app,
-#      resources={r"/*": {"origins": "*"}},
-#      allow_headers=["Content-Type", "Authorization"],
-#      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-# )
+CORS(app,
+     resources={r"/*": {"origins": "*"}},
+     allow_headers=["Content-Type", "Authorization"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+)
 
 # Configuration
 PORT = int(os.environ.get('PORT', 80))
@@ -286,7 +286,7 @@ def run_job(job_id, params, dataframes):
                 choc_capital=params.get('choc_capital', 0.35), hurdle_rt=params.get('hurdle_rt', 0.10),
                 log_account_id=params.get('log_account_id'), log_scenario=params.get('log_scenario'),
                 log_max_years=params.get('log_max_years'), log_internal_scenario=params.get('log_internal_scenario'),
-                verbose=False, **dataframes
+                **dataframes
             )
 
             # Store results and update status to completed
