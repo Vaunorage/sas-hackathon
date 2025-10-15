@@ -378,116 +378,241 @@
             font-family: "Courier New", Courier, monospace;
             font-size: 11px;
         }
+
+        /* --- NEW HISTOGRAM WITH AXES STYLES --- */
+        .chart-wrapper {
+            display: flex;
+            align-items: flex-end;
+        }
+
+        .y-axis {
+            width: 70px;
+            flex-shrink: 0;
+            height: 150px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            text-align: right;
+            font-size: 11px;
+            color: #000000;
+            padding-right: 5px;
+            margin-right: 5px;
+            border-right: 1px solid #808080;
+        }
+
+        .chart-content {
+            flex: 1;
+            width: 0; /* Fix for flex item sizing */
+        }
+
+        .x-axis {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 5px 0 5px;
+            font-size: 11px;
+            color: #000000;
+            border-top: 1px solid #808080;
+        }
+
+        /* --- HISTOGRAM STYLES --- */
+        .histogram-container {
+            display: flex;
+            flex-direction: row-reverse; /* Orders bars from right (newest) to left (oldest) */
+            align-items: flex-end; /* Aligns bars to the bottom */
+            height: 150px;
+            border: 2px inset #808080;
+            padding: 10px 5px 0 5px;
+            background: #ffffff;
+            gap: 2px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            width: 100%;
+        }
+
+        .histogram-bar {
+            flex: 0 0 15px; /* Don't grow, don't shrink, base width of 15px */
+            width: 15px;
+            background-color: #000080;
+            border: 1px outset #ffffff;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .histogram-bar:hover {
+            background-color: #00ffff; /* Aqua highlight on hover */
+        }
+
+        .histogram-tooltip {
+            display: none;
+            position: absolute;
+            background: #ffffdd; /* Light yellow tooltip background */
+            border: 2px solid #000000;
+            padding: 10px;
+            font-size: 11px;
+            z-index: 1001;
+            max-width: 350px;
+            pointer-events: none; /* Allows mouse events to pass through */
+            white-space: pre-wrap;
+            font-family: "Courier New", Courier, monospace;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>*** ACFC Algorithm API Dashboard ***</h1>
-            <p style="color: #000000; margin-top: 5px;">
-                API Status: <span id="apiStatus" class="status-badge">Checking...</span>
-            </p>
-        </div>
-
-        <div id="alertContainer"></div>
-
-        <div class="card">
-            <h2>[ Create New Job ]</h2>
-            <form id="jobForm">
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label for="nb_accounts">Number of Accounts</label>
-                        <input type="number" id="nb_accounts" name="nb_accounts" value="4" min="1">
-                    </div>
-                    <div class="form-group">
-                        <label for="nb_scenarios">Number of Scenarios</label>
-                        <input type="number" id="nb_scenarios" name="nb_scenarios" value="10" min="1">
-                    </div>
-                    <div class="form-group">
-                        <label for="nb_years">Number of Years</label>
-                        <input type="number" id="nb_years" name="nb_years" value="10" min="1">
-                    </div>
-                    <div class="form-group">
-                        <label for="nb_sc_int">Scenarios Internal</label>
-                        <input type="number" id="nb_sc_int" name="nb_sc_int" value="10" min="1">
-                    </div>
-                    <div class="form-group">
-                        <label for="nb_an_projection_int">Projection Years Internal</label>
-                        <input type="number" id="nb_an_projection_int" name="nb_an_projection_int" value="10" min="1">
-                    </div>
-                    <div class="form-group">
-                        <label for="choc_capital">Capital Shock</label>
-                        <input type="number" id="choc_capital" name="choc_capital" value="0.35" step="0.01">
-                    </div>
-                    <div class="form-group">
-                        <label for="hurdle_rt">Hurdle Rate</label>
-                        <input type="number" id="hurdle_rt" name="hurdle_rt" value="0.10" step="0.01">
-                    </div>
-                </div>
-
-                <h3 style="margin: 15px 0 10px 0; color: #000000; font-size: 14px;">[ Logging Parameters - Optional ]</h3>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label for="log_account_id">Log Account ID</label>
-                        <input type="number" id="log_account_id" name="log_account_id" placeholder="Leave empty for none" min="0">
-                    </div>
-                    <div class="form-group">
-                        <label for="log_scenario">Log Scenario</label>
-                        <input type="number" id="log_scenario" name="log_scenario" placeholder="Leave empty for none" min="0">
-                    </div>
-                    <div class="form-group">
-                        <label for="log_max_years">Log Max Years</label>
-                        <input type="number" id="log_max_years" name="log_max_years" placeholder="Leave empty for none" min="0">
-                    </div>
-                    <div class="form-group">
-                        <label for="log_internal_scenario">Log Internal Scenario</label>
-                        <input type="number" id="log_internal_scenario" name="log_internal_scenario" placeholder="Leave empty for none" min="0">
-                    </div>
-                </div>
-
-                <h3 style="margin: 15px 0 10px 0; color: #000000; font-size: 14px;">[ Optional Custom Data Files ]</h3>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label for="population">Population File</label>
-                        <input type="file" id="population" name="population" accept=".csv">
-                    </div>
-                    <div class="form-group">
-                        <label for="rendement">Rendement File</label>
-                        <input type="file" id="rendement" name="rendement" accept=".csv">
-                    </div>
-                    <div class="form-group">
-                        <label for="tx_deces">Tx Deces File</label>
-                        <input type="file" id="tx_deces" name="tx_deces" accept=".csv">
-                    </div>
-                    <div class="form-group">
-                        <label for="tx_interet">Tx Interet File</label>
-                        <input type="file" id="tx_interet" name="tx_interet" accept=".csv">
-                    </div>
-                    <div class="form-group">
-                        <label for="tx_interet_int">Tx Interet Int File</label>
-                        <input type="file" id="tx_interet_int" name="tx_interet_int" accept=".csv">
-                    </div>
-                    <div class="form-group">
-                        <label for="tx_retrait">Tx Retrait File</label>
-                        <input type="file" id="tx_retrait" name="tx_retrait" accept=".csv">
-                    </div>
-                </div>
-
-                <button type="submit" id="submitBtn">Create Job</button>
-            </form>
-        </div>
-
-        <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                <h2 style="margin: 0;">[ Jobs List ]</h2>
-                <button onclick="refreshJobs()" class="btn-small">Refresh</button>
+    <!-- NEW: Token Input Modal -->
+    <div id="tokenModal" class="modal active">
+        <div class="modal-content" style="width: 450px;">
+            <div class="modal-header">
+                <h3>Enter API Token</h3>
             </div>
-            <div id="jobsList" class="jobs-list">
-                <div class="empty-state">Loading jobs...</div>
+            <div class="modal-body">
+                <form id="tokenForm">
+                    <p style="margin-bottom: 15px; font-size: 12px;">Please provide the API Authorization Token to continue.</p>
+                    <div class="form-group">
+                        <label for="apiTokenInput">API Token</label>
+                        <input type="password" id="apiTokenInput" required>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-actions">
+                <button onclick="saveTokenAndInit()">Save and Start</button>
             </div>
         </div>
     </div>
 
+
+    <!-- Main Application Container (Initially Hidden) -->
+    <main id="appContainer" style="display: none;">
+        <div class="container">
+            <div class="header">
+                <h1>*** ACFC Algorithm API Dashboard ***</h1>
+                <p style="color: #000000; margin-top: 5px;">
+                    API Status: <span id="apiStatus" class="status-badge">Checking...</span>
+                </p>
+            </div>
+
+            <div id="alertContainer"></div>
+
+            <div class="card">
+                <h2>[ Create New Job ]</h2>
+                <form id="jobForm">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="nb_accounts">Number of Accounts</label>
+                            <input type="number" id="nb_accounts" name="nb_accounts" value="4" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label for="nb_scenarios">Number of Scenarios</label>
+                            <input type="number" id="nb_scenarios" name="nb_scenarios" value="10" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label for="nb_years">Number of Years</label>
+                            <input type="number" id="nb_years" name="nb_years" value="10" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label for="nb_sc_int">Scenarios Internal</label>
+                            <input type="number" id="nb_sc_int" name="nb_sc_int" value="10" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label for="nb_an_projection_int">Projection Years Internal</label>
+                            <input type="number" id="nb_an_projection_int" name="nb_an_projection_int" value="10" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label for="choc_capital">Capital Shock</label>
+                            <input type="number" id="choc_capital" name="choc_capital" value="0.35" step="0.01">
+                        </div>
+                        <div class="form-group">
+                            <label for="hurdle_rt">Hurdle Rate</label>
+                            <input type="number" id="hurdle_rt" name="hurdle_rt" value="0.10" step="0.01">
+                        </div>
+                    </div>
+
+                    <h3 style="margin: 15px 0 10px 0; color: #000000; font-size: 14px;">[ Logging Parameters - Optional ]</h3>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="log_account_id">Log Account ID</label>
+                            <input type="number" id="log_account_id" name="log_account_id" placeholder="Leave empty for none" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="log_scenario">Log Scenario</label>
+                            <input type="number" id="log_scenario" name="log_scenario" placeholder="Leave empty for none" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="log_max_years">Log Max Years</label>
+                            <input type="number" id="log_max_years" name="log_max_years" placeholder="Leave empty for none" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="log_internal_scenario">Log Internal Scenario</label>
+                            <input type="number" id="log_internal_scenario" name="log_internal_scenario" placeholder="Leave empty for none" min="0">
+                        </div>
+                    </div>
+
+                    <h3 style="margin: 15px 0 10px 0; color: #000000; font-size: 14px;">[ Optional Custom Data Files ]</h3>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="population">Population File</label>
+                            <input type="file" id="population" name="population" accept=".csv">
+                        </div>
+                        <div class="form-group">
+                            <label for="rendement">Rendement File</label>
+                            <input type="file" id="rendement" name="rendement" accept=".csv">
+                        </div>
+                        <div class="form-group">
+                            <label for="tx_deces">Tx Deces File</label>
+                            <input type="file" id="tx_deces" name="tx_deces" accept=".csv">
+                        </div>
+                        <div class="form-group">
+                            <label for="tx_interet">Tx Interet File</label>
+                            <input type="file" id="tx_interet" name="tx_interet" accept=".csv">
+                        </div>
+                        <div class="form-group">
+                            <label for="tx_interet_int">Tx Interet Int File</label>
+                            <input type="file" id="tx_interet_int" name="tx_interet_int" accept=".csv">
+                        </div>
+                        <div class="form-group">
+                            <label for="tx_retrait">Tx Retrait File</label>
+                            <input type="file" id="tx_retrait" name="tx_retrait" accept=".csv">
+                        </div>
+                    </div>
+
+                    <button type="submit" id="submitBtn">Create Job</button>
+                </form>
+            </div>
+
+            <!-- NEW: JOB VISUALIZATION CARD WITH AXES -->
+            <div class="card">
+                <h2>[ Job Completion Times ]</h2>
+                <div class="chart-wrapper">
+                    <div class="y-axis">
+                        <span id="yAxisMaxLabel"></span>
+                        <span>0s</span>
+                    </div>
+                    <div class="chart-content">
+                        <div id="jobHistogram" class="histogram-container">
+                            <div class="empty-state">Loading visualization...</div>
+                        </div>
+                        <div class="x-axis">
+                            <span>Oldest Job</span>
+                            <span>Newest Job</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="histogramTooltip" class="histogram-tooltip"></div>
+
+
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h2 style="margin: 0;">[ Jobs List ]</h2>
+                    <button onclick="refreshJobs()" class="btn-small">Refresh</button>
+                </div>
+                <div id="jobsList" class="jobs-list">
+                    <div class="empty-state">Loading jobs...</div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Other Modals (Results, Files) -->
     <div id="resultsModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -520,7 +645,9 @@
     </div>
 
     <script>
+        // const API_BASE = 'https://12fkbziz4ylzxx-80.proxy.runpod.net';
         const API_BASE = 'https://dmbnzrujidzodv.api.runpod.ai';
+        let apiToken = null; // Use a variable for the token
 
         function showAlert(message, type = 'info') {
             const alertContainer = document.getElementById('alertContainer');
@@ -534,14 +661,45 @@
             }, 5000);
         }
 
+        // UPDATED: getHeaders now uses the apiToken variable
         function getHeaders() {
             const headers = {};
-
             if (apiToken) {
                 headers['Authorization'] = apiToken;
             }
             return headers;
         }
+
+        // NEW: Function to save the token and initialize the app
+        function saveTokenAndInit() {
+            const tokenInput = document.getElementById('apiTokenInput');
+            const token = tokenInput.value.trim();
+            if (token) {
+                apiToken = token;
+                localStorage.setItem('acfcApiToken', apiToken); // Save to local storage
+                initializeApp();
+            } else {
+                alert('Please enter a valid API Token.');
+            }
+        }
+
+        // NEW: Function to start the main application logic
+        function initializeApp() {
+            closeModal('tokenModal');
+            document.getElementById('appContainer').style.display = 'block';
+
+            // Now start the regular app functions
+            checkApiStatus();
+            refreshJobs();
+            setInterval(refreshJobs, 15000); // Start the refresh interval
+        }
+
+        // Allow submitting the token form with Enter key
+        document.getElementById('tokenForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            saveTokenAndInit();
+        });
+
 
         async function checkApiStatus() {
             try {
@@ -571,10 +729,7 @@
             submitBtn.disabled = true;
             submitBtn.textContent = 'Creating...';
 
-            // Create FormData with files and parameters
             const formData = new FormData(e.target);
-
-            // Remove empty file inputs
             const fileInputIds = ['population', 'rendement', 'tx_deces', 'tx_interet', 'tx_interet_int', 'tx_retrait'];
             fileInputIds.forEach(id => {
                 const fileInput = document.getElementById(id);
@@ -583,7 +738,6 @@
                 }
             });
 
-            // Remove empty optional parameters
             const optionalParams = ['log_account_id', 'log_scenario', 'log_max_years', 'log_internal_scenario'];
             optionalParams.forEach(param => {
                 const value = formData.get(param);
@@ -597,9 +751,7 @@
                     method: 'POST',
                     headers: getHeaders(),
                     body: formData
-                    // Don't set Content-Type header - browser will set it with boundary for multipart/form-data
                 });
-
                 const data = await response.json();
 
                 if (response.ok) {
@@ -651,13 +803,96 @@
                             </div>
                         </div>
                     `}).join('');
+
+                    renderJobHistogram(data.jobs);
+
                 } else {
                     jobsList.innerHTML = '<div class="empty-state">No jobs found. Create one to get started.</div>';
+                    renderJobHistogram([]); // Call with empty array to clear visualization
                 }
             } catch (error) {
                 const jobsList = document.getElementById('jobsList');
                 jobsList.innerHTML = '<div class="alert alert-error">Failed to load jobs. API might be offline.</div>';
+                renderJobHistogram([]); // Call with empty array to clear visualization
             }
+        }
+
+        function formatDuration(ms) {
+            if (ms < 0) return 'N/A';
+            if (ms < 1000) return `${ms} ms`;
+            const totalSeconds = ms / 1000;
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = (totalSeconds % 60).toFixed(2);
+            if (minutes > 0) {
+                return `${minutes}m ${seconds}s`;
+            }
+            return `${seconds}s`;
+        }
+
+        function renderJobHistogram(jobs) {
+            const container = document.getElementById('jobHistogram');
+            const tooltip = document.getElementById('histogramTooltip');
+            const yAxisMaxLabel = document.getElementById('yAxisMaxLabel');
+            const chartWrapper = document.querySelector('.chart-wrapper');
+
+
+            const completedJobs = jobs.filter(job =>
+                job.status === 'completed' && job.started_at && job.completed_at
+            );
+
+            if (completedJobs.length === 0) {
+                container.innerHTML = '<div class="empty-state">No completed jobs to visualize.</div>';
+                yAxisMaxLabel.textContent = '';
+                chartWrapper.style.visibility = 'hidden';
+                return;
+            }
+
+            chartWrapper.style.visibility = 'visible';
+            container.innerHTML = '';
+
+            const jobsWithDuration = completedJobs.map(job => {
+                const duration = new Date(job.completed_at).getTime() - new Date(job.started_at).getTime();
+                return { ...job, duration };
+            });
+
+            const maxDuration = Math.max(...jobsWithDuration.map(j => j.duration));
+            const containerHeight = 140; // Max height for a bar in pixels (leaving 10px headroom)
+
+            yAxisMaxLabel.textContent = formatDuration(maxDuration);
+
+            jobsWithDuration.forEach(job => {
+                const bar = document.createElement('div');
+                bar.className = 'histogram-bar';
+
+                const barHeight = maxDuration > 0 ? (job.duration / maxDuration) * containerHeight : 1;
+                bar.style.height = `${Math.max(barHeight, 2)}px`;
+
+                bar.dataset.duration = formatDuration(job.duration);
+                bar.dataset.params = JSON.stringify(job.parameters, null, 2);
+
+                bar.addEventListener('mousemove', (e) => {
+                    tooltip.style.display = 'block';
+                    tooltip.innerHTML = `<strong>Duration:</strong> ${bar.dataset.duration}<hr style="border:none; border-top: 1px solid #000; margin: 4px 0;"><strong>Parameters:</strong><pre>${bar.dataset.params}</pre>`;
+
+                    const tooltipRect = tooltip.getBoundingClientRect();
+                    let left = e.pageX + 15;
+                    let top = e.pageY + 15;
+                    if (left + tooltipRect.width > window.innerWidth) {
+                        left = e.pageX - tooltipRect.width - 15;
+                    }
+                    if (top + tooltipRect.height > window.innerHeight) {
+                        top = e.pageY - tooltipRect.height - 15;
+                    }
+                    tooltip.style.left = `${left}px`;
+                    tooltip.style.top = `${top}px`;
+                });
+
+                bar.addEventListener('mouseleave', () => {
+                    tooltip.style.display = 'none';
+                });
+
+                container.appendChild(bar);
+            });
         }
 
         async function viewJobDetails(jobId) {
@@ -850,10 +1085,16 @@
             }
         });
 
+        // UPDATED: window.onload now checks for a stored token
         window.onload = () => {
-            checkApiStatus();
-            refreshJobs();
-            setInterval(refreshJobs, 15000);
+            const storedToken = localStorage.getItem('acfcApiToken');
+            if (storedToken) {
+                apiToken = storedToken;
+                document.getElementById('apiTokenInput').value = apiToken;
+                initializeApp();
+            } else {
+                openModal('tokenModal');
+            }
         };
     </script>
 </body>
