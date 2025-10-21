@@ -17,11 +17,16 @@ from paths import HERE
 
 warnings.filterwarnings('ignore')
 
+# Initialize library availability flags
+HAS_XGB = False
+HAS_LGB = False
+HAS_CATBOOST = False
+HAS_TENSORFLOW = False
+
 try:
     import xgboost as xgb
     HAS_XGB = True
 except ImportError:
-    HAS_XGB = False
     print("XGBoost not installed, skipping...")
 
 try:
