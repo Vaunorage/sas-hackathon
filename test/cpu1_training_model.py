@@ -3,8 +3,6 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor, AdaBoostRegressor
 from sklearn.tree import DecisionTreeRegressor
-from sklearn.linear_model import Ridge, Lasso, ElasticNet
-from sklearn.neighbors import KNeighborsRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 import matplotlib.pyplot as plt
@@ -44,7 +42,7 @@ except ImportError:
     print("CatBoost not installed, skipping...")
 
 print("=" * 80)
-print("ACFC Reserve Prediction - Advanced Model Comparison")
+print("ACFC Reserve Prediction - Tree-Based & Neural Network Models")
 print("=" * 80)
 
 # Create output directory for results
@@ -128,9 +126,10 @@ X_test_scaled = pd.DataFrame(X_test_scaled, columns=feature_cols)
 
 print(f"✓ Features scaled using StandardScaler")
 
-# Define models
-print("[5/8] Defining models to test...")
+# Define models (Tree-based only)
+print("[5/8] Defining tree-based models to test...")
 models_config = {
+    # Tree-based ensemble models
     'Random Forest': RandomForestRegressor(
         n_estimators=200, max_depth=15, min_samples_split=5,
         min_samples_leaf=2, random_state=42, n_jobs=-1
@@ -142,11 +141,7 @@ models_config = {
     'Gradient Boosting': GradientBoostingRegressor(
         n_estimators=200, max_depth=5, learning_rate=0.1, random_state=42
     ),
-    'Ridge': Ridge(alpha=1.0, random_state=42),
-    'Lasso': Lasso(alpha=0.1, random_state=42, max_iter=5000),
-    'ElasticNet': ElasticNet(alpha=0.1, l1_ratio=0.5, random_state=42, max_iter=5000),
     'AdaBoost': AdaBoostRegressor(n_estimators=100, random_state=42),
-    'KNN': KNeighborsRegressor(n_neighbors=10, n_jobs=-1),
     'Decision Tree': DecisionTreeRegressor(max_depth=10, random_state=42)
 }
 
@@ -168,7 +163,7 @@ if HAS_CATBOOST:
         random_state=42, verbose=50  # Print every 50 iterations
     )
 
-print(f"✓ Configured {len(models_config)} different algorithms")
+print(f"✓ Configured {len(models_config)} tree-based algorithms")
 for name in models_config.keys():
     print(f"  • {name}")
 
@@ -653,9 +648,11 @@ print("✓ Training complete!")
 print("=" * 80)
 total_models = len(models_config) + (len(nn_configs) if HAS_TENSORFLOW else 0)
 print(f"\nTrained {total_models} models:")
-print(f"  • {len(models_config)} traditional ML algorithms")
+print(f"  • {len(models_config)} tree-based algorithms")
 if HAS_TENSORFLOW:
     print(f"  • {len(nn_configs)} neural network architectures")
+else:
+    print(f"  • 0 neural networks (TensorFlow not installed)")
 print(f"\nAll results saved in: {output_dir}")
 print(f"\nFiles created:")
 print(f"  • model_metrics_{timestamp}.csv - All model metrics")
