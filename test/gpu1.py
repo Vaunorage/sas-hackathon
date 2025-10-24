@@ -3,19 +3,16 @@ import math
 import warnings
 from pathlib import Path
 from typing import Dict
-
+from paths import HERE
 import numpy as np
 import pandas as pd
 from numba import cuda
 import numba
-from paths import HERE
 import threading
+import gc
 
 # --- Logger Setup ---
-# We initialize the logger here, but configure it in the __main__ block
-# so that other scripts importing this module can define their own logging configuration.
 logger = logging.getLogger(__name__)
-
 
 _thread_local = threading.local()
 
@@ -23,19 +20,14 @@ _thread_local = threading.local()
 def initialize_cuda_for_thread():
     """
     Initializes the CUDA context for the current thread.
-    This should be called once at the beginning of any thread that will perform CUDA work.
-    It's safe to call this multiple times in the same thread.
     """
-    # Check if this specific thread has already been initialized
     if getattr(_thread_local, 'cuda_initialized', False):
         return
 
     logger.info(f"Initializing CUDA context for thread: {threading.get_ident()}")
     if cuda.is_available():
         try:
-            # Force context creation on the current device for this thread
             cuda.select_device(0)
-            # A simple operation to confirm the context is active
             dummy = cuda.device_array(1)
             del dummy
             _thread_local.cuda_initialized = True
@@ -43,11 +35,11 @@ def initialize_cuda_for_thread():
         except Exception as e:
             logger.error(f"Failed to initialize CUDA context for thread {threading.get_ident()}: {e}", exc_info=True)
             _thread_local.cuda_initialized = False
-            # Re-raise the exception so the calling job knows it failed
             raise
     else:
         _thread_local.cuda_initialized = False
         raise RuntimeError("CUDA is not available on this system.")
+
 
 warnings.filterwarnings('ignore')
 
@@ -63,7 +55,6 @@ STATE_AGE = 7
 STATE_IS_TERMINATED = 8
 STATE_SIZE = 9
 
-# Constants for initial data indexing
 DATA_MT_VM = 0
 DATA_MT_GAR_DECES = 1
 DATA_AGE_DEB = 2
@@ -111,7 +102,6 @@ def load_input_data(data_path: Path, nb_accounts: int = None) -> Dict:
 
 def create_gpu_lookup_tables(data: Dict, max_age: int = 120, max_year: int = 50, max_scenarios: int = 1000) -> Dict:
     """Create GPU-friendly lookup tables as NumPy arrays"""
-    # This function is fast and has no prints, so no changes needed.
     mortality_array = np.zeros(max_age + 1, dtype=np.float64)
     for _, row in data['tx_deces'].iterrows():
         age = int(row['AGE'])
@@ -159,17 +149,13 @@ def create_gpu_lookup_tables(data: Dict, max_age: int = 120, max_year: int = 50,
 
 
 def prepare_gpu_data(data, nb_accounts, nb_scenarios):
-    """
-    Prepare data for GPU, with detailed DEBUG-level logging.
-    """
+    """Prepare data for GPU"""
     total_combinations = min(nb_accounts, len(data['population'])) * nb_scenarios
 
-    # Initialize arrays
     states = np.zeros((total_combinations, 9), dtype=np.float64)
     initial_data = np.zeros((min(nb_accounts, len(data['population'])), 11), dtype=np.float64)
     account_ids = np.zeros(min(nb_accounts, len(data['population'])), dtype=np.float64)
 
-    # Determine the maximum account ID first
     max_account_id = 0
     account_id_to_idx = {}
 
@@ -185,25 +171,9 @@ def prepare_gpu_data(data, nb_accounts, nb_scenarios):
 
         logger.debug(f"--- Account {account_id} (Index {account_idx}) ---")
         logger.debug(f"  MT_VM (Initial Fund Value):       {account_data['MT_VM']:,.2f}")
-        logger.debug(f"  MT_GAR_DECES (Death Benefit):     {account_data['MT_GAR_DECES']:,.2f}")
-        logger.debug(f"  AGE_DEB (Starting Age):           {int(account_data['age_deb'])}")
-        logger.debug(f"  TX_COMM_VENTE (Sales Commission): {account_data.get('TX_COMM_VENTE', 0.0):.4f}")
-        logger.debug(f"  FRAIS_ACQUI (Acquisition Fee):    {account_data['FRAIS_ACQUI']:.2f}")
-        logger.debug(f"  PC_REVENU_FDS (Fund Revenue):     {account_data['PC_REVENU_FDS']:.4f}")
-        logger.debug(f"  PC_HONORAIRES_GEST (Mgmt Fee):    {account_data['PC_HONORAIRES_GEST']:.4f}")
-        logger.debug(f"  TX_COMM_MAINTIEN (Ongoing Comm):  {account_data['TX_COMM_MAINTIEN']:.4f}")
-        logger.debug(f"  FRAIS_ADMIN (Admin Fee):          {account_data['FRAIS_ADMIN']:.2f}")
-        logger.debug(f"  FREQ_RESET_DECES (Reset Freq):    {account_data['FREQ_RESET_DECES']:.0f}")
-        logger.debug(f"  MAX_RESET_DECES (Max Reset Age):  {account_data['MAX_RESET_DECES']:.0f}")
 
-    logger.debug(f"Account ID range: 1 to {max_account_id}")
-    logger.debug(f"Number of accounts: {len(account_id_to_idx)}")
-    logger.debug(f"Account IDs: {sorted(account_id_to_idx.keys())}")
-
-    # Create mapping array with size based on max account ID
     account_mapping = np.full(max_account_id + 1, -1, dtype=np.int32)
 
-    # Populate data arrays
     combination_idx = 0
     for account_idx in range(min(nb_accounts, len(data['population']))):
         account_data = data['population'].iloc[account_idx]
@@ -211,7 +181,6 @@ def prepare_gpu_data(data, nb_accounts, nb_scenarios):
         account_ids[account_idx] = float(account_id)
         account_mapping[account_id] = account_idx
 
-        # Store initial data
         initial_data[account_idx, 0] = float(account_data['MT_VM'])
         initial_data[account_idx, 1] = float(account_data['MT_GAR_DECES'])
         initial_data[account_idx, 2] = int(account_data['age_deb'])
@@ -224,7 +193,6 @@ def prepare_gpu_data(data, nb_accounts, nb_scenarios):
         initial_data[account_idx, 9] = float(account_data['FREQ_RESET_DECES'])
         initial_data[account_idx, 10] = float(account_data['MAX_RESET_DECES'])
 
-        # Initialize states for all scenarios
         for scenario in range(1, nb_scenarios + 1):
             states[combination_idx, 0] = float(account_id)
             states[combination_idx, 1] = float(scenario)
@@ -238,12 +206,6 @@ def prepare_gpu_data(data, nb_accounts, nb_scenarios):
             combination_idx += 1
 
     logger.debug("=" * 80)
-    logger.debug("Account mapping verification:")
-    for account_id, expected_idx in account_id_to_idx.items():
-        actual_idx = account_mapping[account_id]
-        status = "✓ OK" if actual_idx == expected_idx else "✗ ERROR"
-        logger.debug(f"  Account {account_id} -> Index {actual_idx} {status}")
-
     return states, initial_data, account_ids, account_mapping
 
 
@@ -252,8 +214,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
                                   lookups_discount_ext, lookups_discount_int, lookups_returns_ext,
                                   lookups_returns_int, results, year, projection_type, fund_shock, start_year,
                                   max_years):
-    """GPU kernel for year transition calculations - NOW STORES RENDEMENT"""
-    # Kernels cannot log, so this remains unchanged.
+    """GPU kernel for year transition calculations"""
     combination_idx = cuda.grid(1)
     if combination_idx >= states.shape[0]:
         return
@@ -268,14 +229,13 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
 
     scenario = int(states[combination_idx, STATE_SCENARIO])
 
-    # Handle year 0 special cases
     if year == 0:
         if projection_type == 0:  # EXTERNE
             MT_VM_PROJ = initial_data[account_idx, DATA_MT_VM]
             MT_GAR_DECES_PROJ = initial_data[account_idx, DATA_MT_GAR_DECES]
             TX_SURVIE = 1.0
             AGE = initial_data[account_idx, DATA_AGE_DEB]
-            RENDEMENT = 0.0  # No return at year 0
+            RENDEMENT = 0.0
 
             COMMISSIONS = -initial_data[account_idx, DATA_TX_COMM_VENTE] * MT_VM_PROJ
             FRAIS_GEN = -initial_data[account_idx, DATA_FRAIS_ACQUI]
@@ -290,7 +250,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             MT_GAR_DECES_PROJ = initial_data[account_idx, DATA_MT_GAR_DECES]
             TX_SURVIE = 1.0
             AGE = initial_data[account_idx, DATA_AGE_DEB] + start_year
-            RENDEMENT = 0.0  # No return at year 0
+            RENDEMENT = 0.0
 
             FLUX_NET = 0.0
             VP_FLUX_NET = 0.0
@@ -312,7 +272,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             results[result_idx, 6] = TX_SURVIE
             results[result_idx, 7] = FLUX_NET
             results[result_idx, 8] = VP_FLUX_NET
-            results[result_idx, 9] = RENDEMENT  # Store RENDEMENT
+            results[result_idx, 9] = RENDEMENT
         return
 
     current_survie = states[combination_idx, STATE_TX_SURVIE]
@@ -332,7 +292,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
             results[result_idx, 6] = 0.0
             results[result_idx, 7] = 0.0
             results[result_idx, 8] = 0.0
-            results[result_idx, 9] = 0.0  # RENDEMENT = 0
+            results[result_idx, 9] = 0.0
         return
 
     if projection_type == 1:  # INTERNE
@@ -359,7 +319,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
                 an_proj >= 0 and an_proj < lookups_returns_int.shape[0]):
             RENDEMENT_rate = lookups_returns_int[an_proj, scenario]
 
-    RENDEMENT = MT_VM_DEB * RENDEMENT_rate  # Calculate actual RENDEMENT amount
+    RENDEMENT = MT_VM_DEB * RENDEMENT_rate
     FRAIS = -(MT_VM_DEB + RENDEMENT / 2) * initial_data[account_idx, DATA_PC_REVENU_FDS]
     new_MT_VM_PROJ = max(0.0, states[combination_idx, STATE_MT_VM_PROJ] + RENDEMENT + FRAIS)
 
@@ -418,7 +378,7 @@ def gpu_calculate_year_transition(states, initial_data, lookups_mortality, looku
         results[result_idx, 6] = new_TX_SURVIE
         results[result_idx, 7] = FLUX_NET
         results[result_idx, 8] = VP_FLUX_NET
-        results[result_idx, 9] = RENDEMENT  # Store RENDEMENT
+        results[result_idx, 9] = RENDEMENT
 
 
 def _log_external_year_details(external_results, year, account_id=None, scenario=None):
@@ -452,14 +412,13 @@ def _log_external_year_details(external_results, year, account_id=None, scenario
 
 def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_type: str,
                        fund_shock: float = 0.0, start_year: int = 0) -> np.ndarray:
-    """Run projection on GPU with INFO for progress and DEBUG for details"""
+    """Run projection on GPU"""
     proj_type_num = 0 if projection_type == "EXTERNE" else 1
     max_results = states.shape[0] * (nb_years + 1)
     results = np.zeros((max_results, 10), dtype=np.float64)
 
     logger.info(f"Running {projection_type} projection...")
     logger.debug(f"States shape: {states.shape}, Max results: {max_results}")
-    logger.debug(f"Fund shock: {fund_shock}, Start year: {start_year}")
 
     d_states = cuda.to_device(states)
     d_initial_data = cuda.to_device(initial_data)
@@ -475,8 +434,6 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
     threads_per_block = 256
     blocks_per_grid = (states.shape[0] + threads_per_block - 1) // threads_per_block
 
-    logger.debug(f"GPU grid: {blocks_per_grid} blocks, {threads_per_block} threads per block")
-
     for year in range(nb_years + 1):
         logger.debug(f"Processing {projection_type} year {year}...")
 
@@ -487,7 +444,6 @@ def run_gpu_projection(states, initial_data, lookups, nb_years: int, projection_
         )
         cuda.synchronize()
 
-        # Log first few years in detail if debug is enabled
         if logger.isEnabledFor(logging.DEBUG) and year <= 2:
             temp_results = d_results.copy_to_host()
             _log_external_year_details(temp_results, year)
@@ -504,8 +460,7 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
                                      lookups_returns_ext, lookups_returns_int, internal_results,
                                      nb_sc_int, nb_an_projection_int, fund_shock, account_mapping,
                                      detailed_internal_results, log_internal_scenario_id):
-    """GPU kernel for internal scenario calculations with optional detailed logging for a specific internal scenario"""
-    # Kernels cannot log, so this remains unchanged.
+    """GPU kernel for internal scenario calculations"""
     external_idx = cuda.grid(1)
     if external_idx >= external_results.shape[0]:
         return
@@ -622,13 +577,12 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
                     if TX_ACTU_INT > 1e-15:
                         VP_FLUX_NET = VP_FLUX_NET / TX_ACTU_INT
 
-            # Store detailed internal scenario results if this is the logged scenario
             if log_internal_scenario_id > 0 and internal_scenario == log_internal_scenario_id:
                 detail_idx = external_idx * nb_an_projection_int + (internal_year - 1)
                 if detail_idx < detailed_internal_results.shape[0]:
                     detailed_internal_results[detail_idx, 0] = account_id
-                    detailed_internal_results[detail_idx, 1] = external_results[external_idx, 1]  # external scenario
-                    detailed_internal_results[detail_idx, 2] = year  # external year
+                    detailed_internal_results[detail_idx, 1] = external_results[external_idx, 1]
+                    detailed_internal_results[detail_idx, 2] = year
                     detailed_internal_results[detail_idx, 3] = internal_scenario
                     detailed_internal_results[detail_idx, 4] = internal_year
                     detailed_internal_results[detail_idx, 5] = current_age
@@ -663,12 +617,7 @@ def gpu_acfc_algorithm_complete(data_path: Path = None, nb_accounts: int = 4, nb
                                 tx_interet: pd.DataFrame = None,
                                 tx_interet_int: pd.DataFrame = None,
                                 tx_retrait: pd.DataFrame = None) -> pd.DataFrame:
-    """
-    Complete GPU-Accelerated ACFC Algorithm with structured logging.
-
-    Args:
-        (Same as before, but 'verbose' is removed)
-    """
+    """Complete GPU-Accelerated ACFC Algorithm with batching and memory optimization"""
     log_params = [log_account_id, log_scenario, log_max_years]
     num_specified = sum(p is not None for p in log_params)
 
@@ -736,56 +685,151 @@ def gpu_acfc_algorithm_complete(data_path: Path = None, nb_accounts: int = 4, nb
         logger.error("No valid external results found! Cannot continue.")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    logger.info("--- Phase 5: Running GPU internal calculations ---")
+    # OPTION 3: Explicitly free Phase 4 GPU memory before Phase 5
+    logger.info("--- Cleanup: Freeing Phase 4 GPU memory ---")
+    gc.collect()
+    cuda.current_context().deallocations.clear()
+    logger.info("✓ Phase 4 GPU memory freed")
+
+    logger.info("--- Phase 5: Running GPU internal calculations (BATCHED) ---")
+
+    # OPTION 2: Batch processing by external scenario
+    unique_scenarios = sorted(np.unique(valid_external_results[:, 1]).astype(int))
+
+    # Calculate optimal batch size to stay under GPU memory limit
+    # Target: ~4 GB per batch for detailed results
+    # Each data point needs: nb_an_projection_int × 12 × 8 bytes
+    bytes_per_datapoint = nb_an_projection_int * 12 * 8
+    target_batch_bytes = 4 * 1024 * 1024 * 1024  # 4 GB
+    avg_datapoints_per_scenario = len(valid_external_results) / len(unique_scenarios)
+    max_scenarios_per_batch = int(target_batch_bytes / (avg_datapoints_per_scenario * bytes_per_datapoint))
+    batch_size = max(10, min(max_scenarios_per_batch, 100))  # Between 10 and 100
+
+    num_batches = (len(unique_scenarios) + batch_size - 1) // batch_size
+
+    logger.info(f"Processing {len(unique_scenarios)} external scenarios in {num_batches} batches of ~{batch_size}")
+    logger.info(
+        f"Estimated memory per batch: {(avg_datapoints_per_scenario * batch_size * bytes_per_datapoint / 1e9):.2f} GB")
+
+    # Initialize full result arrays (CPU only)
     reserve_results = np.zeros(len(valid_external_results), dtype=np.float64)
     capital_results = np.zeros(len(valid_external_results), dtype=np.float64)
-    detailed_internal_results = np.zeros((len(valid_external_results) * nb_an_projection_int, 12), dtype=np.float64)
+    all_internal_scenario_results = []
 
-    d_external_results = cuda.to_device(valid_external_results)
-    d_initial_data = cuda.to_device(initial_data)
-    d_reserve_results = cuda.to_device(reserve_results)
-    d_capital_results = cuda.to_device(capital_results)
-    d_account_mapping = cuda.to_device(account_mapping)
-    d_detailed_internal_results = cuda.to_device(detailed_internal_results)
+    # Pre-upload lookup tables once (they're reused across batches)
     d_mortality = cuda.to_device(lookups['mortality'])
     d_lapse = cuda.to_device(lookups['lapse'])
     d_discount_ext = cuda.to_device(lookups['discount_ext'])
     d_discount_int = cuda.to_device(lookups['discount_int'])
     d_returns_ext = cuda.to_device(lookups['returns_ext'])
     d_returns_int = cuda.to_device(lookups['returns_int'])
+    d_initial_data = cuda.to_device(initial_data)
+    d_account_mapping = cuda.to_device(account_mapping)
 
-    threads_per_block = 256
-    blocks_per_grid = (len(valid_external_results) + threads_per_block - 1) // threads_per_block
     log_int_scn = log_internal_scenario if log_internal_scenario is not None else 0
 
-    logger.info("Calculating reserves (no shock)...")
-    gpu_calculate_internal_scenarios[blocks_per_grid, threads_per_block](
-        d_external_results, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
-        d_returns_ext, d_returns_int, d_reserve_results, nb_sc_int, nb_an_projection_int,
-        0.0, d_account_mapping, d_detailed_internal_results, log_int_scn)
-    cuda.synchronize()
+    # Process each batch
+    for batch_idx in range(num_batches):
+        start_scenario = batch_idx * batch_size
+        end_scenario = min(start_scenario + batch_size, len(unique_scenarios))
+        batch_scenarios = unique_scenarios[start_scenario:end_scenario]
 
-    logger.info(f"Calculating capital (with {choc_capital} shock)...")
-    gpu_calculate_internal_scenarios[blocks_per_grid, threads_per_block](
-        d_external_results, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
-        d_returns_ext, d_returns_int, d_capital_results, nb_sc_int, nb_an_projection_int,
-        choc_capital, d_account_mapping, d_detailed_internal_results, 0)
-    cuda.synchronize()
+        logger.info(
+            f"Processing batch {batch_idx + 1}/{num_batches}: Scenarios {batch_scenarios[0]}-{batch_scenarios[-1]}")
 
-    reserve_results = d_reserve_results.copy_to_host()
-    capital_results = d_capital_results.copy_to_host()
-    detailed_internal_results = d_detailed_internal_results.copy_to_host()
+        # Filter external results for this batch
+        batch_mask = np.isin(valid_external_results[:, 1], batch_scenarios)
+        batch_external_results = valid_external_results[batch_mask]
+        batch_indices = np.where(batch_mask)[0]
+
+        logger.info(f"  Batch contains {len(batch_external_results)} data points")
+
+        # Allocate batch-specific arrays
+        batch_reserve_results = np.zeros(len(batch_external_results), dtype=np.float64)
+        batch_capital_results = np.zeros(len(batch_external_results), dtype=np.float64)
+
+        # Only allocate detailed internal results if logging is enabled AND this is the first batch
+        if log_int_scn > 0 and batch_idx == 0:
+            batch_detailed_internal = np.zeros((len(batch_external_results) * nb_an_projection_int, 12),
+                                               dtype=np.float64)
+            logger.info(
+                f"  Allocated {batch_detailed_internal.nbytes / 1e9:.2f} GB for batch detailed results (logging enabled)")
+        else:
+            # Use a minimal dummy array (1 element) to avoid kernel issues
+            batch_detailed_internal = np.zeros((1, 12), dtype=np.float64)
+            logger.info(f"  Skipping detailed results allocation (not needed for this batch)")
+
+        logger.info(
+            f"  Total batch memory: ~{(batch_reserve_results.nbytes + batch_capital_results.nbytes + batch_detailed_internal.nbytes) / 1e9:.2f} GB")
+
+        # Upload batch data to GPU
+        d_batch_external = cuda.to_device(batch_external_results)
+        d_batch_reserve = cuda.to_device(batch_reserve_results)
+        d_batch_capital = cuda.to_device(batch_capital_results)
+        d_batch_detailed = cuda.to_device(batch_detailed_internal)
+
+        threads_per_block = 256
+        blocks_per_grid = (len(batch_external_results) + threads_per_block - 1) // threads_per_block
+
+        # Calculate reserves (no shock)
+        logger.info(f"  Calculating reserves for batch {batch_idx + 1}...")
+        gpu_calculate_internal_scenarios[blocks_per_grid, threads_per_block](
+            d_batch_external, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
+            d_returns_ext, d_returns_int, d_batch_reserve, nb_sc_int, nb_an_projection_int,
+            0.0, d_account_mapping, d_batch_detailed, log_int_scn if batch_idx == 0 else 0)
+        cuda.synchronize()
+
+        # Calculate capital (with shock)
+        logger.info(f"  Calculating capital for batch {batch_idx + 1}...")
+        gpu_calculate_internal_scenarios[blocks_per_grid, threads_per_block](
+            d_batch_external, d_initial_data, d_mortality, d_lapse, d_discount_ext, d_discount_int,
+            d_returns_ext, d_returns_int, d_batch_capital, nb_sc_int, nb_an_projection_int,
+            choc_capital, d_account_mapping, d_batch_detailed, 0)
+        cuda.synchronize()
+
+        # Copy results back to CPU
+        batch_reserve_results = d_batch_reserve.copy_to_host()
+        batch_capital_results = d_batch_capital.copy_to_host()
+        batch_detailed_internal = d_batch_detailed.copy_to_host()
+
+        # Store results in full arrays
+        reserve_results[batch_indices] = batch_reserve_results
+        capital_results[batch_indices] = batch_capital_results
+
+        # Process internal scenario results (only for first batch if logging enabled)
+        if log_int_scn > 0 and batch_idx == 0:
+            valid_internal_mask = batch_detailed_internal[:, 0] != 0
+            valid_internal_results = batch_detailed_internal[valid_internal_mask]
+            if len(valid_internal_results) > 0:
+                all_internal_scenario_results.append(valid_internal_results)
+
+        # Free batch GPU memory before next iteration
+        del d_batch_external, d_batch_reserve, d_batch_capital, d_batch_detailed
+        del batch_reserve_results, batch_capital_results, batch_detailed_internal
+        gc.collect()
+
+        logger.info(f"  ✓ Batch {batch_idx + 1} complete, GPU memory freed")
+
+    # Free lookup tables from GPU
+    del d_mortality, d_lapse, d_discount_ext, d_discount_int, d_returns_ext, d_returns_int
+    del d_initial_data, d_account_mapping
+    gc.collect()
+
+    logger.info("✓ All batches processed, final GPU cleanup complete")
+
+    # Combine internal scenario results
     internal_df = pd.DataFrame()
-    if log_internal_scenario is not None:
-        valid_internal_mask = detailed_internal_results[:, 0] != 0
-        valid_internal_results = detailed_internal_results[valid_internal_mask]
-        if len(valid_internal_results) > 0:
-            internal_df = pd.DataFrame(valid_internal_results, columns=['ID_COMPTE', 'scn_eval_ext', 'an_proj_ext', 'scn_int', 'an_proj_int', 'AGE', 'MT_VM_PROJ', 'MT_GAR_DECES_PROJ', 'TX_SURVIE', 'RENDEMENT', 'FLUX_NET', 'VP_FLUX_NET'])
-            if log_account_id is not None: internal_df = internal_df[internal_df['ID_COMPTE'] == log_account_id]
-            if log_scenario is not None: internal_df = internal_df[internal_df['scn_eval_ext'] == log_scenario]
-            if log_max_years is not None: internal_df = internal_df[internal_df['an_proj_ext'] < log_max_years]
-            logger.info(f"Generated {len(internal_df)} rows of detailed internal scenario results.")
-            logger.debug(f"Sample internal scenario projections:\n{internal_df.head(10)}")
+    if log_internal_scenario is not None and len(all_internal_scenario_results) > 0:
+        combined_internal = np.vstack(all_internal_scenario_results)
+        internal_df = pd.DataFrame(combined_internal,
+                                   columns=['ID_COMPTE', 'scn_eval_ext', 'an_proj_ext', 'scn_int', 'an_proj_int', 'AGE',
+                                            'MT_VM_PROJ', 'MT_GAR_DECES_PROJ', 'TX_SURVIE', 'RENDEMENT', 'FLUX_NET',
+                                            'VP_FLUX_NET'])
+        if log_account_id is not None: internal_df = internal_df[internal_df['ID_COMPTE'] == log_account_id]
+        if log_scenario is not None: internal_df = internal_df[internal_df['scn_eval_ext'] == log_scenario]
+        if log_max_years is not None: internal_df = internal_df[internal_df['an_proj_ext'] < log_max_years]
+        logger.info(f"Generated {len(internal_df)} rows of detailed internal scenario results.")
+        logger.debug(f"Sample internal scenario projections:\n{internal_df.head(10)}")
 
     logger.info("--- Phase 6: Calculating distributable flows ---")
     final_results, detailed_results = [], []
@@ -796,14 +840,16 @@ def gpu_acfc_algorithm_complete(data_path: Path = None, nb_accounts: int = 4, nb
 
     for i, row in enumerate(valid_external_results):
         key = f"{int(row[0])}_{int(row[1])}"
-        grouped_external[key].append({'year': int(row[2]), 'TX_SURVIE': row[6], 'RENDEMENT': row[9], 'FLUX_NET': row[7], 'VP_FLUX_NET': row[8]})
+        grouped_external[key].append(
+            {'year': int(row[2]), 'TX_SURVIE': row[6], 'RENDEMENT': row[9], 'FLUX_NET': row[7], 'VP_FLUX_NET': row[8]})
         grouped_reserves[key].append((int(row[2]), reserve_results[i]))
         grouped_capital[key].append((int(row[2]), capital_results[i] - reserve_results[i]))
 
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug("--- DISTRIBUTABLE FLOWS CALCULATION (DETAIL) ---")
         if log_account_id is not None:
-            logger.debug(f"Detailed logging filters: Account={log_account_id}, Scenario={log_scenario}, MaxYears={log_max_years}")
+            logger.debug(
+                f"Detailed logging filters: Account={log_account_id}, Scenario={log_scenario}, MaxYears={log_max_years}")
 
     for key in grouped_external:
         account_id, scenario = map(int, key.split('_'))
@@ -811,36 +857,47 @@ def gpu_acfc_algorithm_complete(data_path: Path = None, nb_accounts: int = 4, nb
         reserve_data = dict(sorted(grouped_reserves[key], key=lambda x: x[0]))
         capital_data = dict(sorted(grouped_capital[key], key=lambda x: x[0]))
 
-        # Build log table for debug
         log_table = []
         if logger.isEnabledFor(logging.DEBUG) and scenario == 1:
             log_table.append(f"\nAccount {account_id}, External Scenario {scenario}:")
-            log_table.append(f"  {'Year':<6} {'TX_SURVIE':<12} {'Rendement':<15} {'Ext CF':<12} {'Reserve':<12} {'Capital':<12} {'Profit':<12} {'Distrib':<12} {'PV Distrib':<12}")
-            log_table.append(f"  {'-' * 6} {'-' * 12} {'-' * 15} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12}")
+            log_table.append(
+                f"  {'Year':<6} {'TX_SURVIE':<12} {'Rendement':<15} {'Ext CF':<12} {'Reserve':<12} {'Capital':<12} {'Profit':<12} {'Distrib':<12} {'PV Distrib':<12}")
+            log_table.append(
+                f"  {'-' * 6} {'-' * 12} {'-' * 15} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 12}")
 
-        distributable_pvs, prev_reserve, prev_capital = [], 0.0, 0.0
+        distributable_pvs, prev_capital = [], 0.0
+        cumulative_external_cf = 0.0  # Track cumulative external cash flows
         for ext_data in external_data:
-            year, tx_survie, rendement, external_cf = ext_data['year'], ext_data['TX_SURVIE'], ext_data['RENDEMENT'], ext_data['FLUX_NET']
+            year, tx_survie, rendement, external_cf = ext_data['year'], ext_data['TX_SURVIE'], ext_data['RENDEMENT'], \
+            ext_data['FLUX_NET']
             current_reserve, current_capital = reserve_data.get(year, 0.0), capital_data.get(year, 0.0)
-            profit = external_cf + (current_reserve - prev_reserve) if year > 0 else external_cf + current_reserve
+            cumulative_external_cf += external_cf  # Accumulate external cash flows
+            profit = cumulative_external_cf + current_reserve  # Profit = cumulative CF + current reserve
             distributable = profit + (current_capital - prev_capital) if year > 0 else profit + current_capital
             pv_distributable = distributable / ((1 + hurdle_rt) ** year) if year > 0 else distributable
             distributable_pvs.append(pv_distributable)
 
             if log_account_id is not None and account_id == log_account_id and scenario == log_scenario and year < log_max_years:
-                detailed_results.append({'ID_COMPTE': account_id, 'scn_eval': scenario, 'an_proj': year, 'TX_SURVIE': tx_survie, 'RENDEMENT': rendement, 'FLUX_NET_EXT': external_cf, 'RESERVE': current_reserve, 'CAPITAL_REQUIREMENT': current_capital, 'PROFIT': profit, 'FLUX_DISTRIBUABLE': distributable, 'VP_FLUX_DISTRIBUABLE_YEARLY': pv_distributable})
+                detailed_results.append(
+                    {'ID_COMPTE': account_id, 'scn_eval': scenario, 'an_proj': year, 'TX_SURVIE': tx_survie,
+                     'RENDEMENT': rendement, 'FLUX_NET_EXT': external_cf, 'RESERVE': current_reserve,
+                     'CAPITAL_REQUIREMENT': current_capital, 'PROFIT': profit, 'FLUX_DISTRIBUABLE': distributable,
+                     'VP_FLUX_DISTRIBUABLE_YEARLY': pv_distributable})
 
             if logger.isEnabledFor(logging.DEBUG) and scenario == 1:
-                log_table.append(f"  {year:<6} {tx_survie:>12.6f} {rendement:>15,.2f} {external_cf:>12,.2f} {current_reserve:>12,.2f} {current_capital:>12,.2f} {profit:>12,.2f} {distributable:>12,.2f} {pv_distributable:>12,.2f}")
+                log_table.append(
+                    f"  {year:<6} {tx_survie:>12.6f} {rendement:>15,.2f} {external_cf:>12,.2f} {current_reserve:>12,.2f} {current_capital:>12,.2f} {profit:>12,.2f} {distributable:>12,.2f} {pv_distributable:>12,.2f}")
 
-            prev_reserve, prev_capital = current_reserve, current_capital
+            prev_capital = current_capital
 
         total_pv_distributable = sum(distributable_pvs)
         if logger.isEnabledFor(logging.DEBUG) and scenario == 1:
-            log_table.append(f"  {'TOTAL':<6} {'':<12} {'':<15} {'':<12} {'':<12} {'':<12} {'':<12} {'':<12} {total_pv_distributable:>12,.2f}")
+            log_table.append(
+                f"  {'TOTAL':<6} {'':<12} {'':<15} {'':<12} {'':<12} {'':<12} {'':<12} {'':<12} {total_pv_distributable:>12,.2f}")
             logger.debug("\n".join(log_table))
 
-        final_results.append({'ID_COMPTE': account_id, 'scn_eval': scenario, 'VP_FLUX_DISTRIBUABLES': total_pv_distributable})
+        final_results.append(
+            {'ID_COMPTE': account_id, 'scn_eval': scenario, 'VP_FLUX_DISTRIBUABLES': total_pv_distributable})
 
     logger.info("--- Phase 7: Finalizing results ---")
     output_df = pd.DataFrame(final_results)
@@ -855,7 +912,8 @@ def gpu_acfc_algorithm_complete(data_path: Path = None, nb_accounts: int = 4, nb
                 f"Max: {output_df['VP_FLUX_DISTRIBUABLES'].max():,.2f})")
     for account_id in sorted(output_df['ID_COMPTE'].unique()):
         account_data = output_df[output_df['ID_COMPTE'] == account_id]
-        logger.info(f"  Account {account_id}: Mean = {account_data['VP_FLUX_DISTRIBUABLES'].mean():,.2f}, Scenarios = {len(account_data)}")
+        logger.info(
+            f"  Account {account_id}: Mean = {account_data['VP_FLUX_DISTRIBUABLES'].mean():,.2f}, Scenarios = {len(account_data)}")
 
     logger.info("=" * 80)
     logger.info("DETAILED RESULTS")
@@ -867,7 +925,7 @@ def gpu_acfc_algorithm_complete(data_path: Path = None, nb_accounts: int = 4, nb
 
 
 def check_cuda_environment():
-    """Comprehensive CUDA environment check using logging."""
+    """Comprehensive CUDA environment check"""
     logger.info("=" * 80)
     logger.info("CUDA ENVIRONMENT DIAGNOSTICS")
     logger.info("=" * 80)
@@ -890,9 +948,6 @@ def check_cuda_environment():
 
 
 if __name__ == "__main__":
-    # --- Main Execution Block ---
-
-    # Configure the root logger
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -902,7 +957,6 @@ if __name__ == "__main__":
     check_cuda_environment()
 
     try:
-        # Manually initialize for the main thread when running as a script
         initialize_cuda_for_thread()
     except Exception as e:
         logger.critical(f"CUDA initialization failed. Exiting. Error: {e}")
@@ -912,27 +966,28 @@ if __name__ == "__main__":
 
     results, detailed_results, internal_scenario_results = gpu_acfc_algorithm_complete(
         data_path=data_path,
-        nb_accounts=1,
-        nb_scenarios=2,
+        nb_accounts=10,
+        nb_scenarios=10,
         nb_years=100,
-        nb_sc_int=2,
+        nb_sc_int=100,
         nb_an_projection_int=100,
         choc_capital=0.35,
         hurdle_rt=0.10,
-        log_account_id=1,
-        log_scenario=1,
+        log_account_id=3,
+        log_scenario=2,
         log_max_years=10,
         log_internal_scenario=1
     )
 
     logger.info(f"Final Summary Results:\n{results}")
-    results.to_csv('test/gpu_results_complete.csv', index=False)
+    results.to_csv('gpu_results_complete.csv', index=False)
 
     logger.info("Saving detailed year-by-year results...")
-    detailed_results.to_csv('test/gpu_results_detailed.csv', index=False)
-    logger.info(f"✓ Detailed results saved to 'test/gpu_results_detailed.csv' ({len(detailed_results)} rows)")
+    detailed_results.to_csv('gpu_results_detailed.csv', index=False)
+    logger.info(f"✓ Detailed results saved to 'gpu_results_detailed.csv' ({len(detailed_results)} rows)")
 
     if len(internal_scenario_results) > 0:
         logger.info("Saving internal scenario detailed results...")
-        internal_scenario_results.to_csv('test/gpu_results_internal_scenario.csv', index=False)
-        logger.info(f"✓ Internal scenario results saved to 'test/gpu_results_internal_scenario.csv' ({len(internal_scenario_results)} rows)")
+        internal_scenario_results.to_csv('gpu_results_internal_scenario.csv', index=False)
+        logger.info(
+            f"✓ Internal scenario results saved to 'gpu_results_internal_scenario.csv' ({len(internal_scenario_results)} rows)")
