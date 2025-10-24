@@ -466,8 +466,8 @@ def gpu_calculate_internal_scenarios(external_results, initial_data, lookups_mor
         return
 
     year = int(external_results[external_idx, 2])
-    if year == 0 or external_results[external_idx, 0] == 0:
-        return
+    # if year == 0 or external_results[external_idx, 0] == 0:
+    #     return
 
     account_id = int(external_results[external_idx, 0])
     fund_value = external_results[external_idx, 4]
