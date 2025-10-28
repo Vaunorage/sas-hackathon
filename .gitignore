@@ -8,3 +8,5 @@ __pycache__/
 *.pyo
 .python-version
 .env
+
+algo2/data_in/*
