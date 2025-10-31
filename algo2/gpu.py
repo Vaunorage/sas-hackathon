@@ -387,6 +387,9 @@ def create_account_params(population: pd.DataFrame) -> Dict[str, cp.ndarray]:
     params = {}
     n_accounts = len(population)
 
+    # ID for output dataframe matching
+    params['ID_COMPTE_FOR_OUTPUT'] = population['ID_COMPTE'].values
+
     # Demographics
     params['AGE'] = cp.asarray(population['AGE'].values.astype(np.int32))
     params['I_SEXE'] = cp.asarray(population['I_SEXE'].values.astype(np.int32))
@@ -405,7 +408,7 @@ def create_account_params(population: pd.DataFrame) -> Dict[str, cp.ndarray]:
     params['ID_ACQUI'] = cp.asarray(
         population.get('ID_ACQUI', pd.Series([1] * n_accounts)).values.astype(np.int32))
 
-    # Rates and percentages - FIX: Use correct column names
+    # Rates and percentages
     params['PC_HONORAIRES_GEST'] = cp.asarray(population['PC_HONORAIRES_GEST'].values.astype(np.float32))
     params['PC_FRAIS_GARANTIE'] = cp.asarray(population['PC_FRAIS_GARANTIE'].values.astype(np.float32))
     params['PC_GAR_DECES_1'] = cp.asarray(population['PC_GAR_DECES_1'].values.astype(np.float32))
@@ -506,73 +509,31 @@ def create_account_params(population: pd.DataFrame) -> Dict[str, cp.ndarray]:
 
 def calculate_age_gpu(params, annee_reelle, mois_eval, n_scenarios):
     """Calculate age for all accounts (vectorized)."""
-    # Ensure annee_reelle is 1D
-    if annee_reelle.ndim > 1:
-        annee_reelle = annee_reelle.ravel()
-
-    n_accounts = len(annee_reelle)
-
-    # Ensure params are 1D
-    annee_nais = params['ANNEE_NAIS']
-    if annee_nais.ndim > 1:
-        annee_nais = annee_nais.ravel()
-
-    mois_nais = params['MOIS_NAIS']
-    if mois_nais.ndim > 1:
-        mois_nais = mois_nais.ravel()
+    n_accounts = params['ANNEE_NAIS'].shape[0]
 
     # Calculate (n_accounts, 1)
-    age = annee_reelle[:, cp.newaxis] - annee_nais[:, cp.newaxis]
-    age = cp.where(mois_eval < mois_nais[:, cp.newaxis], age - 1, age)
+    age = annee_reelle[:, cp.newaxis] - params['ANNEE_NAIS'][:, cp.newaxis]
+    age = cp.where(mois_eval < params['MOIS_NAIS'][:, cp.newaxis], age - 1, age)
     age = cp.maximum(age, 1)
-
-    # Verify shape
-    assert age.shape == (n_accounts, 1), f"age intermediate shape: {age.shape}"
 
     # Broadcast to all scenarios (n_accounts, n_scenarios)
     age = cp.broadcast_to(age, (n_accounts, n_scenarios))
-
-    # Verify final shape
-    assert age.shape == (n_accounts,
-                         n_scenarios), f"age final shape: {age.shape}, expected: {(n_accounts, n_scenarios)}"
-
     return age
 
 
 def calculate_duree_max10_gpu(params, annee_reelle, mois_eval, n_scenarios):
     """Calculate duration from issue date (vectorized)."""
-    # Ensure annee_reelle is 1D
-    if annee_reelle.ndim > 1:
-        annee_reelle = annee_reelle.ravel()
-
-    n_accounts = len(annee_reelle)
-
-    # Ensure params are 1D
-    annee_cotis = params['ANNEE_COTIS']
-    if annee_cotis.ndim > 1:
-        annee_cotis = annee_cotis.ravel()
-
-    mois_cotis = params['MOIS_COTIS']
-    if mois_cotis.ndim > 1:
-        mois_cotis = mois_cotis.ravel()
+    n_accounts = params['ANNEE_COTIS'].shape[0]
 
     # Calculate (n_accounts, 1)
     current_date = annee_reelle[:, cp.newaxis] + mois_eval / 12.0
-    issue_date = annee_cotis[:, cp.newaxis] + mois_cotis[:, cp.newaxis] / 12.0
+    issue_date = params['ANNEE_COTIS'][:, cp.newaxis] + params['MOIS_COTIS'][:, cp.newaxis] / 12.0
 
     duree = cp.floor(current_date - issue_date).astype(cp.int32) + 1
     duree = cp.clip(duree, 1, 10)
 
-    # Verify shape
-    assert duree.shape == (n_accounts, 1), f"duree intermediate shape: {duree.shape}"
-
     # Broadcast to all scenarios (n_accounts, n_scenarios)
     duree = cp.broadcast_to(duree, (n_accounts, n_scenarios))
-
-    # Verify final shape
-    assert duree.shape == (n_accounts,
-                           n_scenarios), f"duree final shape: {duree.shape}, expected: {(n_accounts, n_scenarios)}"
-
     return duree
 
 
@@ -612,8 +573,6 @@ def lookup_mortality_gpu(lookups, params, age_mort, annee_reelle, n_scenarios):
 def lookup_returns_gpu(lookups, scn_indices, year, month):
     """Lookup investment returns (vectorized)."""
     # returns shape: [scenario, year, month, return_type]
-    n_scenarios = scn_indices.shape[0]
-
     returns_dict = {}
     for i, name in enumerate(['FORWARD_RATE', 'AJUST_FORWARD_RATE_VM_0', 'RENDDEX_AN',
                               'RENDMM_AN', 'RENDTSX_AN', 'RENDSP500_AN', 'RENDEAFE_AN']):
@@ -625,11 +584,8 @@ def lookup_returns_gpu(lookups, scn_indices, year, month):
 
 def calculate_vm_vg_ratio_gpu(states, params):
     """Calculate VM/VG ratio (moneyness) - vectorized."""
-    n_accounts, n_scenarios = states['MT_VM_PROJ'].shape
-
-    # Get params as 1D arrays and broadcast to (n_accounts, n_scenarios)
-    pc_gar_ech = cp.asarray(params['PC_GAR_ECH']).ravel()[:n_accounts, cp.newaxis]
-    pc_gar_deces = cp.asarray(params['PC_GAR_DECES_1']).ravel()[:n_accounts, cp.newaxis]
+    pc_gar_ech = params['PC_GAR_ECH'][:, cp.newaxis]
+    pc_gar_deces = params['PC_GAR_DECES_1'][:, cp.newaxis]
 
     # Calculate ratios with protection against division by zero
     ratio1 = cp.where(states['MT_GAR_ECH_PROJ'] > 0,
@@ -645,9 +601,7 @@ def calculate_vm_vg_ratio_gpu(states, params):
 
     # VM is average of before and after withdrawal
     vm_avg = (states['MT_VM_PROJ'] + states['MT_VM_AV_RETRAIT_FRAIS']) / 2.0
-
     vm_vg_ratio = cp.minimum(10.0, vm_avg * cp.minimum(cp.minimum(ratio1, ratio2), ratio3))
-
     return vm_vg_ratio
 
 
@@ -747,7 +701,8 @@ def process_deposits_gpu(states, params, lookups, age, duree_max10, freq):
     n_accounts, n_scenarios = states['MT_VM_PROJ'].shape
 
     # Lookup deposit parameters - vectorized
-    duree_idx = cp.clip(duree_max10 - 1, 0, 9).astype(cp.int32)
+    duree_idx = cp.clip(duree_max10 - 1, 0, 9).astype(cp
+                                                      .int32)
     depot_id_idx = cp.clip(params['ID_DEPOT'][:, cp.newaxis].repeat(n_scenarios, axis=1), 0, 9).astype(cp.int32)
 
     # Flatten
@@ -847,7 +802,7 @@ def calculate_mrv_amount_gpu(states, params, age, mois_eval, an_eval, freq):
     should_cease = (age_retrait < age_mrv_permis) & (base_amount == 0)
 
     # Only recalculate at end of year
-    is_year_end = (mois_eval == 12 / freq)
+    is_year_end = (mois_eval == 12)
 
     # RGS 2.1 logic
     is_rgs_21 = (table_taux_mrv == 2)
@@ -916,19 +871,14 @@ def calculate_withdrawal_gpu(states, params, lookups, age, mois_eval, an_eval, f
 
     # Lookup minimum FERR rate - vectorized
     age_idx = cp.clip(age, 0, 120).astype(cp.int32)
-
-    # Expand to scenarios
-    age_idx_expanded = age_idx  # Already (n_accounts, n_scenarios)
-
-    # Flatten and lookup
-    age_flat = age_idx_expanded.flatten()
+    age_flat = age_idx.flatten()
     min_ferr_rate_flat = lookups['min_ferr'][age_flat]
     min_ferr_rate = min_ferr_rate_flat.reshape(age.shape)
 
     # Calculate MIN_FERR_PROJ at start of year
     is_year_start = (
             ((an_eval == 1) & (mois_eval == params['MOIS_EVALUATION_INI'][:, cp.newaxis])) |
-            (mois_eval == 12 / freq)
+            (mois_eval == 12)
     )
 
     states['MT_MIN_FERR_PROJ'] = cp.where(
@@ -969,7 +919,6 @@ def calculate_withdrawal_gpu(states, params, lookups, age, mois_eval, an_eval, f
 
     # Set to zero where no withdrawal
     retrait = cp.where(no_withdrawal, 0.0, retrait)
-
     return retrait
 
 
@@ -1076,7 +1025,7 @@ def process_maturity_benefit_gpu(states, params, age, annee_reelle, mois_eval, m
     # Check if maturity occurs
     maturity_by_date = (annee_reelle[:, cp.newaxis] == annee_ech_proj) & (mois_eval == mois_ech_proj)
 
-    target_month = cp.where(mois_nais == 12 / freq, 12, mois_nais - 12 / freq)
+    target_month = cp.where(mois_nais == 12, 12, mois_nais - 1)
     maturity_by_age = (age == age_fin_contrat) & (mois_eval == target_month)
 
     maturity_occurs = maturity_by_date | maturity_by_age
@@ -1196,7 +1145,7 @@ def process_death_guarantee_resets_gpu(states, params, age, annee_reelle, mois_e
     )
 
     # Final reset at max age
-    target_month = cp.where(mois_nais == 12 / freq, 12, mois_nais - 12 / freq)
+    target_month = cp.where(mois_nais == 12, 12, mois_nais - 1)
     final_reset = (
             (age == max_reset_deces - 1) &
             (mois_eval == target_month) &
@@ -1257,19 +1206,20 @@ def process_facultative_maturity_reset_gpu(states, params, age, annee_reelle, mo
 
 def process_death_guarantee_age_change_gpu(states, params, age, mois_eval, freq):
     """Change death guarantee percentage if age threshold reached (vectorized)."""
-    n_accounts, n_scenarios = states['MT_VM_PROJ'].shape
-
     age_chang_deces = params['AGE_CHANG_DECES'][:, cp.newaxis]
     pc_gar_deces_2 = params['PC_GAR_DECES_2'][:, cp.newaxis]
     pc_gar_deces_1 = params['PC_GAR_DECES_1'][:, cp.newaxis]
     mois_nais = params['MOIS_NAIS'][:, cp.newaxis]
 
-    target_month = cp.where(mois_nais == 12 / freq, 12, mois_nais - 12 / freq)
+    target_month = cp.where(mois_nais == 12, 12, mois_nais - 1)
 
     should_change = (age == age_chang_deces - 1) & (mois_eval == target_month)
 
+    # Avoid division by zero
+    pc_gar_deces_1_safe = cp.where(pc_gar_deces_1 == 0, 1.0, pc_gar_deces_1)
+
     states['MT_GAR_DECES_PROJ'] = cp.where(should_change,
-                                           states['MT_GAR_DECES_PROJ'] * pc_gar_deces_2 / pc_gar_deces_1,
+                                           states['MT_GAR_DECES_PROJ'] * pc_gar_deces_2 / pc_gar_deces_1_safe,
                                            states['MT_GAR_DECES_PROJ'])
 
 
@@ -1279,45 +1229,30 @@ def rebalance_portfolio_gpu(states, params):
 
     has_vm = (mt_vm_orig > 0) & (states['MT_VM_PROJ'] > 0)
 
+    # Avoid division by zero
+    mt_vm_orig_safe = cp.where(mt_vm_orig == 0, 1.0, mt_vm_orig)
+
     states['MT_SP500_PROJ'] = cp.where(has_vm,
-                                       states['MT_VM_PROJ'] * params['MT_SP500_ORIG'][:, cp.newaxis] / mt_vm_orig,
+                                       states['MT_VM_PROJ'] * params['MT_SP500_ORIG'][:, cp.newaxis] / mt_vm_orig_safe,
                                        states['MT_SP500_PROJ'])
     states['MT_TSX_PROJ'] = cp.where(has_vm,
-                                     states['MT_VM_PROJ'] * params['MT_TSX_ORIG'][:, cp.newaxis] / mt_vm_orig,
+                                     states['MT_VM_PROJ'] * params['MT_TSX_ORIG'][:, cp.newaxis] / mt_vm_orig_safe,
                                      states['MT_TSX_PROJ'])
     states['MT_EAFE_PROJ'] = cp.where(has_vm,
-                                      states['MT_VM_PROJ'] * params['MT_EAFE_ORIG'][:, cp.newaxis] / mt_vm_orig,
+                                      states['MT_VM_PROJ'] * params['MT_EAFE_ORIG'][:, cp.newaxis] / mt_vm_orig_safe,
                                       states['MT_EAFE_PROJ'])
     states['MT_DEX_PROJ'] = cp.where(has_vm,
-                                     states['MT_VM_PROJ'] * params['MT_DEX_ORIG'][:, cp.newaxis] / mt_vm_orig,
+                                     states['MT_VM_PROJ'] * params['MT_DEX_ORIG'][:, cp.newaxis] / mt_vm_orig_safe,
                                      states['MT_DEX_PROJ'])
     states['MT_MM_PROJ'] = cp.where(has_vm,
-                                    states['MT_VM_PROJ'] * params['MT_MM_ORIG'][:, cp.newaxis] / mt_vm_orig,
+                                    states['MT_VM_PROJ'] * params['MT_MM_ORIG'][:, cp.newaxis] / mt_vm_orig_safe,
                                     states['MT_MM_PROJ'])
 
 
 def calculate_acquisition_costs_gpu(states, params, lookups, duree_max10, depot_futur, lapse,
                                     qx, mt_vm_ap_retrait, tx_survie_deb, freq, AJUST):
     """Calculate acquisition costs (vectorized)."""
-    # Debug: check actual shape
-    print(f"DEBUG calculate_acquisition_costs_gpu:")
-    print(f"  states['MT_VM_PROJ'].shape = {states['MT_VM_PROJ'].shape}")
-    print(f"  states['MT_VM_PROJ'].ndim = {states['MT_VM_PROJ'].ndim}")
-
-    # Get shape safely
-    vm_shape = states['MT_VM_PROJ'].shape
-    if len(vm_shape) == 2:
-        n_accounts, n_scenarios = vm_shape
-    elif len(vm_shape) == 3:
-        # If it's somehow 3D, reshape it
-        print(f"  WARNING: MT_VM_PROJ is 3D with shape {vm_shape}, reshaping...")
-        n_accounts = vm_shape[0]
-        n_scenarios = vm_shape[-1]
-        states['MT_VM_PROJ'] = states['MT_VM_PROJ'].reshape(n_accounts, n_scenarios)
-    else:
-        raise ValueError(f"Unexpected MT_VM_PROJ shape: {vm_shape}")
-
-    print(f"  n_accounts={n_accounts}, n_scenarios={n_scenarios}")
+    n_accounts, n_scenarios = states['MT_VM_PROJ'].shape
 
     # Check if VM before fees is 0
     no_acq = (states['MT_VM_AV_RETRAIT_FRAIS'] == 0)
@@ -1351,26 +1286,27 @@ def calculate_acquisition_costs_gpu(states, params, lookups, duree_max10, depot_
     mt_rf = params['MT_RF'][:, cp.newaxis]
     ajustement_commission = params['AJUSTEMENT_COMMISSION'][:, cp.newaxis]
 
+    mt_vm_orig_safe = cp.where(mt_vm_orig == 0, 1.0, mt_vm_orig)
     has_vm = (mt_vm_orig > 0)
 
     pc_commission_vente = cp.where(
         has_vm,
-        ((pc_comm_vente_ac * (mt_vm_orig - mt_rf) / mt_vm_orig +
-          pc_comm_vente_rf * mt_rf / mt_vm_orig) * ajustement_commission),
+        ((pc_comm_vente_ac * (mt_vm_orig - mt_rf) / mt_vm_orig_safe +
+          pc_comm_vente_rf * mt_rf / mt_vm_orig_safe) * ajustement_commission),
         0.0
     )
 
     pc_commission_maintien = cp.where(
         has_vm,
-        ((pc_comm_maint_ac * (mt_vm_orig - mt_rf) / mt_vm_orig +
-          pc_comm_maint_rf * mt_rf / mt_vm_orig) * ajustement_commission),
+        ((pc_comm_maint_ac * (mt_vm_orig - mt_rf) / mt_vm_orig_safe +
+          pc_comm_maint_rf * mt_rf / mt_vm_orig_safe) * ajustement_commission),
         0.0
     )
 
     pc_frais_an = cp.where(
         has_vm,
-        (pc_frais_an_ac * (mt_vm_orig - mt_rf) / mt_vm_orig +
-         pc_frais_an_rf * mt_rf / mt_vm_orig),
+        (pc_frais_an_ac * (mt_vm_orig - mt_rf) / mt_vm_orig_safe +
+         pc_frais_an_rf * mt_rf / mt_vm_orig_safe),
         0.0
     )
 
@@ -1446,36 +1382,8 @@ def calculate_escap_cushions_gpu(states, params, lookups, age, duree_max10, freq
     """Calculate ESCAP cushions (fully vectorized with take)."""
     n_accounts, n_scenarios = states['MT_VM_PROJ'].shape
 
-    # DEBUG: Print input shapes
-    print(f"DEBUG calculate_escap_cushions_gpu:")
-    print(f"  n_accounts={n_accounts}, n_scenarios={n_scenarios}")
-    print(f"  age.shape={age.shape}")
-    print(f"  duree_max10.shape={duree_max10.shape}")
-    print(f"  states['MT_VM_PROJ'].shape={states['MT_VM_PROJ'].shape}")
-
-    # If duree_max10 has wrong shape, fix it
-    if duree_max10.shape != (n_accounts, n_scenarios):
-        print(f"  WARNING: duree_max10 has wrong shape {duree_max10.shape}, fixing...")
-        # Take only the first 2 dimensions if it's 3D
-        if duree_max10.ndim == 3:
-            duree_max10 = duree_max10[:, 0, :]  # Take first scenario group
-        # Or flatten and reshape
-        duree_max10 = duree_max10.reshape(n_accounts, n_scenarios)
-        print(f"  Fixed duree_max10.shape={duree_max10.shape}")
-
-    # If age has wrong shape, fix it
-    if age.shape != (n_accounts, n_scenarios):
-        print(f"  WARNING: age has wrong shape {age.shape}, fixing...")
-        if age.ndim == 3:
-            age = age[:, 0, :]
-        age = age.reshape(n_accounts, n_scenarios)
-        print(f"  Fixed age.shape={age.shape}")
-
-    # Determine CODE_CAT_PRODUIT - ensure proper broadcasting
-    id_produit = params['ID_PRODUIT'][:, cp.newaxis].repeat(n_scenarios, axis=1)  # (n_accounts, n_scenarios)
-
-    print(f"  id_produit.shape={id_produit.shape}")
-
+    # Determine CODE_CAT_PRODUIT
+    id_produit = params['ID_PRODUIT'][:, cp.newaxis]
     code_cat_produit = cp.where(id_produit == 22, 0,
                                 cp.where((id_produit >= 12) & (id_produit <= 16), 1,
                                          cp.where((id_produit >= 17) & (id_produit <= 21), 2,
@@ -1486,14 +1394,10 @@ def calculate_escap_cushions_gpu(states, params, lookups, age, duree_max10, freq
                                                                                  (id_produit == 2) | (id_produit == 3),
                                                                                  6, 7)))))))
 
-    print(f"  code_cat_produit.shape={code_cat_produit.shape}")
-
     # Determine CAT_COUSSIN_1 (based on % fixed income)
     pct_rf = cp.where(states['MT_VM_PROJ'] > 0,
-                      (states['MT_DEX_PROJ'] + states['MT_MM_PROJ']) / states['MT_VM_PROJ'],
+                      (states['MT_DEX_PROJ'] + states['MT_MM_PROJ']) / cp.maximum(states['MT_VM_PROJ'], 1e-9),
                       0.0)
-
-    print(f"  pct_rf.shape={pct_rf.shape}")
 
     cat_coussin_1 = cp.where((code_cat_produit == 0) | (code_cat_produit == 6), 0,
                              cp.where((code_cat_produit == 7) & (pct_rf < 0.5), 4,
@@ -1501,38 +1405,12 @@ def calculate_escap_cushions_gpu(states, params, lookups, age, duree_max10, freq
                                                cp.where(pct_rf < 1 / 3, 1,
                                                         cp.where(pct_rf < 2 / 3, 2, 3)))))
 
-    print(f"  cat_coussin_1.shape={cat_coussin_1.shape}")
-
-    # Calculate VM/VG ratio for CAT_COUSSIN_2
+    # Determine CAT_COUSSIN_2
     vm_vg_ratio = calculate_vm_vg_ratio_gpu(states, params)
 
-    print(f"  vm_vg_ratio.shape={vm_vg_ratio.shape}")
-
-    # Now calculate cat_coussin_2 step by step
-    cond1 = (code_cat_produit == 7) & (vm_vg_ratio < 0.7)
-    print(f"  cond1.shape={cond1.shape}")
-
-    cond2 = (code_cat_produit == 7) & (vm_vg_ratio < 0.9)
-    print(f"  cond2.shape={cond2.shape}")
-
-    cond3 = (code_cat_produit == 7)
-    print(f"  cond3.shape={cond3.shape}")
-
-    cond4 = (duree_max10 <= 3)
-    print(f"  cond4.shape={cond4.shape} (duree_max10 <= 3)")
-
-    cat_coussin_2 = cp.where(cond1, 4,
-                             cp.where(cond2, 5,
-                                      cp.where(cond3, 6,
-                                               cp.where(cond4, 1,
-                                                        cp.where(duree_max10 <= 6, 2, 3)))))
-
-    print(f"  cat_coussin_2.shape={cat_coussin_2.shape}")
-
-    # Verify shapes
-    assert code_cat_produit.shape == (n_accounts, n_scenarios), f"code_cat_produit shape: {code_cat_produit.shape}"
-    assert cat_coussin_1.shape == (n_accounts, n_scenarios), f"cat_coussin_1 shape: {cat_coussin_1.shape}"
-    assert cat_coussin_2.shape == (n_accounts, n_scenarios), f"cat_coussin_2 shape: {cat_coussin_2.shape}"
+    cat_coussin_2_cond_rgs = cp.where(vm_vg_ratio < 0.7, 4, cp.where(vm_vg_ratio < 0.9, 5, 6))
+    cat_coussin_2_cond_other = cp.where(duree_max10 <= 3, 1, cp.where(duree_max10 <= 6, 2, 3))
+    cat_coussin_2 = cp.where(code_cat_produit == 7, cat_coussin_2_cond_rgs, cat_coussin_2_cond_other)
 
     # Clip indices
     code_idx = cp.clip(code_cat_produit, 0, 7).astype(cp.int32)
@@ -1542,39 +1420,17 @@ def calculate_escap_cushions_gpu(states, params, lookups, age, duree_max10, freq
     # Initialize result array
     cushion_params = cp.zeros((n_accounts, n_scenarios, 16), dtype=cp.float32)
 
-    # Calculate raveled indices for the lookup table
-    # coussins shape: (8, 6, 7, 16)
-    dim1, dim2, dim3, dim4 = lookups['coussins'].shape  # (8, 6, 7, 16)
-
     # Ravel the lookup table once
     coussins_raveled = lookups['coussins'].ravel()
+    dim1, dim2, dim3, dim4 = lookups['coussins'].shape  # (8, 6, 7, 16)
 
     # Lookup each field
     for field_idx in range(16):
-        # Calculate flat index for each (account, scenario) pair
-        # Formula: code*6*7*16 + cat1*7*16 + cat2*16 + field
         flat_indices = (code_idx * (dim2 * dim3 * dim4) +
                         cat1_idx * (dim3 * dim4) +
                         cat2_idx * dim4 +
-                        field_idx)
-
-        # Verify flat_indices shape
-        assert flat_indices.shape == (n_accounts,
-                                      n_scenarios), f"flat_indices shape: {flat_indices.shape}, expected: {(n_accounts, n_scenarios)}"
-
-        # Use take to get values (flatten, take, reshape)
-        flat_indices_1d = flat_indices.ravel()
-
-        # Verify 1D shape
-        assert flat_indices_1d.shape[
-                   0] == n_accounts * n_scenarios, f"flat_indices_1d shape: {flat_indices_1d.shape}, expected: {n_accounts * n_scenarios}"
-
-        values_1d = coussins_raveled.take(flat_indices_1d)
-
-        # Verify values shape before reshape
-        assert values_1d.shape[
-                   0] == n_accounts * n_scenarios, f"values_1d shape: {values_1d.shape}, expected: {n_accounts * n_scenarios}"
-
+                        field_idx).ravel()
+        values_1d = coussins_raveled.take(flat_indices)
         cushion_params[:, :, field_idx] = values_1d.reshape(n_accounts, n_scenarios)
 
     # For RGS with VM=0, set certain cushions to 0
@@ -1597,25 +1453,19 @@ def calculate_escap_cushions_gpu(states, params, lookups, age, duree_max10, freq
 
     # Initialize results dictionary
     cushion_results = {}
-
-    # Calculate each cushion
-    cushion_names = ['PASSIF_REDRESSE', 'COUSSIN_CREDIT', 'COUSSIN_MARCHE',
-                     'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT']
+    cushion_names = ['passif_redresse', 'coussin_credit', 'coussin_marche',
+                     'coussin_depense', 'coussin_decheance', 'coussin_mortalite', 'coussin_depot']
 
     for i, cushion_name in enumerate(cushion_names):
-        base_idx = i * 2
-        base_field = cushion_params[:, :, base_idx]  # BASE_*
-        tx_field = cushion_params[:, :, base_idx + 1]  # TX_*
-
-        # Determine base amount: if BASE==0 use max_guarantee, else use VM
+        base_idx, tx_idx = i * 2, i * 2 + 1
+        base_field, tx_field = cushion_params[:, :, base_idx], cushion_params[:, :, tx_idx]
         base_amount = cp.where(base_field == 0, max_guarantee, states['MT_VM_PROJ'])
 
-        # Calculate cushion
         cushion_amount = tx_field * base_amount * age_factor * states['TX_SURVIE']
         vp_cushion_amount = cushion_amount * states['TX_ACTUALISATION'] / freq
 
         cushion_results[cushion_name] = cushion_amount
-        cushion_results[f'VP_{cushion_name}'] = vp_cushion_amount
+        cushion_results[f'vp_{cushion_name}'] = vp_cushion_amount
 
     return cushion_results
 
@@ -1625,28 +1475,19 @@ def calculate_escap_cushions_gpu(states, params, lookups, age, duree_max10, freq
 # =============================================================================
 
 def process_month_gpu(states, params, lookups, scn_indices, year, month, freq=12):
-    """
-    Process one month for ALL accounts × specified scenarios on GPU.
-    This implements the complete actuarial calculation.
-    """
+    """Process one month for ALL accounts × specified scenarios on GPU."""
     AJUST = 1.0
-
     n_accounts, n_scenarios = states['MT_VM_PROJ'].shape
-    print(f"\n=== Month {month}, Year {year} START ===")
-    print(f"Initial MT_VM_PROJ.shape: {states['MT_VM_PROJ'].shape}")
 
     # Calculate current age and duration
-    annee_reelle = params['ANNEE_EVALUATION_INI'] + year
-    mois_eval = (month + 1) * 12 // freq
+    annee_reelle_arr = params['ANNEE_EVALUATION_INI'] + year
+    mois_eval = month + 1
 
-    age = calculate_age_gpu(params, annee_reelle, mois_eval, n_scenarios)
-    duree_max10 = calculate_duree_max10_gpu(params, annee_reelle, mois_eval, n_scenarios)
+    age = calculate_age_gpu(params, annee_reelle_arr, mois_eval, n_scenarios)
+    duree_max10 = calculate_duree_max10_gpu(params, annee_reelle_arr, mois_eval, n_scenarios)
 
     # Store survival at start of period
     states['TX_SURVIE_DEB'] = states['TX_SURVIE'].copy()
-    tx_survie_deb = states['TX_SURVIE_DEB']
-
-    print(f"After age/duree calc MT_VM_PROJ.shape: {states['MT_VM_PROJ'].shape}")
 
     # === STEP 1: LOOKUP MORTALITY ===
     month_diff = params['MOIS_NAIS'][:, cp.newaxis] - mois_eval
@@ -1654,30 +1495,25 @@ def process_month_gpu(states, params, lookups, scn_indices, year, month, freq=12
     age_mort = cp.where(month_diff <= 6, age + 1, age)
     age_mort = cp.minimum(age_mort, 120)
 
-    qx = lookup_mortality_gpu(lookups, params, age_mort, annee_reelle, n_scenarios)
+    qx = lookup_mortality_gpu(lookups, params, age_mort, annee_reelle_arr, n_scenarios)
     qx = 1.0 - cp.power(1.0 - qx, (1.0 / freq) * AJUST)
-
-    print(f"After mortality lookup MT_VM_PROJ.shape: {states['MT_VM_PROJ'].shape}")
 
     # === STEP 2: LOOKUP RETURNS ===
     returns = lookup_returns_gpu(lookups, scn_indices, year, month)
-
     forward_rate = returns['FORWARD_RATE'][cp.newaxis, :]
-
-    # Adjust forward rate if VM is 0
     forward_rate = cp.where(states['MT_VM_PROJ'] == 0,
                             forward_rate + returns['AJUST_FORWARD_RATE_VM_0'][cp.newaxis, :],
                             forward_rate)
 
     # === STEP 3: UPDATE DISCOUNT FACTOR ===
-    states['TX_ACTUALISATION'] = states['TX_ACTUALISATION'] * cp.exp(-forward_rate * AJUST)
+    states['TX_ACTUALISATION'] *= cp.exp(-forward_rate * AJUST / freq)
 
     # === STEP 4: APPLY INVESTMENT RETURNS ===
-    states['MT_DEX_PROJ'] *= cp.exp(returns['RENDDEX_AN'][cp.newaxis, :] * AJUST)
-    states['MT_MM_PROJ'] *= cp.exp(returns['RENDMM_AN'][cp.newaxis, :] * AJUST)
-    states['MT_TSX_PROJ'] *= cp.exp(returns['RENDTSX_AN'][cp.newaxis, :] * AJUST)
-    states['MT_SP500_PROJ'] *= cp.exp(returns['RENDSP500_AN'][cp.newaxis, :] * AJUST)
-    states['MT_EAFE_PROJ'] *= cp.exp(returns['RENDEAFE_AN'][cp.newaxis, :] * AJUST)
+    states['MT_DEX_PROJ'] *= cp.exp(returns['RENDDEX_AN'][cp.newaxis, :] * AJUST / freq)
+    states['MT_MM_PROJ'] *= cp.exp(returns['RENDMM_AN'][cp.newaxis, :] * AJUST / freq)
+    states['MT_TSX_PROJ'] *= cp.exp(returns['RENDTSX_AN'][cp.newaxis, :] * AJUST / freq)
+    states['MT_SP500_PROJ'] *= cp.exp(returns['RENDSP500_AN'][cp.newaxis, :] * AJUST / freq)
+    states['MT_EAFE_PROJ'] *= cp.exp(returns['RENDEAFE_AN'][cp.newaxis, :] * AJUST / freq)
 
     states['MT_VM_AV_RETRAIT_FRAIS'] = (states['MT_DEX_PROJ'] + states['MT_MM_PROJ'] +
                                         states['MT_TSX_PROJ'] + states['MT_SP500_PROJ'] +
@@ -1685,17 +1521,18 @@ def process_month_gpu(states, params, lookups, scn_indices, year, month, freq=12
 
     # === STEP 5: CALCULATE LAPSE RATES ===
     vm_vg_ratio = calculate_vm_vg_ratio_gpu(states, params)
-    lapse_tot, lapse_part, lapse = calculate_lapse_rates_gpu(states, params, lookups, age,
-                                                             duree_max10, freq, AJUST, vm_vg_ratio)
+    _, _, lapse = calculate_lapse_rates_gpu(states, params, lookups, age,
+                                            duree_max10, freq, AJUST, vm_vg_ratio)
 
     # === STEP 6: UPDATE SURVIVAL ===
-    states['TX_SURVIE'] = states['TX_SURVIE'] * (1.0 - qx) * (1.0 - lapse)
+    states['TX_SURVIE'] *= (1.0 - qx) * (1.0 - lapse)
 
     # === STEP 7: ACCUMULATE DEATH BONUS ===
     accumulate_death_bonus_gpu(states, params, age, freq, AJUST)
 
     # === STEP 8: APPLY FEES ===
-    primes_garanties, vp_primes_garanties = apply_fees_and_update_vm_gpu(states, params, freq, AJUST, tx_survie_deb)
+    (primes_garanties, vp_primes_garanties) = apply_fees_and_update_vm_gpu(states, params, freq, AJUST,
+                                                                           states['TX_SURVIE_DEB'])
 
     # === STEP 9: CALCULATE MRV ===
     calculate_mrv_amount_gpu(states, params, age, mois_eval, year, freq)
@@ -1707,45 +1544,34 @@ def process_month_gpu(states, params, lookups, scn_indices, year, month, freq=12
     depot_futur = process_deposits_gpu(states, params, lookups, age, duree_max10, freq)
 
     # === STEP 12: PROCESS BENEFITS ===
-    prest_mrv, vp_prest_mrv = calculate_mrv_benefit_gpu(states, params, retrait,
-                                                        states['MT_VM_AV_RETRAIT'], tx_survie_deb)
-
+    (prest_mrv, vp_prest_mrv) = calculate_mrv_benefit_gpu(states, params, retrait,
+                                                          states['MT_VM_AV_RETRAIT'], states['TX_SURVIE_DEB'])
     mt_vm_ap_retrait = update_guarantees_for_withdrawal_gpu(states, retrait)
-
-    # Update VM after withdrawal and add deposits
-    states['MT_VM_PROJ'] = cp.where(mt_vm_ap_retrait > 0,
-                                    mt_vm_ap_retrait + depot_futur,
-                                    mt_vm_ap_retrait)
-
-    mt_vm_ap_retrait_depot = states['MT_VM_PROJ']
-
-    prest_deces, vp_prest_deces = calculate_death_benefit_gpu(states, params, qx, tx_survie_deb,
-                                                              mt_vm_ap_retrait_depot)
-
-    prest_ech, vp_prest_ech = process_maturity_benefit_gpu(states, params, age, annee_reelle,
-                                                           mois_eval, mt_vm_ap_retrait, freq)
+    states['MT_VM_PROJ'] = cp.where(mt_vm_ap_retrait > 0, mt_vm_ap_retrait + depot_futur, mt_vm_ap_retrait)
+    (prest_deces, vp_prest_deces) = calculate_death_benefit_gpu(states, params, qx, states['TX_SURVIE_DEB'],
+                                                                states['MT_VM_PROJ'])
+    (prest_ech, vp_prest_ech) = process_maturity_benefit_gpu(states, params, age, annee_reelle_arr,
+                                                             mois_eval, mt_vm_ap_retrait, freq)
 
     # === STEP 13: PROCESS RESETS ===
     update_death_guarantee_adjustments_gpu(states, params, freq)
-    process_srg_bcb_resets_gpu(states, params, age, annee_reelle, mois_eval)
-    process_death_guarantee_resets_gpu(states, params, age, annee_reelle, mois_eval, freq)
-    process_facultative_maturity_reset_gpu(states, params, age, annee_reelle, mois_eval)
+    process_srg_bcb_resets_gpu(states, params, age, annee_reelle_arr, mois_eval)
+    process_death_guarantee_resets_gpu(states, params, age, annee_reelle_arr, mois_eval, freq)
+    process_facultative_maturity_reset_gpu(states, params, age, annee_reelle_arr, mois_eval)
     process_death_guarantee_age_change_gpu(states, params, age, mois_eval, freq)
 
     # === STEP 14: REBALANCE PORTFOLIO ===
     rebalance_portfolio_gpu(states, params)
 
     # === STEP 15: CALCULATE ACQUISITION COSTS ===
-    print(f"Before acquisition costs MT_VM_PROJ.shape: {states['MT_VM_PROJ'].shape}")
-    print(f"  MT_VM_AV_RETRAIT_FRAIS.shape: {states['MT_VM_AV_RETRAIT_FRAIS'].shape}")
-
     comm_vente, vp_comm_vente, frais_acquis, vp_frais_acquis, pc_commission_maintien = \
         calculate_acquisition_costs_gpu(states, params, lookups, duree_max10, depot_futur, lapse,
-                                        qx, mt_vm_ap_retrait, tx_survie_deb, freq, AJUST)
+                                        qx, mt_vm_ap_retrait, states['TX_SURVIE_DEB'], freq, AJUST)
+
     # === STEP 16: CALCULATE FEES ===
     frais_fixes, vp_frais_fixes, hon_gest, vp_hon_gest, comm_maintien, vp_comm_maintien, \
         primes_variables, vp_primes_variables = calculate_fees_gpu(states, params, lookups,
-                                                                   annee_reelle, tx_survie_deb,
+                                                                   annee_reelle_arr, states['TX_SURVIE_DEB'],
                                                                    freq, AJUST, pc_commission_maintien)
 
     # === STEP 17: CALCULATE ESCAP CUSHIONS ===
@@ -1753,70 +1579,42 @@ def process_month_gpu(states, params, lookups, scn_indices, year, month, freq=12
 
     # === STEP 18: CALCULATE TRACKING METRICS ===
     valeur_marchande = states['MT_VM_PROJ'] * states['TX_SURVIE']
-    vp_valeur_marchande = valeur_marchande * states['TX_ACTUALISATION'] / freq
+    vp_valeur_marchande = valeur_marchande * states['TX_ACTUALISATION']
 
-    # Return all cash flows
     return {
         'primes_garanties': primes_garanties,
-        'vp_primes_garanties': vp_primes_garanties,
         'prest_deces': prest_deces,
-        'vp_prest_deces': vp_prest_deces,
         'prest_ech': prest_ech,
-        'vp_prest_ech': vp_prest_ech,
         'prest_mrv': prest_mrv,
-        'vp_prest_mrv': vp_prest_mrv,
         'frais_acquis': frais_acquis,
-        'vp_frais_acquis': vp_frais_acquis,
         'comm_vente': comm_vente,
-        'vp_comm_vente': vp_comm_vente,
         'primes_variables': primes_variables,
-        'vp_primes_variables': vp_primes_variables,
         'frais_fixes': frais_fixes,
-        'vp_frais_fixes': vp_frais_fixes,
         'hon_gest': hon_gest,
-        'vp_hon_gest': vp_hon_gest,
         'comm_maintien': comm_maintien,
-        'vp_comm_maintien': vp_comm_maintien,
         'valeur_marchande': valeur_marchande,
+        'vp_primes_garanties': vp_primes_garanties,
+        'vp_prest_deces': vp_prest_deces,
+        'vp_prest_ech': vp_prest_ech,
+        'vp_prest_mrv': vp_prest_mrv,
+        'vp_frais_acquis': vp_frais_acquis,
+        'vp_comm_vente': vp_comm_vente,
+        'vp_primes_variables': vp_primes_variables,
+        'vp_frais_fixes': vp_frais_fixes,
+        'vp_hon_gest': vp_hon_gest,
+        'vp_comm_maintien': vp_comm_maintien,
         'vp_valeur_marchande': vp_valeur_marchande,
         **cushions
     }
 
 
-def process_year_gpu(states, params, lookups, scn_indices, year, freq=12):
-    """Process one full year (12 months) for all accounts × scenarios."""
-    # Accumulate cash flows
-    year_cashflows = None
-
-    # Process each month
-    for month in range(freq):
-        month_cf = process_month_gpu(states, params, lookups, scn_indices, year, month, freq)
-
-        if year_cashflows is None:
-            year_cashflows = {k: v.copy() for k, v in month_cf.items()}
-        else:
-            for k, v in month_cf.items():
-                year_cashflows[k] += v
-
-    return year_cashflows
-
-
 def run_projection_gpu(states, params, lookups, n_years=100, n_scenarios=100, freq=12):
-    """
-    Main projection loop: iterate through years.
-    Each year, process all accounts × scenarios in parallel on GPU.
-    """
+    """Main projection loop: iterate through months and years."""
     print("\nStarting GPU projection...")
     print("=" * 60)
 
-    n_accounts = states['MT_VM_PROJ'].shape[0]
-
-    # Process all scenarios
     scn_indices = cp.arange(n_scenarios)
-
-    # Storage for results
-    all_cashflows = []
-
+    all_monthly_cashflows = []
     start_time = datetime.now()
 
     for year in range(n_years):
@@ -1824,56 +1622,109 @@ def run_projection_gpu(states, params, lookups, n_years=100, n_scenarios=100, fr
             elapsed = (datetime.now() - start_time).total_seconds()
             print(f"Processing year {year}/{n_years} (elapsed: {elapsed:.1f}s)")
 
-        # Process this year on GPU
-        year_cf = process_year_gpu(states, params, lookups, scn_indices, year, freq)
+        for month in range(freq):
+            month_cf = process_month_gpu(states, params, lookups, scn_indices, year, month, freq)
 
-        # Store results
-        year_cf['year'] = year
-        all_cashflows.append(year_cf)
+            # Add time identifiers
+            month_cf['an_eval'] = year
+            month_cf['mois_eval'] = month + 1
+            all_monthly_cashflows.append(month_cf)
 
     total_time = (datetime.now() - start_time).total_seconds()
     print(f"\nGPU projection completed in {total_time:.2f} seconds")
     print("=" * 60)
 
-    return all_cashflows, states
+    return all_monthly_cashflows, states
 
 
 # =============================================================================
 # RESULT AGGREGATION
 # =============================================================================
 
-def aggregate_results_gpu(cashflows_list, states, params):
-    """Aggregate results from GPU arrays."""
-    print("\nAggregating results...")
+def aggregate_and_save_results(monthly_cashflows, states, params, output_path: str):
+    """Aggregate results into three dataframes and save them."""
+    print("\nAggregating and saving results...")
 
-    n_accounts, n_scenarios = states['MT_VM_PROJ'].shape
+    n_accounts = states['MT_VM_PROJ'].shape[0]
+    out_dir = Path(output_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Aggregate cash flows across scenarios (average)
-    print("  - Averaging across scenarios...")
+    # --- 1. VP_FLUX_COMPTE and VP_FLUX_TOTAL ---
+    print("  - Aggregating VP flows by account (VP_FLUX_COMPTE)...")
 
-    # Initialize accumulators
-    totals = {}
-    for key in cashflows_list[0].keys():
-        if key != 'year':
-            totals[key] = cp.zeros(n_accounts, dtype=cp.float32)
+    # Find all VP keys and initialize GPU accumulators
+    vp_keys = sorted([k for k in monthly_cashflows[0].keys() if k.startswith('vp_')])
+    vp_totals_by_account = {key: cp.zeros(n_accounts, dtype=cp.float32) for key in vp_keys}
 
-    # Sum across years
-    for year_cf in cashflows_list:
-        for key, value in year_cf.items():
-            if key != 'year':
-                totals[key] += cp.mean(value, axis=1)  # Average across scenarios
+    # Sum VP flows over all time steps on GPU
+    for month_cf in monthly_cashflows:
+        for key in vp_keys:
+            vp_totals_by_account[key] += cp.mean(month_cf[key], axis=1)
 
-    # Transfer to CPU
-    results_cpu = {k: cp.asnumpy(v) for k, v in totals.items()}
+    # Create the DataFrame on CPU
+    account_ids_cpu = params['ID_COMPTE_FOR_OUTPUT']
+    vp_flux_compte_df = pd.DataFrame({'ID_COMPTE': account_ids_cpu})
 
-    # Create summary DataFrame
-    summary = pd.DataFrame({
-        'ID_COMPTE': range(n_accounts),
-        **results_cpu
-    })
+    # Transfer results to CPU and add to DataFrame
+    for key, total_vp_gpu in vp_totals_by_account.items():
+        vp_flux_compte_df[key.upper()] = cp.asnumpy(total_vp_gpu)
 
-    print("Aggregation complete")
-    return summary
+    # Reorder columns to match CPU output format
+    requested_columns = [
+        'ID_COMPTE', 'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES',
+        'VP_PRIMES_VARIABLES', 'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN',
+        'VP_PREST_ECH', 'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_PASSIF_REDRESSE',
+        'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE',
+        'VP_COUSSIN_DECHEANCE', 'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT',
+        'VP_VALEUR_MARCHANDE'
+    ]
+    final_vp_cols = [col for col in requested_columns if col in vp_flux_compte_df.columns]
+    vp_flux_compte_df = vp_flux_compte_df[final_vp_cols]
+
+    # Save VP_FLUX_COMPTE
+    vp_flux_compte_path = out_dir / "VP_FLUX_COMPTE_PY.csv"
+    vp_flux_compte_df.to_csv(vp_flux_compte_path, index=False, sep=';')
+    print(f"  ✓ Saved {vp_flux_compte_path}")
+
+    # --- 2. VP_FLUX_TOTAL ---
+    print("  - Aggregating total VP flows (VP_FLUX_TOTAL)...")
+    vp_cols_to_sum = [col for col in final_vp_cols if col != 'ID_COMPTE']
+    total_vp_sum = vp_flux_compte_df[vp_cols_to_sum].sum().sum()
+
+    vp_flux_total_df = pd.DataFrame({'CATEGORIE': ['TOTAL'], 'VP_FLUX_TOT': [total_vp_sum]})
+
+    # Save VP_FLUX_TOTAL
+    vp_flux_total_path = out_dir / "VP_FLUX_TOTAL_PY.csv"
+    vp_flux_total_df.to_csv(vp_flux_total_path, index=False, sep=';')
+    print(f"  ✓ Saved {vp_flux_total_path}")
+
+    # --- 3. FLUX_PROJETES ---
+    print("  - Aggregating non-VP flows by time period (FLUX_PROJETES)...")
+    non_vp_keys = sorted(
+        [k for k in monthly_cashflows[0].keys() if not k.startswith('vp_') and k not in ['an_eval', 'mois_eval']])
+    flux_projetes_rows = []
+
+    for month_cf in monthly_cashflows:
+        row_data = {'AN_EVAL': month_cf['an_eval'], 'MOIS_EVAL': month_cf['mois_eval']}
+        for key in non_vp_keys:
+            # Average across scenarios, then sum across accounts
+            sum_across_accounts = cp.sum(cp.mean(month_cf[key], axis=1))
+            row_data[key.upper()] = cp.asnumpy(sum_across_accounts)
+        flux_projetes_rows.append(row_data)
+
+    flux_projetes_df = pd.DataFrame(flux_projetes_rows)
+
+    # Save FLUX_PROJETES
+    flux_projetes_path = out_dir / "FLUX_PROJETES_PY.csv"
+    flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
+    print(f"  ✓ Saved {flux_projetes_path}")
+
+    print("Aggregation and saving complete.")
+    return {
+        'flux_projetes': flux_projetes_df,
+        'vp_flux_compte': vp_flux_compte_df,
+        'vp_flux_total': vp_flux_total_df
+    }
 
 
 # =============================================================================
@@ -1884,24 +1735,15 @@ def run_projection(data_path: str, output_path: str,
                    nb_accounts: int = None,
                    nb_scenarios: int = None,
                    nb_years: int = None):
-    """Main function to run GPU-accelerated projection.
-
-    Args:
-        data_path: Path to input data directory
-        output_path: Path to output directory
-        nb_accounts: Number of accounts to process (None = all accounts)
-        nb_scenarios: Number of scenarios to run (None = use CONFIG['NB_SC'])
-        nb_years: Number of years to project (None = use CONFIG['NB_AN_PROJECTION'])
-    """
+    """Main function to run GPU-accelerated projection."""
     start_time = datetime.now()
     print(f"Starting GPU projection at {start_time}")
     print("=" * 60)
 
     # Use CONFIG defaults if not specified
-    if nb_scenarios is None:
-        nb_scenarios = CONFIG['NB_SC']
-    if nb_years is None:
-        nb_years = CONFIG['NB_AN_PROJECTION']
+    nb_scenarios = nb_scenarios if nb_scenarios is not None else CONFIG['NB_SC']
+    nb_years = nb_years if nb_years is not None else CONFIG['NB_AN_PROJECTION']
+    freq = CONFIG['FREQ_EVAL']
 
     # Load data (CPU)
     data = load_all_data(Path(data_path))
@@ -1913,28 +1755,22 @@ def run_projection(data_path: str, output_path: str,
     # Create GPU lookup tables
     lookups = create_gpu_lookups(data)
 
-    # Create GPU state arrays
+    # Create GPU state arrays and parameters
     states = create_state_arrays(data['population'], nb_scenarios)
     params = create_account_params(data['population'])
 
     # Run projection on GPU
-    cashflows, final_states = run_projection_gpu(
+    cashflows, _ = run_projection_gpu(
         states,
         params,
         lookups,
         n_years=nb_years,
         n_scenarios=nb_scenarios,
-        freq=CONFIG['FREQ_EVAL']
+        freq=freq
     )
 
-    # Aggregate results
-    results = aggregate_results_gpu(cashflows, final_states, params)
-
-    # Save outputs
-    print("\nSaving outputs...")
-    Path(output_path).mkdir(parents=True, exist_ok=True)
-    results.to_csv(f"{output_path}/GPU_RESULTS.csv", index=False, sep=';')
-    print(f"  ✓ Saved {output_path}/GPU_RESULTS.csv")
+    # Aggregate results and save files
+    results_dfs = aggregate_and_save_results(cashflows, states, params, output_path)
 
     # Print summary
     end_time = datetime.now()
@@ -1947,10 +1783,10 @@ def run_projection(data_path: str, output_path: str,
     print(f"Accounts processed: {len(data['population'])}")
     print(f"Scenarios: {nb_scenarios}")
     print(f"Years: {nb_years}")
-    print(f"Total computations: {len(data['population']) * nb_scenarios * nb_years * 12:,}")
+    print(f"Total computations: {len(data['population']) * nb_scenarios * nb_years * freq:,}")
     print("=" * 60)
 
-    return results
+    return results_dfs
 
 
 # =============================================================================
@@ -1975,10 +1811,20 @@ if __name__ == "__main__":
     results = run_projection(
         data_path=DATA_PATH,
         output_path=OUTPUT_PATH,
-        nb_accounts=2,  # Number of accounts to process
+        nb_accounts=10,  # Number of accounts to process
         nb_scenarios=100,  # Number of scenarios to run
         nb_years=100  # Number of years to project
     )
 
-    print("\nSample Results:")
-    print(results.head())
+    print("\n" + "=" * 60)
+    print("SAMPLE RESULTS (from GPU execution)")
+    print("=" * 60)
+
+    print("\nVP_FLUX_TOTAL:")
+    print(results['vp_flux_total'])
+
+    print("\nVP_FLUX_COMPTE (first 5 accounts):")
+    print(results['vp_flux_compte'].head())
+
+    print("\nFLUX_PROJETES (first 10 periods):")
+    print(results['flux_projetes'].head(10))
