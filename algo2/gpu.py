@@ -1880,25 +1880,41 @@ def aggregate_results_gpu(cashflows_list, states, params):
 # MAIN EXECUTION
 # =============================================================================
 
-def run_projection(data_path: str, output_path: str, max_accounts: int = None):
-    """Main function to run GPU-accelerated projection."""
+def run_projection(data_path: str, output_path: str,
+                   nb_accounts: int = None,
+                   nb_scenarios: int = None,
+                   nb_years: int = None):
+    """Main function to run GPU-accelerated projection.
+
+    Args:
+        data_path: Path to input data directory
+        output_path: Path to output directory
+        nb_accounts: Number of accounts to process (None = all accounts)
+        nb_scenarios: Number of scenarios to run (None = use CONFIG['NB_SC'])
+        nb_years: Number of years to project (None = use CONFIG['NB_AN_PROJECTION'])
+    """
     start_time = datetime.now()
     print(f"Starting GPU projection at {start_time}")
     print("=" * 60)
+
+    # Use CONFIG defaults if not specified
+    if nb_scenarios is None:
+        nb_scenarios = CONFIG['NB_SC']
+    if nb_years is None:
+        nb_years = CONFIG['NB_AN_PROJECTION']
 
     # Load data (CPU)
     data = load_all_data(Path(data_path))
 
     # Limit accounts if requested
-    if max_accounts:
-        data['population'] = data['population'].head(max_accounts)
+    if nb_accounts:
+        data['population'] = data['population'].head(nb_accounts)
 
     # Create GPU lookup tables
     lookups = create_gpu_lookups(data)
 
     # Create GPU state arrays
-    n_scenarios = CONFIG['NB_SC']
-    states = create_state_arrays(data['population'], n_scenarios)
+    states = create_state_arrays(data['population'], nb_scenarios)
     params = create_account_params(data['population'])
 
     # Run projection on GPU
@@ -1906,8 +1922,8 @@ def run_projection(data_path: str, output_path: str, max_accounts: int = None):
         states,
         params,
         lookups,
-        n_years=CONFIG['NB_AN_PROJECTION'],
-        n_scenarios=n_scenarios,
+        n_years=nb_years,
+        n_scenarios=nb_scenarios,
         freq=CONFIG['FREQ_EVAL']
     )
 
@@ -1929,9 +1945,9 @@ def run_projection(data_path: str, output_path: str, max_accounts: int = None):
     print("=" * 60)
     print(f"Processing time: {duration:.2f} seconds ({duration / 60:.2f} minutes)")
     print(f"Accounts processed: {len(data['population'])}")
-    print(f"Scenarios: {n_scenarios}")
-    print(f"Years: {CONFIG['NB_AN_PROJECTION']}")
-    print(f"Total computations: {len(data['population']) * n_scenarios * CONFIG['NB_AN_PROJECTION'] * 12:,}")
+    print(f"Scenarios: {nb_scenarios}")
+    print(f"Years: {nb_years}")
+    print(f"Total computations: {len(data['population']) * nb_scenarios * nb_years * 12:,}")
     print("=" * 60)
 
     return results
@@ -1959,7 +1975,9 @@ if __name__ == "__main__":
     results = run_projection(
         data_path=DATA_PATH,
         output_path=OUTPUT_PATH,
-        max_accounts=10  # Start with 10 accounts for testing
+        nb_accounts=2,  # Number of accounts to process
+        nb_scenarios=100,  # Number of scenarios to run
+        nb_years=100  # Number of years to project
     )
 
     print("\nSample Results:")
