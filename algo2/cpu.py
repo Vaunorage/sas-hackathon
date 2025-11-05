@@ -18,6 +18,7 @@ CONFIG = {
     'NB_SC': 100,
     'NB_AN_PROJECTION': 100,
     'FREQ_EVAL': 12,
+    # These will be overridden by debug arguments if provided
     'NO_COMPTE_SORTIE': 6522,
     'NO_SCN_SORTIE': 2,
 }
@@ -453,6 +454,7 @@ def initialize_state(account: pd.Series) -> Dict[str, float]:
         'MT_VM': float(account['MT_VM']),
     }
 
+
 def lookup_mortality(lookups: Dict, row: Dict, state: Dict) -> float:
     """Lookup mortality rate with fallback."""
     mois_nais = int(row['MOIS_NAIS'])
@@ -592,6 +594,7 @@ def calculate_lapse_rates(state: Dict, lookups: Dict, row: Dict, account: pd.Ser
 
     return lapse_tot, lapse_part, lapse
 
+
 def process_deposits(state: Dict, lookups: Dict, row: Dict, account: pd.Series, freq: int,
                      duree_max10: int) -> Tuple[Dict, float]:
     """
@@ -649,6 +652,7 @@ def process_deposits(state: Dict, lookups: Dict, row: Dict, account: pd.Series, 
             state['MT_SRG_PROJ'] += depot_futur
 
     return state, depot_futur
+
 
 def calculate_mrv_amount(state: Dict, row: Dict, account: pd.Series, freq: int) -> Dict:
     """Calculate MRV/MRG/MRA amount for RGS products."""
@@ -773,7 +777,7 @@ def apply_management_fees(state: Dict, freq: int, AJUST_NOUV_AFFAIRES: float) ->
 
 
 def calculate_guarantee_fees(state: Dict, row: Dict, freq: int, AJUST_NOUV_AFFAIRES: float, tx_survie_deb: float) -> \
-Tuple[float, float]:
+        Tuple[float, float]:
     """Calculate guarantee fees (primes garanties)."""
     i_frais_sur_srg = row.get('I_FRAIS_SUR_SRG', 0)
 
@@ -1102,6 +1106,7 @@ def calculate_acquisition_costs(state: Dict, lookups: Dict, row: Dict, account: 
         'PC_COMMISSION_MAINTIEN': pc_commission_maintien,
     }
 
+
 def calculate_fees(state: Dict, lookups: Dict, row: Dict, tx_survie_deb: float,
                    freq: int, AJUST_NOUV_AFFAIRES: float, pc_commission_maintien: float) -> Dict[str, float]:
     """Calculate all ongoing fees."""
@@ -1121,12 +1126,12 @@ def calculate_fees(state: Dict, lookups: Dict, row: Dict, tx_survie_deb: float,
 
     # Management fees (honoraires)
     hon_gest = -state['MT_VM_AV_RETRAIT_FRAIS'] * (
-                np.exp(state['PC_HONORAIRES_GEST'] / freq * AJUST_NOUV_AFFAIRES) - 1) * tx_survie_deb
+            np.exp(state['PC_HONORAIRES_GEST'] / freq * AJUST_NOUV_AFFAIRES) - 1) * tx_survie_deb
     vp_hon_gest = hon_gest * state['TX_ACTUALISATION']
 
     # Maintenance commission
     comm_maintien = -state['MT_VM_AV_RETRAIT_FRAIS'] * (
-                np.exp(pc_commission_maintien / freq * AJUST_NOUV_AFFAIRES) - 1) * tx_survie_deb
+            np.exp(pc_commission_maintien / freq * AJUST_NOUV_AFFAIRES) - 1) * tx_survie_deb
     vp_comm_maintien = comm_maintien * state['TX_ACTUALISATION']
 
     # Variable premiums
@@ -1277,6 +1282,7 @@ def calculate_escap_cushions(state: Dict, lookups: Dict, row: Dict, account: pd.
 
     return results
 
+
 def update_survival_and_discount(state: Dict, qx: float, lapse: float) -> Dict:
     """Update cumulative survival probability."""
     state['TX_SURVIE'] = state['TX_SURVIE'] * (1 - qx) * (1 - lapse)
@@ -1298,7 +1304,7 @@ def accumulate_death_bonus(state: Dict, row: Dict, account: pd.Series, freq: int
 
 
 def apply_fees_and_update_vm(state: Dict, row: Dict, freq: int, AJUST_NOUV_AFFAIRES: float, tx_survie_deb: float) -> \
-Tuple[Dict, float, float]:
+        Tuple[Dict, float, float]:
     """
     NEW: Encapsulates the fee deduction waterfall to ensure correct order of operations.
     This function replicates SAS lines 454-472.
@@ -1465,6 +1471,7 @@ def process_single_row(row: Dict, state: Dict, lookups: Dict, prev_scn: int,
 
     return result_row, state
 
+
 # =============================================================================
 # MAIN PROJECTION FUNCTION (COMBINES ALL LEVELS)
 # =============================================================================
@@ -1625,12 +1632,16 @@ def aggregate_vp_flux_total(df: pd.DataFrame) -> pd.DataFrame:
 
     return result
 
+
 # =============================================================================
 # MAIN EXECUTION FUNCTION
 # =============================================================================
 
+# MODIFIED: Added new arguments with default values
 def run_projection(data_path: Path, output_path: Path, nb_an_projection: int, nb_scenarios: int,
-                   use_parallel: bool = False, max_accounts: int = None):
+                   use_parallel: bool = False, max_accounts: int = None,
+                   debug_account_id: int = None, debug_scenario_id: int = None,
+                   start_year_out: int = None, end_year_out: int = None):
     """
     Main function to run the complete actuarial projection.
 
@@ -1641,16 +1652,27 @@ def run_projection(data_path: Path, output_path: Path, nb_an_projection: int, nb
         nb_scenarios: The number of economic scenarios to run.
         use_parallel: Whether to use multiprocessing.
         max_accounts: Maximum number of accounts to process (for testing). None processes all.
+        debug_account_id: Account ID for which to generate a detailed calculation trace.
+        debug_scenario_id: Scenario ID for the detailed calculation trace.
+        start_year_out: The start year for filtering the FLUX_PROJETES output.
+        end_year_out: The end year for filtering the FLUX_PROJETES output.
     """
     start_time = datetime.now()
     print(f"Starting projection at {start_time}")
     print("=" * 60)
 
-    # --- NEW: Update global config with runtime arguments ---
+    # --- MODIFIED: Update global config with runtime arguments ---
     CONFIG['NB_AN_PROJECTION'] = nb_an_projection
     CONFIG['NB_SC'] = nb_scenarios
     print(f"Configuration: {nb_an_projection} years, {nb_scenarios} scenarios")
-    # --------------------------------------------------------
+
+    # NEW: Handle debug and trace arguments
+    if debug_account_id is not None and debug_scenario_id is not None:
+        CONFIG['NO_COMPTE_SORTIE'] = debug_account_id
+        CONFIG['NO_SCN_SORTIE'] = debug_scenario_id
+        print(
+            f"DEBUG MODE: Detailed trace will be generated for Account ID: {debug_account_id}, Scenario: {debug_scenario_id}")
+    # -------------------------------------------------------------
 
     # Load data
     data = load_all_data(data_path)
@@ -1698,21 +1720,30 @@ def run_projection(data_path: Path, output_path: Path, nb_an_projection: int, nb
     # Aggregate results
     print("Aggregating results...")
 
-    # 1. Average across scenarios
+    # 1. Average across scenarios (on the full dataset)
     print("  - Averaging across scenarios...")
     calculs_sommaire = aggregate_by_scenario(all_results)
 
-    # 2. Flux projetes (by time period)
-    print("  - Creating flux projetes...")
-    flux_projetes = aggregate_flux_projetes(calculs_sommaire)
-
-    # 3. VP by account
-    print("  - Creating VP by account...")
+    # 2. Calculate VP aggregates from the COMPLETE, unfiltered results.
+    # This ensures the total Present Values are correct for the entire projection horizon.
+    print("  - Creating VP by account (full projection)...")
     vp_flux_compte = aggregate_vp_flux_compte(calculs_sommaire)
 
-    # 4. Total VP
-    print("  - Creating total VP...")
+    print("  - Creating total VP (full projection)...")
     vp_flux_total = aggregate_vp_flux_total(vp_flux_compte)
+
+    # 3. Apply the year filter for time-series outputs (FLUX_PROJETES)
+    flux_projetes_source = calculs_sommaire
+    if start_year_out is not None or end_year_out is not None:
+        print(f"  - Filtering time-series outputs for years {start_year_out or 'start'} to {end_year_out or 'end'}...")
+        if start_year_out is not None:
+            flux_projetes_source = flux_projetes_source[flux_projetes_source['AN_EVAL'] >= start_year_out]
+        if end_year_out is not None:
+            flux_projetes_source = flux_projetes_source[flux_projetes_source['AN_EVAL'] <= end_year_out]
+
+    # 4. Create Flux projetes from the (potentially filtered) data
+    print("  - Creating flux projetes...")
+    flux_projetes = aggregate_flux_projetes(flux_projetes_source)
 
     # Save outputs
     print("\nSaving outputs...")
@@ -1757,14 +1788,22 @@ if __name__ == "__main__":
     DATA_PATH = HERE.joinpath("algo2/data_in")
     OUTPUT_PATH = HERE.joinpath("algo2/data_out")
 
-    # Run projection
+    # MODIFIED: Run projection with new arguments
     results = run_projection(
         data_path=DATA_PATH,
         output_path=OUTPUT_PATH,
         nb_an_projection=100,  # Set the number of years to project
-        nb_scenarios=100,      # Set the number of scenarios to run
-        use_parallel=False,   # Set to True for parallel processing
-        max_accounts=3        # Process only first 3 accounts for testing, None for all
+        nb_scenarios=100,  # Set the number of scenarios to run
+        use_parallel=False,  # Set to True for parallel processing
+        max_accounts=3,  # Process only first 3 accounts for testing, None for all
+
+        # NEW: Arguments for detailed trace output
+        debug_account_id=1,  # Set Account ID to trace, or None to disable
+        debug_scenario_id=2,  # Set Scenario to trace, or None to disable
+
+        # NEW: Arguments for filtering output years
+        start_year_out=1,  # Set start year for FLUX_PROJETES, or None
+        end_year_out=10  # Set end year for FLUX_PROJETES, or None
     )
 
     if results:
@@ -1772,11 +1811,11 @@ if __name__ == "__main__":
         print("SAMPLE RESULTS")
         print("=" * 60)
 
-        print("\nVP_FLUX_TOTAL:")
+        print("\nVP_FLUX_TOTAL (Calculated over full projection horizon):")
         print(results['vp_flux_total'])
 
-        print("\nVP_FLUX_COMPTE (first 5 accounts):")
+        print("\nVP_FLUX_COMPTE (first 5 accounts, calculated over full projection horizon):")
         print(results['vp_flux_compte'].head())
 
-        print("\nFLUX_PROJETES (first 10 periods):")
+        print(f"\nFLUX_PROJETES (first 10 periods, filtered for specified year range):")
         print(results['flux_projetes'].head(10))
