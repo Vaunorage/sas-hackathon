@@ -1525,11 +1525,22 @@ def project_account_wrapper(account_id: int, population: pd.DataFrame,
     # If a debug file was created, save it to CSV
     if create_debug_file and debug_data:
         debug_df = pd.DataFrame(debug_data)
+        
+        # Apply year filter for debug output if specified
+        start_year = config.get('START_YEAR_OUT')
+        end_year = config.get('END_YEAR_OUT')
+        if start_year is not None or end_year is not None:
+            print(f"  - Filtering TEST_PY.csv for years {start_year or 'start'} to {end_year or 'end'}...")
+            if start_year is not None:
+                debug_df = debug_df[debug_df['AN_EVAL'] >= start_year]
+            if end_year is not None:
+                debug_df = debug_df[debug_df['AN_EVAL'] <= end_year]
+        
         # Ensure output directory exists before saving
         output_path.mkdir(parents=True, exist_ok=True)
         debug_filename = output_path.joinpath("TEST_PY.csv")
         debug_df.to_csv(debug_filename, index=False, sep=';')
-        print(f"  ✓ Saved debug file for account {account_id} to {debug_filename}")
+        print(f"  ✓ Saved debug file for account {account_id} to {debug_filename} ({len(debug_df)} rows)")
 
     # Return the main results
     if not results:
@@ -1641,7 +1652,7 @@ def aggregate_vp_flux_total(df: pd.DataFrame) -> pd.DataFrame:
 def run_projection(data_path: Path, output_path: Path, nb_an_projection: int, nb_scenarios: int,
                    use_parallel: bool = False, max_accounts: int = None,
                    debug_account_id: int = None, debug_scenario_id: int = None,
-                   start_year_out: int = None, end_year_out: int = None):
+                   debug_start_year_out: int = None, debug_end_year_out: int = None):
     """
     Main function to run the complete actuarial projection.
 
@@ -1654,8 +1665,8 @@ def run_projection(data_path: Path, output_path: Path, nb_an_projection: int, nb
         max_accounts: Maximum number of accounts to process (for testing). None processes all.
         debug_account_id: Account ID for which to generate a detailed calculation trace.
         debug_scenario_id: Scenario ID for the detailed calculation trace.
-        start_year_out: The start year for filtering the FLUX_PROJETES output.
-        end_year_out: The end year for filtering the FLUX_PROJETES output.
+        debug_start_year_out: The start year for filtering the TEST_PY.csv debug output (does not affect calculations).
+        debug_end_year_out: The end year for filtering the TEST_PY.csv debug output (does not affect calculations).
     """
     start_time = datetime.now()
     print(f"Starting projection at {start_time}")
@@ -1672,6 +1683,9 @@ def run_projection(data_path: Path, output_path: Path, nb_an_projection: int, nb
         CONFIG['NO_SCN_SORTIE'] = debug_scenario_id
         print(
             f"DEBUG MODE: Detailed trace will be generated for Account ID: {debug_account_id}, Scenario: {debug_scenario_id}")
+    # Store year filter for debug output (TEST_PY.csv)
+    CONFIG['START_YEAR_OUT'] = debug_start_year_out
+    CONFIG['END_YEAR_OUT'] = debug_end_year_out
     # -------------------------------------------------------------
 
     # Load data
@@ -1732,18 +1746,10 @@ def run_projection(data_path: Path, output_path: Path, nb_an_projection: int, nb
     print("  - Creating total VP (full projection)...")
     vp_flux_total = aggregate_vp_flux_total(vp_flux_compte)
 
-    # 3. Apply the year filter for time-series outputs (FLUX_PROJETES)
-    flux_projetes_source = calculs_sommaire
-    if start_year_out is not None or end_year_out is not None:
-        print(f"  - Filtering time-series outputs for years {start_year_out or 'start'} to {end_year_out or 'end'}...")
-        if start_year_out is not None:
-            flux_projetes_source = flux_projetes_source[flux_projetes_source['AN_EVAL'] >= start_year_out]
-        if end_year_out is not None:
-            flux_projetes_source = flux_projetes_source[flux_projetes_source['AN_EVAL'] <= end_year_out]
-
-    # 4. Create Flux projetes from the (potentially filtered) data
+    # 3. Create Flux projetes from the complete, unfiltered data
+    # Note: Year filtering is only applied to TEST_PY.csv debug output, not to aggregated outputs
     print("  - Creating flux projetes...")
-    flux_projetes = aggregate_flux_projetes(flux_projetes_source)
+    flux_projetes = aggregate_flux_projetes(calculs_sommaire)
 
     # Save outputs
     print("\nSaving outputs...")
@@ -1797,13 +1803,10 @@ if __name__ == "__main__":
         use_parallel=False,  # Set to True for parallel processing
         max_accounts=3,  # Process only first 3 accounts for testing, None for all
 
-        # NEW: Arguments for detailed trace output
         debug_account_id=1,  # Set Account ID to trace, or None to disable
         debug_scenario_id=2,  # Set Scenario to trace, or None to disable
-
-        # NEW: Arguments for filtering output years
-        start_year_out=1,  # Set start year for FLUX_PROJETES, or None
-        end_year_out=10  # Set end year for FLUX_PROJETES, or None
+        debug_start_year_out=1,  # Set start year for TEST_PY.csv, or None
+        debug_end_year_out=10  # Set end year for TEST_PY.csv, or None
     )
 
     if results:
