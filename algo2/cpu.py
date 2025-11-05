@@ -11,6 +11,7 @@ from paths import HERE
 # CONFIGURATION
 # =============================================================================
 
+# Default configuration, can be overridden by arguments in run_projection
 CONFIG = {
     'nb_thread_tot': 12,
     'NBCPT': 9999999,
@@ -1464,10 +1465,14 @@ def process_single_row(row: Dict, state: Dict, lookups: Dict, prev_scn: int,
 
     return result_row, state
 
+# =============================================================================
+# MAIN PROJECTION FUNCTION (COMBINES ALL LEVELS)
+# =============================================================================
+
 def project_account_wrapper(account_id: int, population: pd.DataFrame,
                             lookups: Dict, config: Dict, output_path: Path) -> pd.DataFrame:
     """
-    Wrapper for parallel processing.
+    Wrapper for parallel processing a single account.
 
     ENHANCED: Adds logic to save a detailed trace for a specific account/scenario,
     mimicking the SAS `TEST` dataset for easy debugging and comparison.
@@ -1519,56 +1524,13 @@ def project_account_wrapper(account_id: int, population: pd.DataFrame,
         debug_df.to_csv(debug_filename, index=False, sep=';')
         print(f"  ✓ Saved debug file for account {account_id} to {debug_filename}")
 
-    # Return the main results (averaged across scenarios later)
+    # Return the main results
     if not results:
         return pd.DataFrame()
 
     final_df = pd.DataFrame(results)
     print(f"  Completed account {account_id}: {len(final_df)} projection rows generated.")
     return final_df
-
-# =============================================================================
-# MAIN PROJECTION FUNCTION (COMBINES ALL LEVELS)
-# =============================================================================
-
-def project_single_account(account: pd.Series, lookups: Dict, config: Dict) -> pd.DataFrame:
-    """
-    Project a single account across all scenarios and time periods.
-    Combines LEVEL 2 (timeline creation) and LEVEL 3 (calculations).
-    """
-    # LEVEL 2: Create expanded timeline
-    timeline = create_expanded_timeline(account, config)
-
-    if len(timeline) == 0:
-        return pd.DataFrame()
-
-    # LEVEL 3: Process each row with state retention
-    results = []
-    state = initialize_state(account)
-    prev_scn = 1
-
-    for idx, row in timeline.iterrows():
-        row_dict = row.to_dict()
-
-        # Process the row
-        result_row, state = process_single_row(row_dict, state, lookups, prev_scn, account)
-
-        # Only append if result is not None (policy still active)
-        if result_row is not None:
-            results.append(result_row)
-
-        prev_scn = row_dict['SCN_EVAL']
-
-    return pd.DataFrame(results)
-
-
-def project_account_wrapper(account_id: int, population: pd.DataFrame,
-                            lookups: Dict, config: Dict) -> pd.DataFrame:
-    """Wrapper for parallel processing."""
-    account = population[population['ID_COMPTE'] == account_id].iloc[0]
-    result = project_single_account(account, lookups, config)
-    print(f"  Completed account {account_id}: {len(result)} rows")
-    return result
 
 
 # =============================================================================
@@ -1667,19 +1629,28 @@ def aggregate_vp_flux_total(df: pd.DataFrame) -> pd.DataFrame:
 # MAIN EXECUTION FUNCTION
 # =============================================================================
 
-def run_projection(data_path: str, output_path: str, use_parallel: bool = False, max_accounts: int = None):
+def run_projection(data_path: Path, output_path: Path, nb_an_projection: int, nb_scenarios: int,
+                   use_parallel: bool = False, max_accounts: int = None):
     """
     Main function to run the complete actuarial projection.
 
     Args:
-        data_path: Path to input CSV files
-        output_path: Path for output files
-        use_parallel: Whether to use multiprocessing
-        max_accounts: Maximum number of accounts to process (None = all)
+        data_path: Path to input CSV files.
+        output_path: Path for output files.
+        nb_an_projection: The number of years to project.
+        nb_scenarios: The number of economic scenarios to run.
+        use_parallel: Whether to use multiprocessing.
+        max_accounts: Maximum number of accounts to process (for testing). None processes all.
     """
     start_time = datetime.now()
     print(f"Starting projection at {start_time}")
     print("=" * 60)
+
+    # --- NEW: Update global config with runtime arguments ---
+    CONFIG['NB_AN_PROJECTION'] = nb_an_projection
+    CONFIG['NB_SC'] = nb_scenarios
+    print(f"Configuration: {nb_an_projection} years, {nb_scenarios} scenarios")
+    # --------------------------------------------------------
 
     # Load data
     data = load_all_data(data_path)
@@ -1702,20 +1673,26 @@ def run_projection(data_path: str, output_path: str, use_parallel: bool = False,
             func = partial(project_account_wrapper,
                            population=data['population'],
                            lookups=lookups,
-                           config=CONFIG)
+                           config=CONFIG,
+                           output_path=output_path)
             results = pool.map(func, account_ids)
     else:
         print("Using sequential processing")
         results = []
         for i, account_id in enumerate(account_ids, 1):
             print(f"[{i}/{len(account_ids)}] Processing account {account_id}...")
-            result = project_account_wrapper(account_id, data['population'], lookups, CONFIG)
+            result = project_account_wrapper(account_id, data['population'], lookups, CONFIG, output_path)
             results.append(result)
 
     # Combine all results
     print("\n" + "=" * 60)
     print("Combining results...")
-    all_results = pd.concat([r for r in results if len(r) > 0], ignore_index=True)
+    all_results = pd.concat([r for r in results if not r.empty], ignore_index=True)
+
+    if all_results.empty:
+        print("No results generated. Exiting.")
+        return None
+
     print(f"Total projection rows: {len(all_results):,}")
 
     # Aggregate results
@@ -1739,11 +1716,11 @@ def run_projection(data_path: str, output_path: str, use_parallel: bool = False,
 
     # Save outputs
     print("\nSaving outputs...")
-    Path(output_path).mkdir(parents=True, exist_ok=True)
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    flux_projetes.to_csv(f"{output_path}/FLUX_PROJETES_PY.csv", index=False, sep=';')
-    vp_flux_compte.to_csv(f"{output_path}/VP_FLUX_COMPTE_PY.csv", index=False, sep=';')
-    vp_flux_total.to_csv(f"{output_path}/VP_FLUX_TOTAL_PY.csv", index=False, sep=';')
+    flux_projetes.to_csv(output_path.joinpath("FLUX_PROJETES_PY.csv"), index=False, sep=';')
+    vp_flux_compte.to_csv(output_path.joinpath("VP_FLUX_COMPTE_PY.csv"), index=False, sep=';')
+    vp_flux_total.to_csv(output_path.joinpath("VP_FLUX_TOTAL_PY.csv"), index=False, sep=';')
 
     print(f"  ✓ Saved {output_path}/FLUX_PROJETES_PY.csv")
     print(f"  ✓ Saved {output_path}/VP_FLUX_COMPTE_PY.csv")
@@ -1784,19 +1761,22 @@ if __name__ == "__main__":
     results = run_projection(
         data_path=DATA_PATH,
         output_path=OUTPUT_PATH,
-        use_parallel=False,  # Set to True for parallel processing
-        max_accounts=3  # Process only first account for testing, None for all
+        nb_an_projection=100,  # Set the number of years to project
+        nb_scenarios=100,      # Set the number of scenarios to run
+        use_parallel=False,   # Set to True for parallel processing
+        max_accounts=3        # Process only first 3 accounts for testing, None for all
     )
 
-    print("\n" + "=" * 60)
-    print("SAMPLE RESULTS")
-    print("=" * 60)
+    if results:
+        print("\n" + "=" * 60)
+        print("SAMPLE RESULTS")
+        print("=" * 60)
 
-    print("\nVP_FLUX_TOTAL:")
-    print(results['vp_flux_total'])
+        print("\nVP_FLUX_TOTAL:")
+        print(results['vp_flux_total'])
 
-    print("\nVP_FLUX_COMPTE (first 5 accounts):")
-    print(results['vp_flux_compte'].head())
+        print("\nVP_FLUX_COMPTE (first 5 accounts):")
+        print(results['vp_flux_compte'].head())
 
-    print("\nFLUX_PROJETES (first 10 periods):")
-    print(results['flux_projetes'].head(10))
+        print("\nFLUX_PROJETES (first 10 periods):")
+        print(results['flux_projetes'].head(10))
