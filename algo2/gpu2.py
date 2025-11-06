@@ -1389,7 +1389,7 @@ if __name__ == "__main__":
         output_path=OUTPUT_PATH,
         nb_an_projection=100,
         nb_scenarios=100,
-        max_accounts=10,  # Start with a small number for testing
+        max_accounts=None,  # Start with a small number for testing
         threads_per_block=(16, 8)  # Tune based on your GPU
     )
 
