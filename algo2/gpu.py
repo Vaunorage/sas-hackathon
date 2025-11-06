@@ -247,26 +247,30 @@ def calculate_coussins_gpu(c_tbl, c_shape, id_prod, mt_dex, mt_mm, mt_vm, mt_gar
 # MAIN GPU KERNEL
 # =============================================================================
 # MODIFIED: Kernel signature updated to accept debug parameters
+
 @cuda.jit
 def project_account_scenario_kernel(
+        # --- Input Data ---
         accounts, n_accounts, n_scenarios, n_years, freq_eval,
         mortality_table, mortality_shape, returns_table, returns_shape, min_ferr_table,
         lapse_tot_table, lapse_tot_shape, lapse_part_table, lapse_part_shape,
         fees_table, fees_shape,
         deposits_table, deposits_shape, acquisition_table, acquisition_shape, coussins_table, coussins_shape,
-        output_cashflows, output_pvs, output_vm,
-        # NEW: Debugging arguments
+        # --- Output Arrays ---
+        output_cashflows, output_pvs, output_vm, output_time_mapping,
+        # --- Debugging ---
         debug_output, debug_account_id, debug_scenario_id
 ):
     thread_id = cuda.grid(1)
-    if thread_id >= n_accounts * n_scenarios: return
+    if thread_id >= n_accounts * n_scenarios:
+        return
 
-    account_idx, scenario_idx = thread_id // n_scenarios, thread_id % n_scenarios
+    account_idx = thread_id // n_scenarios
+    scenario_idx = thread_id % n_scenarios
 
-    # NEW: Check if this thread should write debug info
     is_debug_thread = (accounts[account_idx, 0] == debug_account_id and scenario_idx + 1 == debug_scenario_id)
 
-    # --- ACCOUNT DATA INITIALIZATION (Unchanged) ---
+    # --- Initialize Account Data ---
     annee_eval_ini, mois_eval_ini = int32(accounts[account_idx, 1]), int32(accounts[account_idx, 2])
     annee_nais, mois_nais = int32(accounts[account_idx, 3]), int32(accounts[account_idx, 4])
     i_sexe, i_prod_regr, id_prod = int32(accounts[account_idx, 5]), int32(accounts[account_idx, 6]), int32(
@@ -274,9 +278,7 @@ def project_account_scenario_kernel(
     id_lapse, i_regime_2, id_depot = int32(accounts[account_idx, 8]), int32(accounts[account_idx, 9]), int32(
         accounts[account_idx, 10])
     id_acqui, age_fin_contrat = int32(accounts[account_idx, 11]), int32(accounts[account_idx, 12])
-    age_decaissement = int32(accounts[account_idx, 13])
-    var_retrait_fct, mt_tpa_retrait, pc_retrait_age = int32(accounts[account_idx, 30]), accounts[account_idx, 31], \
-        accounts[account_idx, 32]
+    age_decaissement, var_retrait_fct = int32(accounts[account_idx, 13]), int32(accounts[account_idx, 30])
     nb_an_ech, age_ech_min = int32(accounts[account_idx, 33]), int32(accounts[account_idx, 34])
     mt_vm = accounts[account_idx, 14]
     mt_gar_deces, mt_gar_ech, mt_srg = accounts[account_idx, 15], accounts[account_idx, 16], accounts[account_idx, 17]
@@ -285,32 +287,29 @@ def project_account_scenario_kernel(
     pc_hon_gest, pc_frais_gar = accounts[account_idx, 23], accounts[account_idx, 24]
     pc_gar_deces_1, pc_gar_ech, pc_rfg = accounts[account_idx, 25], accounts[account_idx, 26], accounts[account_idx, 27]
     mt_boni_deces, pc_boni_deces = accounts[account_idx, 28], accounts[account_idx, 29]
-    mt_gar_deces_orig, pc_revenu_fds, mt_rf = accounts[account_idx, 15], accounts[account_idx, 35], accounts[
-        account_idx, 36]
+    mt_tpa_retrait, pc_retrait_age = accounts[account_idx, 31], accounts[account_idx, 32]
+    pc_revenu_fds, mt_rf = accounts[account_idx, 35], accounts[account_idx, 36]
     pc_gar_ech_dep_fut = accounts[account_idx, 37]
-    mt_vm_orig = mt_vm
-
-    # --- STATE VARIABLES (Unchanged) ---
-    tx_survie, tx_actualisation = 1.0, 1.0;
+    mt_gar_deces_orig, mt_vm_orig = accounts[account_idx, 15], mt_vm
+    tx_survie, tx_actualisation = 1.0, 1.0
     mt_min_ferr_proj, mt_mrv_proj = 0.0, 0.0
     annee_ech_proj, mois_ech_proj = float32(annee_eval_ini + nb_an_ech), float32(mois_eval_ini)
     time_idx = 0
     f_eval = float32(freq_eval)
 
-    # --- MAIN PROJECTION LOOP ---
+    # --- Main Projection Loop ---
     for an_eval in range(n_years + 1):
         for mois_simul in range(1, freq_eval + 1):
             annee_reelle, mois_eval = annee_eval_ini + an_eval - 1, mois_simul * 12 // freq_eval
             age = calculate_age_gpu(annee_nais, mois_nais, annee_reelle, mois_eval)
 
-            keep = (age <= age_fin_contrat and
-                    (an_eval > 1 or
-                     (an_eval == 1 and mois_eval >= mois_eval_ini) or
-                     (an_eval == 0 and mois_eval == 12)))
+            keep = (age <= age_fin_contrat and (an_eval > 1 or (an_eval == 1 and mois_eval >= mois_eval_ini) or (
+                        an_eval == 0 and mois_eval == 12)))
             if not keep:
                 continue
 
-            if tx_survie <= 1e-4 or (mt_vm <= 0 and i_prod_regr == 0): break
+            if tx_survie <= 1e-6 or (mt_vm <= 0 and i_prod_regr == 0):
+                break
 
             duree_max10 = min(int32(annee_reelle + mois_eval / 12. - (annee_eval_ini + mois_eval_ini / 12.)) + 1, 10)
             tx_survie_deb = tx_survie
@@ -320,7 +319,7 @@ def project_account_scenario_kernel(
             tx_actualisation *= math.exp(-fwd)
             mt_dex *= math.exp(r_dex);
             mt_mm *= math.exp(r_mm);
-            mt_tsx *= math.exp(r_tsx);
+            mt_tsx *= math.exp(r_tsx)
             mt_sp500 *= math.exp(r_sp500);
             mt_eafe *= math.exp(r_eafe)
             mt_vm_av_frais = mt_dex + mt_mm + mt_tsx + mt_sp500 + mt_eafe
@@ -329,9 +328,9 @@ def project_account_scenario_kernel(
             qx = 1. - math.pow(1. - lookup_mortality_gpu(mortality_table, i_sexe, age_mort, annee_reelle, i_prod_regr,
                                                          mortality_shape), 1. / f_eval)
 
-            ratio_base = mt_gar_deces + mt_boni_deces;
-            r1 = pc_gar_ech / max(mt_gar_ech, 1e-2) if mt_gar_ech > 0 else 9999.;
-            r2 = pc_gar_deces_1 / max(ratio_base, 1e-2) if ratio_base > 0 else 9999.;
+            ratio_base = mt_gar_deces + mt_boni_deces
+            r1 = pc_gar_ech / max(mt_gar_ech, 1e-2) if mt_gar_ech > 0 else 9999.
+            r2 = pc_gar_deces_1 / max(ratio_base, 1e-2) if ratio_base > 0 else 9999.
             r3 = 1. / max(mt_srg, 1e-2) if mt_srg > 0 else 9999.
             vm_vg_ratio = min(10., (mt_vm + mt_vm_av_frais) / 2. * min(min(r1, r2), r3))
             lapse_t, lapse_p = calculate_lapse_rates_gpu(lapse_tot_table, lapse_part_table, duree_max10, age, id_lapse,
@@ -342,13 +341,13 @@ def project_account_scenario_kernel(
             tx_survie *= (1. - qx) * (1. - lapse)
 
             if pc_boni_deces > 0: mt_boni_deces += mt_gar_deces * pc_boni_deces / f_eval
-
             mt_vm_av_retrait = mt_vm_av_frais * math.exp(-pc_rfg / f_eval)
             guarantee_fee_amount = min(mt_vm_av_retrait * pc_frais_gar / f_eval, mt_vm_av_retrait)
             primes_garanties = guarantee_fee_amount * tx_survie_deb
             mt_vm_av_retrait = max(mt_vm_av_retrait - guarantee_fee_amount, 0.0)
 
             if mois_eval == 12 // freq_eval: mt_min_ferr_proj = mt_vm * lookup_min_ferr_gpu(min_ferr_table, age)
+
             retrait = 0.0
             if age + 1 >= age_decaissement and mt_vm_av_retrait > 0:
                 if var_retrait_fct == 1:
@@ -360,79 +359,79 @@ def project_account_scenario_kernel(
                 retrait /= f_eval
 
             prest_mrv = -max(retrait - mt_vm_av_retrait, 0) * tx_survie_deb if i_prod_regr == 1 else 0.0
-
             mt_vm_ap_retrait = max(mt_vm_av_retrait - retrait, 0.)
-            if mt_vm_av_retrait <= retrait:
-                mt_gar_ech, mt_gar_deces, mt_boni_deces, mt_srg = 0., 0., 0., 0.
-            else:
-                prop = 1. - retrait / mt_vm_av_retrait
+
+            if mt_vm_av_retrait > 0:
+                prop = mt_vm_ap_retrait / mt_vm_av_retrait
                 mt_gar_ech *= prop;
                 mt_gar_deces *= prop;
                 mt_boni_deces *= prop
                 mt_srg = max(mt_srg - retrait, 0.)
+            else:
+                mt_gar_ech, mt_gar_deces, mt_boni_deces, mt_srg = 0., 0., 0., 0.
 
             pc_depot, var_depot, age_max_depot, i_even_cesse = lookup_deposits_gpu(deposits_table, duree_max10,
                                                                                    id_depot, deposits_shape)
             depot_futur = 0.0
             if pc_depot > 0 and age < age_max_depot and not (i_even_cesse == 1 and age + 1 >= age_decaissement):
-                base = mt_gar_deces_orig / pc_gar_deces_1 if (var_depot != 1 and pc_gar_deces_1 > 0) else mt_vm_ap_retrait
+                base = mt_gar_deces_orig / pc_gar_deces_1 if (
+                            var_depot != 1 and pc_gar_deces_1 > 0) else mt_vm_ap_retrait
                 depot_futur = (base * pc_depot) / f_eval
+
+            if mt_vm_ap_retrait > 0 and mt_vm_av_frais > 0:
+                scale_factor = mt_vm_ap_retrait / mt_vm_av_frais
+                mt_dex *= scale_factor;
+                mt_mm *= scale_factor;
+                mt_tsx *= scale_factor
+                mt_sp500 *= scale_factor;
+                mt_eafe *= scale_factor
+            else:
+                mt_dex, mt_mm, mt_tsx, mt_sp500, mt_eafe = 0.0, 0.0, 0.0, 0.0, 0.0
 
             mt_vm = mt_vm_ap_retrait + depot_futur
 
-            if depot_futur > 0:
-                # Allocate deposits proportionally to current fund allocation
-                # Use sum of individual funds (which have returns applied but not withdrawals)
-                total_funds = mt_dex + mt_mm + mt_tsx + mt_sp500 + mt_eafe
-                if total_funds > 0:
-                    mt_dex += depot_futur * (mt_dex / total_funds)
-                    mt_mm += depot_futur * (mt_mm / total_funds)
-                    mt_tsx += depot_futur * (mt_tsx / total_funds)
-                    mt_sp500 += depot_futur * (mt_sp500 / total_funds)
-                    mt_eafe += depot_futur * (mt_eafe / total_funds)
-                
-                mt_gar_deces += depot_futur
+            if depot_futur > 0 and mt_vm_ap_retrait > 0:
+                alloc_base = mt_vm_ap_retrait
+                mt_dex += depot_futur * (mt_dex / alloc_base);
+                mt_mm += depot_futur * (mt_mm / alloc_base)
+                mt_tsx += depot_futur * (mt_tsx / alloc_base);
+                mt_sp500 += depot_futur * (mt_sp500 / alloc_base)
+                mt_eafe += depot_futur * (mt_eafe / alloc_base)
+                mt_gar_deces += depot_futur;
                 mt_gar_ech += depot_futur * pc_gar_ech_dep_fut
                 if mt_srg > 0: mt_srg += depot_futur
 
             prest_deces = qx * -max(0., (mt_gar_deces + mt_boni_deces) - mt_vm) * tx_survie_deb
-
             prest_ech = 0.0
-            if (annee_reelle == annee_ech_proj and mois_eval == mois_ech_proj) or (
-                    age == age_fin_contrat and mois_eval == (
+            if (annee_reelle == annee_ech_proj and mois_eval == mois_ech_proj) or \
+                    (age == age_fin_contrat and mois_eval == (
                     mois_nais - 12 / f_eval if mois_nais > 12 / f_eval else 12)):
                 prest_ech = -max(0., mt_gar_ech - mt_vm) * tx_survie
                 if tx_survie > 0: mt_vm += abs(prest_ech / tx_survie)
-                mt_gar_ech = mt_vm * pc_gar_ech
+                mt_gar_ech = mt_vm * pc_gar_ech;
                 annee_ech_proj += nb_an_ech
                 if annee_ech_proj > annee_nais + age_ech_min:
                     mois_ech_proj = mois_eval
                 else:
-                    annee_ech_proj = annee_nais + age_ech_min;
-                    mois_ech_proj = mois_nais
+                    annee_ech_proj = annee_nais + age_ech_min; mois_ech_proj = mois_nais
 
             pc_v_rf, pc_v_ac, pc_m_rf, pc_m_ac, pc_f_ac, pc_f_rf = lookup_acquisition_gpu(acquisition_table,
                                                                                           duree_max10, id_acqui,
                                                                                           acquisition_shape)
             mt_rf_current = mt_rf * (mt_vm / mt_vm_orig) if mt_vm_orig > 0 else 0
-
             pc_comm_vente = (
-                    pc_v_ac * (mt_vm - mt_rf_current) / mt_vm + pc_v_rf * mt_rf_current / mt_vm) if mt_vm > 0 else 0
+                        pc_v_ac * (mt_vm - mt_rf_current) / mt_vm + pc_v_rf * mt_rf_current / mt_vm) if mt_vm > 0 else 0
             pc_comm_maintien = (
-                    pc_m_ac * (mt_vm - mt_rf_current) / mt_vm + pc_m_rf * mt_rf_current / mt_vm) if mt_vm > 0 else 0
+                        pc_m_ac * (mt_vm - mt_rf_current) / mt_vm + pc_m_rf * mt_rf_current / mt_vm) if mt_vm > 0 else 0
             pc_frais_an = (
-                    pc_f_ac * (mt_vm - mt_rf_current) / mt_vm + pc_f_rf * mt_rf_current / mt_vm) if mt_vm > 0 else 0
-
+                        pc_f_ac * (mt_vm - mt_rf_current) / mt_vm + pc_f_rf * mt_rf_current / mt_vm) if mt_vm > 0 else 0
             comm_vente = -pc_comm_vente * depot_futur * tx_survie_deb
             hon_gest = -mt_vm_av_frais * (math.exp(pc_hon_gest / f_eval) - 1) * tx_survie_deb
             comm_maintien = -mt_vm_av_frais * (math.exp(pc_comm_maintien / f_eval) - 1) * tx_survie_deb
             primes_variables = mt_vm_av_frais * math.exp(-(pc_rfg - pc_revenu_fds) / f_eval) * -(
-                    math.exp(-pc_revenu_fds / f_eval) - 1) * tx_survie_deb
-
-            frais_fixes = -lookup_fees_gpu(fees_table, fees_shape, annee_reelle,
-                                           id_prod) / f_eval * tx_survie_deb
+                        math.exp(-pc_revenu_fds / f_eval) - 1) * tx_survie_deb
+            frais_fixes = -lookup_fees_gpu(fees_table, fees_shape, annee_reelle, id_prod) / f_eval * tx_survie_deb
             frais_acquis = pc_frais_an * mt_vm_ap_retrait * lapse * tx_survie_deb * (1 - qx)
-
             p_red, c_cred, c_march, c_dep, c_dech, c_mort, c_depot = calculate_coussins_gpu(coussins_table,
                                                                                             coussins_shape, id_prod,
                                                                                             mt_dex, mt_mm, mt_vm,
@@ -443,27 +442,19 @@ def project_account_scenario_kernel(
                                                                                             age, tx_survie)
             valeur_marchande = mt_vm * tx_survie
 
-            if mt_vm_orig > 0 and mt_vm > 0:
-                ratio = mt_vm / mt_vm_orig
-                mt_dex, mt_mm, mt_tsx, mt_sp500, mt_eafe = accounts[account_idx, 18] * ratio, accounts[
-                    account_idx, 19] * ratio, accounts[account_idx, 20] * ratio, accounts[account_idx, 21] * ratio, \
-                                                           accounts[account_idx, 22] * ratio
-            elif mt_vm <= 0:
-                mt_dex, mt_mm, mt_tsx, mt_sp500, mt_eafe = 0, 0, 0, 0, 0
-
             cf = cuda.local.array(18, dtype=float32)
             cf[0] = primes_garanties;
             cf[1] = prest_deces;
             cf[2] = prest_ech;
             cf[3] = prest_mrv;
             cf[4] = frais_acquis;
-            cf[5] = comm_vente
+            cf[5] = comm_vente;
             cf[6] = primes_variables;
             cf[7] = frais_fixes;
             cf[8] = hon_gest;
             cf[9] = comm_maintien;
             cf[10] = p_red;
-            cf[11] = c_cred
+            cf[11] = c_cred;
             cf[12] = c_march;
             cf[13] = c_dep;
             cf[14] = c_dech;
@@ -471,79 +462,75 @@ def project_account_scenario_kernel(
             cf[16] = c_depot;
             cf[17] = valeur_marchande
 
-            for i in range(18): output_cashflows[thread_id, time_idx, i] = cf[i]
-            for i in range(18): output_pvs[thread_id, time_idx, i] = cf[i] * tx_actualisation
+            for i in range(18):
+                output_cashflows[thread_id, time_idx, i] = cf[i]
+                output_pvs[thread_id, time_idx, i] = cf[i] * tx_actualisation
 
             for i in range(10, 18):
                 output_pvs[thread_id, time_idx, i] /= f_eval
 
             output_vm[thread_id, time_idx] = mt_vm
+            output_time_mapping[thread_id, time_idx, 0] = an_eval
+            output_time_mapping[thread_id, time_idx, 1] = mois_eval
 
-            # NEW: If this is the debug thread, write all state variables to the debug output array
-            if is_debug_thread:
-                if time_idx < debug_output.shape[0]:
-                    # Account and scenario identifiers
-                    debug_output[time_idx, 0] = accounts[account_idx, 0]  # ID_COMPTE
-                    debug_output[time_idx, 1] = scenario_idx + 1  # SCN_EVAL
-                    # Time and account info
-                    debug_output[time_idx, 2] = an_eval
-                    debug_output[time_idx, 3] = mois_eval
-                    debug_output[time_idx, 4] = age
-                    debug_output[time_idx, 5] = annee_reelle
-                    # Cash flows
-                    debug_output[time_idx, 6] = primes_garanties
-                    debug_output[time_idx, 7] = prest_deces
-                    debug_output[time_idx, 8] = prest_ech
-                    debug_output[time_idx, 9] = prest_mrv
-                    debug_output[time_idx, 10] = frais_acquis
-                    debug_output[time_idx, 11] = comm_vente
-                    debug_output[time_idx, 12] = primes_variables
-                    debug_output[time_idx, 13] = frais_fixes
-                    debug_output[time_idx, 14] = hon_gest
-                    debug_output[time_idx, 15] = comm_maintien
-                    debug_output[time_idx, 16] = valeur_marchande
-                    # Cushions
-                    debug_output[time_idx, 17] = p_red
-                    debug_output[time_idx, 18] = c_cred
-                    debug_output[time_idx, 19] = c_march
-                    debug_output[time_idx, 20] = c_dep
-                    debug_output[time_idx, 21] = c_dech
-                    debug_output[time_idx, 22] = c_mort
-                    debug_output[time_idx, 23] = c_depot
-                    # State variables
-                    debug_output[time_idx, 24] = mt_vm
-                    debug_output[time_idx, 25] = mt_gar_deces
-                    debug_output[time_idx, 26] = mt_gar_ech
-                    debug_output[time_idx, 27] = mt_srg
-                    debug_output[time_idx, 28] = mt_boni_deces
-                    debug_output[time_idx, 29] = mt_dex
-                    debug_output[time_idx, 30] = mt_mm
-                    debug_output[time_idx, 31] = mt_tsx
-                    debug_output[time_idx, 32] = mt_sp500
-                    debug_output[time_idx, 33] = mt_eafe
-                    debug_output[time_idx, 34] = mt_vm_av_frais
-                    debug_output[time_idx, 35] = mt_vm_av_retrait
-                    debug_output[time_idx, 36] = mt_min_ferr_proj
-                    # Rates and factors
-                    debug_output[time_idx, 37] = tx_survie
-                    debug_output[time_idx, 38] = tx_survie_deb
-                    debug_output[time_idx, 39] = tx_actualisation
-                    debug_output[time_idx, 40] = qx
-                    debug_output[time_idx, 41] = lapse
-                    debug_output[time_idx, 42] = lapse_t
-                    debug_output[time_idx, 43] = lapse_p
-                    debug_output[time_idx, 44] = vm_vg_ratio
-                    # Transactions
-                    debug_output[time_idx, 45] = depot_futur
-                    debug_output[time_idx, 46] = retrait
+            if is_debug_thread and time_idx < debug_output.shape[0]:
+                debug_output[time_idx, 0] = float32(accounts[account_idx, 0]);
+                debug_output[time_idx, 1] = float32(scenario_idx + 1);
+                debug_output[time_idx, 2] = float32(an_eval);
+                debug_output[time_idx, 3] = float32(mois_eval);
+                debug_output[time_idx, 4] = float32(age);
+                debug_output[time_idx, 5] = float32(annee_reelle);
+                debug_output[time_idx, 6] = float32(primes_garanties);
+                debug_output[time_idx, 7] = float32(prest_deces);
+                debug_output[time_idx, 8] = float32(prest_ech);
+                debug_output[time_idx, 9] = float32(prest_mrv);
+                debug_output[time_idx, 10] = float32(frais_acquis);
+                debug_output[time_idx, 11] = float32(comm_vente);
+                debug_output[time_idx, 12] = float32(primes_variables);
+                debug_output[time_idx, 13] = float32(frais_fixes);
+                debug_output[time_idx, 14] = float32(hon_gest);
+                debug_output[time_idx, 15] = float32(comm_maintien);
+                debug_output[time_idx, 16] = float32(valeur_marchande);
+                debug_output[time_idx, 17] = float32(p_red);
+                debug_output[time_idx, 18] = float32(c_cred);
+                debug_output[time_idx, 19] = float32(c_march);
+                debug_output[time_idx, 20] = float32(c_dep);
+                debug_output[time_idx, 21] = float32(c_dech);
+                debug_output[time_idx, 22] = float32(c_mort);
+                debug_output[time_idx, 23] = float32(c_depot);
+                debug_output[time_idx, 24] = float32(mt_vm);
+                debug_output[time_idx, 25] = float32(mt_gar_deces);
+                debug_output[time_idx, 26] = float32(mt_gar_ech);
+                debug_output[time_idx, 27] = float32(mt_srg);
+                debug_output[time_idx, 28] = float32(mt_boni_deces);
+                debug_output[time_idx, 29] = float32(mt_dex);
+                debug_output[time_idx, 30] = float32(mt_mm);
+                debug_output[time_idx, 31] = float32(mt_tsx);
+                debug_output[time_idx, 32] = float32(mt_sp500);
+                debug_output[time_idx, 33] = float32(mt_eafe);
+                debug_output[time_idx, 34] = float32(mt_vm_av_frais);
+                debug_output[time_idx, 35] = float32(mt_vm_ap_retrait);
+                debug_output[time_idx, 36] = float32(mt_min_ferr_proj);
+                debug_output[time_idx, 37] = float32(tx_survie);
+                debug_output[time_idx, 38] = float32(tx_survie_deb);
+                debug_output[time_idx, 39] = float32(tx_actualisation);
+                debug_output[time_idx, 40] = float32(qx);
+                debug_output[time_idx, 41] = float32(lapse);
+                debug_output[time_idx, 42] = float32(lapse_t);
+                debug_output[time_idx, 43] = float32(lapse_p);
+                debug_output[time_idx, 44] = float32(vm_vg_ratio);
+                debug_output[time_idx, 45] = float32(depot_futur);
+                debug_output[time_idx, 46] = float32(retrait)
 
             time_idx += 1
-            if time_idx >= output_cashflows.shape[1]: break
+            if time_idx >= output_cashflows.shape[1]:
+                break
 
-        if tx_survie <= 1e-4 or (mt_vm <= 0 and i_prod_regr == 0): break
-        if time_idx >= output_cashflows.shape[1]: break
-
-
+        # Correctly indented break conditions for the outer loop
+        if tx_survie <= 1e-6 or (mt_vm <= 0 and i_prod_regr == 0):
+            break
+        if time_idx >= output_cashflows.shape[1]:
+            break
 # =============================================================================
 # DATA PREPARATION & EXECUTION
 # =============================================================================
@@ -578,6 +565,8 @@ def prepare_gpu_data(data_path: Path, config: Dict) -> Dict:
     dfs['population'] = dfs['population'][dfs['population']['ID_COMPTE'] <= config['NBCPT']].copy()
     dfs['rendements'] = dfs['rendements'][(dfs['rendements']['SCN_EVAL'] <= config['NB_SC']) & (
             dfs['rendements']['AN_EVAL'] <= config['NB_AN_PROJECTION'])].copy()
+    
+    
     data_out = {}
     account_cols = [
         'ID_COMPTE', 'ANNEE_EVALUATION_INI', 'MOIS_EVALUATION_INI', 'ANNEE_NAIS',
@@ -692,43 +681,31 @@ def prepare_gpu_data(data_path: Path, config: Dict) -> Dict:
 def run_gpu_projection(data_path: Path, output_path: Path, max_accounts: int = None, nb_scenarios: int = 100,
                        nb_years: int = 100, debug_account_id: int = -1, debug_scenario_id: int = -1,
                        start_year_out: int = None, end_year_out: int = None):
-    """
-    Run GPU-accelerated actuarial projection.
-    
-    Args:
-        data_path: Path to input CSV files.
-        output_path: Path for output files.
-        max_accounts: Maximum number of accounts to process (for testing). None processes all.
-        nb_scenarios: The number of economic scenarios to run.
-        nb_years: The number of years to project.
-        debug_account_id: Account ID for which to generate a detailed calculation trace.
-        debug_scenario_id: Scenario ID for the detailed calculation trace.
-        start_year_out: The start year for filtering the TEST_GPU.csv debug output (does not affect calculations).
-        end_year_out: The end year for filtering the TEST_GPU.csv debug output (does not affect calculations).
-    """
     start_time = datetime.now()
-    print("=" * 80 + "\nGPU ACTUARIAL PROJECTION\n" + "=" * 80)
+    print("=" * 80 + "\nGPU ACTUARIAL PROJECTION (REVISED)\n" + "=" * 80)
     config = create_config(nb_scenarios=nb_scenarios, nb_years=nb_years, max_accounts=max_accounts)
     gpu_data = prepare_gpu_data(data_path, config)
 
-    n_accounts, n_scenarios, n_years, freq_eval = len(gpu_data['accounts']), config['NB_SC'], config[
-        'NB_AN_PROJECTION'], config['FREQ_EVAL']
-    max_timesteps, total_paths = (n_years + 1) * freq_eval, n_accounts * n_scenarios
+    n_accounts = len(gpu_data['accounts'])
+    max_timesteps = (nb_years + 1) * config['FREQ_EVAL']
+    total_paths = n_accounts * nb_scenarios
     print(
-        f"\nConfiguration: {n_accounts} accounts, {n_scenarios} scenarios, {n_years} years -> {total_paths:,} total paths")
+        f"\nConfiguration: {n_accounts} accounts, {nb_scenarios} scenarios, {nb_years} years -> {total_paths:,} total paths")
 
-    # --- Output Array Initialization ---
+    # --- Initialize Output Arrays on Host ---
     output_cashflows = np.zeros((total_paths, max_timesteps, 18), dtype=np.float32)
     output_pvs = np.zeros((total_paths, max_timesteps, 18), dtype=np.float32)
     output_vm = np.zeros((total_paths, max_timesteps), dtype=np.float32)
-
-    # NEW: Initialize debug array if needed (expanded to match TEST_PY.csv columns)
+    # NEW: Array to store the (an_eval, mois_eval) for each calculated timestep
+    output_time_mapping = np.zeros((total_paths, max_timesteps, 2), dtype=np.int32)
     debug_output = np.zeros((max_timesteps, 47), dtype=np.float32) if debug_account_id > 0 else None
 
     print("\nTransferring data to GPU...")
     d_data = {k: cuda.to_device(v) for k, v in gpu_data.items()}
-    d_output_cashflows, d_output_pvs, d_output_vm = cuda.to_device(output_cashflows), cuda.to_device(
-        output_pvs), cuda.to_device(output_vm)
+    d_output_cashflows = cuda.to_device(output_cashflows)
+    d_output_pvs = cuda.to_device(output_pvs)
+    d_output_vm = cuda.to_device(output_vm)
+    d_output_time_mapping = cuda.to_device(output_time_mapping)  # NEW
     d_debug_output = cuda.to_device(debug_output) if debug_output is not None else cuda.device_array((0, 0))
 
     threads_per_block = config['THREADS_PER_BLOCK']
@@ -736,29 +713,27 @@ def run_gpu_projection(data_path: Path, output_path: Path, max_accounts: int = N
     print(f"\nLaunching GPU kernel ({blocks_per_grid} blocks, {threads_per_block} threads)...")
 
     kernel_start = datetime.now()
-    # MODIFIED: Kernel call updated with new debug arguments
     project_account_scenario_kernel[blocks_per_grid, threads_per_block](
-        d_data['accounts'], n_accounts, n_scenarios, n_years, freq_eval,
-        d_data['mortality_table'], d_data['mortality_shape'],
-        d_data['returns_table'], d_data['returns_shape'], d_data['min_ferr_table'],
-        d_data['lapse_tot_table'], d_data['lapse_tot_shape'],
-        d_data['lapse_part_table'], d_data['lapse_part_shape'],
-        d_data['fees_table'], d_data['fees_shape'],
-        d_data['deposits_table'], d_data['deposits_shape'],
-        d_data['acquisition_table'], d_data['acquisition_shape'],
-        d_data['coussins_table'], d_data['coussins_shape'],
-        d_output_cashflows, d_output_pvs, d_output_vm,
-        d_debug_output, float32(debug_account_id), int32(debug_scenario_id)  # NEW
+        d_data['accounts'], n_accounts, nb_scenarios, nb_years, config['FREQ_EVAL'],
+        d_data['mortality_table'], d_data['mortality_shape'], d_data['returns_table'], d_data['returns_shape'],
+        d_data['min_ferr_table'],
+        d_data['lapse_tot_table'], d_data['lapse_tot_shape'], d_data['lapse_part_table'], d_data['lapse_part_shape'],
+        d_data['fees_table'], d_data['fees_shape'], d_data['deposits_table'], d_data['deposits_shape'],
+        d_data['acquisition_table'], d_data['acquisition_shape'], d_data['coussins_table'], d_data['coussins_shape'],
+        d_output_cashflows, d_output_pvs, d_output_vm, d_output_time_mapping,  # Pass new array
+        d_debug_output, float32(debug_account_id), int32(debug_scenario_id)
     )
     cuda.synchronize()
     kernel_end = datetime.now()
     print(f"  ✓ Kernel execution time: {(kernel_end - kernel_start).total_seconds():.2f} seconds")
 
     print("\nTransferring results from GPU and aggregating...")
+    pvs_host = d_output_pvs.copy_to_host()
     cashflows_host = d_output_cashflows.copy_to_host()
-    pvs_avg = d_output_pvs.copy_to_host().reshape(n_accounts, n_scenarios, max_timesteps, 18).mean(axis=1)
+    time_mapping_host = d_output_time_mapping.copy_to_host()
 
-    # --- AGGREGATION FOR VP FILES (UNCHANGED) ---
+    # --- AGGREGATION FOR VP FILES ---
+    pvs_avg = pvs_host.reshape(n_accounts, nb_scenarios, max_timesteps, 18).mean(axis=1)
     vp_flux_compte = pd.DataFrame({
         'ID_COMPTE': gpu_data['accounts'][:, 0].astype(int), 'VP_PRIMES_GARANTIES': pvs_avg[:, :, 0].sum(axis=1),
         'VP_PREST_DECES': pvs_avg[:, :, 1].sum(axis=1), 'VP_PREST_ECH': pvs_avg[:, :, 2].sum(axis=1),
@@ -774,67 +749,70 @@ def run_gpu_projection(data_path: Path, output_path: Path, max_accounts: int = N
     vp_cols_to_sum = [c for c in vp_flux_compte.columns if c.startswith('VP_') and c != 'VP_VALEUR_MARCHANDE']
     vp_flux_total = pd.DataFrame({'CATEGORIE': ['TOTAL'], 'VP_FLUX_TOT': [vp_flux_compte[vp_cols_to_sum].sum().sum()]})
 
-    # --- NEW: AGGREGATION FOR FLUX_PROJETES ---
-    print("  - Aggregating flux projetes...")
-    cashflows_avg_acct = cashflows_host.reshape(n_accounts, n_scenarios, max_timesteps, 18).mean(axis=1)
-    flux_projetes_agg = cashflows_avg_acct.sum(axis=0)
+    # --- REVISED AGGREGATION FOR FLUX_PROJETES ---
+    print("  - Aggregating flux projetes using direct time mapping...")
+    # Average cashflows across scenarios for each account
+    cashflows_avg_acct = cashflows_host.reshape(n_accounts, nb_scenarios, max_timesteps, 18).mean(axis=1)
 
-    # Create time index columns (AN_EVAL, MOIS_EVAL)
-    timesteps = np.arange(max_timesteps)
-    an_eval = timesteps // freq_eval
-    mois_simul = (timesteps % freq_eval) + 1
-    mois_eval = mois_simul * 12 // freq_eval
+    # We only need one time map per account, as it's deterministic. Take the first scenario's map.
+    time_map_per_acct = time_mapping_host.reshape(n_accounts, nb_scenarios, max_timesteps, 2)[:, 0, :, :]
 
+    # Create a list of DataFrames, one for each account
+    flux_dfs = []
     cf_cols = ['PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV', 'FRAIS_ACQUIS', 'COMM_VENTE',
                'PRIMES_VARIABLES', 'FRAIS_FIXES', 'HON_GEST', 'COMM_MAINTIEN', 'PASSIF_REDRESSE', 'COUSSIN_CREDIT',
                'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
                'VALEUR_MARCHANDE']
 
-    flux_projetes_df = pd.DataFrame(flux_projetes_agg, columns=cf_cols)
-    flux_projetes_df.insert(0, 'AN_EVAL', an_eval)
-    flux_projetes_df.insert(1, 'MOIS_EVAL', mois_eval)
+    for i in range(n_accounts):
+        # Create a DataFrame for the current account's averaged cashflows and time map
+        df = pd.DataFrame(cashflows_avg_acct[i], columns=cf_cols)
+        df[['AN_EVAL', 'MOIS_EVAL']] = time_map_per_acct[i]
+        flux_dfs.append(df)
 
-    # Filter out empty future periods
-    flux_projetes_df = flux_projetes_df[flux_projetes_df[cf_cols].abs().sum(axis=1) > 1e-9]
+    # Concatenate all account DataFrames and perform the final aggregation
+    if flux_dfs:
+        full_flux_df = pd.concat(flux_dfs, ignore_index=True)
+        # Filter out padding rows where AN_EVAL is 0 (from timesteps that were never reached)
+        full_flux_df = full_flux_df[full_flux_df['AN_EVAL'] > 0]
+        # Group by time period and sum across all accounts
+        flux_projetes_df = full_flux_df.groupby(['AN_EVAL', 'MOIS_EVAL'], as_index=False)[cf_cols].sum()
+        flux_projetes_df = flux_projetes_df.sort_values(['AN_EVAL', 'MOIS_EVAL']).reset_index(drop=True)
+    else:
+        flux_projetes_df = pd.DataFrame(columns=['AN_EVAL', 'MOIS_EVAL'] + cf_cols)
 
+    # --- Save Outputs ---
     print("\nSaving outputs...");
     output_path.mkdir(parents=True, exist_ok=True)
     vp_flux_compte.to_csv(output_path / "VP_FLUX_COMPTE_GPU.csv", index=False, sep=';')
     vp_flux_total.to_csv(output_path / "VP_FLUX_TOTAL_GPU.csv", index=False, sep=';')
-    flux_projetes_df.to_csv(output_path / "FLUX_PROJETES_GPU.csv", index=False, sep=';')  # NEW
+    flux_projetes_df.to_csv(output_path / "FLUX_PROJETES_GPU.csv", index=False, sep=';')
     print(f"  ✓ Saved outputs to {output_path}")
 
-    # NEW: Save debug file if it was generated
+    # --- Save Debug File (if generated) ---
     if debug_output is not None:
         debug_host = d_debug_output.copy_to_host()
-        # Column names matching TEST_PY.csv structure
         debug_cols = [
             'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL', 'AGE', 'ANNEE_REELLE',
-            'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
-            'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES', 'HON_GEST', 'COMM_MAINTIEN',
-            'VALEUR_MARCHANDE',
-            'PASSIF_REDRESSE', 'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE',
-            'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
-            'MT_VM_PROJ', 'MT_GAR_DECES_PROJ', 'MT_GAR_ECH_PROJ', 'MT_SRG_PROJ', 'MT_BONI_DECES_PROJ',
-            'MT_DEX_PROJ', 'MT_MM_PROJ', 'MT_TSX_PROJ', 'MT_SP500_PROJ', 'MT_EAFE_PROJ',
-            'MT_VM_AV_RETRAIT_FRAIS', 'MT_VM_AV_RETRAIT', 'MT_MIN_FERR_PROJ',
-            'TX_SURVIE', 'TX_SURVIE_DEB', 'TX_ACTUALISATION', 'QX', 'LAPSE', 'LAPSE_TOT', 'LAPSE_PART',
-            'VM_VG_RATIO', 'DEPOT_FUTUR', 'RETRAIT'
+            'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV', 'FRAIS_ACQUIS', 'COMM_VENTE',
+            'PRIMES_VARIABLES', 'FRAIS_FIXES', 'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE',
+            'PASSIF_REDRESSE', 'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
+            'COUSSIN_MORTALITE', 'COUSSIN_DEPOT', 'MT_VM_PROJ', 'MT_GAR_DECES_PROJ', 'MT_GAR_ECH_PROJ',
+            'MT_SRG_PROJ', 'MT_BONI_DECES_PROJ', 'MT_DEX_PROJ', 'MT_MM_PROJ', 'MT_TSX_PROJ',
+            'MT_SP500_PROJ', 'MT_EAFE_PROJ', 'MT_VM_AV_RETRAIT_FRAIS', 'MT_VM_AV_RETRAIT',
+            'MT_MIN_FERR_PROJ', 'TX_SURVIE', 'TX_SURVIE_DEB', 'TX_ACTUALISATION', 'QX', 'LAPSE',
+            'LAPSE_TOT', 'LAPSE_PART', 'VM_VG_RATIO', 'DEPOT_FUTUR', 'RETRAIT'
         ]
         debug_df = pd.DataFrame(debug_host, columns=debug_cols)
-        debug_df = debug_df[debug_df['AN_EVAL'] > 0]  # Filter out padding
-        
-        # Apply year filtering for debug output if specified
-        if start_year_out is not None or end_year_out is not None:
-            print(f"  - Filtering TEST_GPU.csv for years {start_year_out or 'start'} to {end_year_out or 'end'}...")
-            if start_year_out is not None:
-                debug_df = debug_df[debug_df['AN_EVAL'] >= start_year_out]
-            if end_year_out is not None:
-                debug_df = debug_df[debug_df['AN_EVAL'] <= end_year_out]
-        
-        debug_df.to_csv(output_path / "TEST_GPU.csv", index=False, sep=';')
-        print(f"  ✓ Saved debug trace to {output_path / 'TEST_GPU.csv'} ({len(debug_df)} rows, {len(debug_cols)} columns)")
+        debug_df = debug_df[debug_df['AN_EVAL'] > 0]
 
+        if start_year_out is not None: debug_df = debug_df[debug_df['AN_EVAL'] >= start_year_out]
+        if end_year_out is not None: debug_df = debug_df[debug_df['AN_EVAL'] <= end_year_out]
+
+        debug_df.to_csv(output_path / "TEST_GPU.csv", index=False, sep=';')
+        print(f"  ✓ Saved debug trace to {output_path / 'TEST_GPU.csv'} ({len(debug_df)} rows)")
+
+    # --- Final Summary ---
     total_time, kernel_time = (datetime.now() - start_time).total_seconds(), (kernel_end - kernel_start).total_seconds()
     print("\n" + "=" * 80 + "\nPROJECTION COMPLETE\n" + "=" * 80)
     print(
@@ -844,7 +822,6 @@ def run_gpu_projection(data_path: Path, output_path: Path, max_accounts: int = N
     print("=" * 80)
 
     return {'vp_flux_compte': vp_flux_compte, 'vp_flux_total': vp_flux_total, 'flux_projetes': flux_projetes_df}
-
 
 def main():
     # MODIFIED: Updated argument parser

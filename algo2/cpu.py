@@ -360,57 +360,61 @@ def calculate_lapse_level_partial(vm_vg_ratio: float) -> int:
 # LEVEL 2: CREATE EXPANDED TIMELINE
 # =============================================================================
 
-def create_expanded_timeline(account: pd.Series, config: Dict) -> pd.DataFrame:
+def create_expanded_timeline(account: pd.Series, config: Dict, scn_eval: int) -> pd.DataFrame:
     """
-    LEVEL 2: Create the skeleton of scenario × year × month combinations.
+    LEVEL 2: Create the skeleton of year × month combinations for a single scenario.
     Equivalent to lines 103-125 in SAS code.
+    
+    Args:
+        account: Account data
+        config: Configuration dictionary
+        scn_eval: Scenario number to create timeline for
     """
     rows = []
 
-    for scn_eval in range(1, config['NB_SC'] + 1):
-        for an_eval in range(0, config['NB_AN_PROJECTION'] + 1):
-            for mois_simul in range(1, config['FREQ_EVAL'] + 1):
+    for an_eval in range(0, config['NB_AN_PROJECTION'] + 1):
+        for mois_simul in range(1, config['FREQ_EVAL'] + 1):
 
-                # Calculate real year and month
-                annee_reelle = int(account['ANNEE_EVALUATION_INI']) + an_eval - 1
-                mois_eval = mois_simul * 12 // config['FREQ_EVAL']
+            # Calculate real year and month
+            annee_reelle = int(account['ANNEE_EVALUATION_INI']) + an_eval - 1
+            mois_eval = mois_simul * 12 // config['FREQ_EVAL']
 
-                # Calculate age
-                age = calculate_age(
-                    int(account['ANNEE_NAIS']),
-                    int(account['MOIS_NAIS']),
-                    annee_reelle,
-                    mois_eval
-                )
+            # Calculate age
+            age = calculate_age(
+                int(account['ANNEE_NAIS']),
+                int(account['MOIS_NAIS']),
+                annee_reelle,
+                mois_eval
+            )
 
-                # Keep only relevant periods (line 120 in SAS)
-                keep = (
-                        age <= account['AGE_FIN_CONTRAT'] and
-                        (an_eval > 1 or
-                         (an_eval == 1 and mois_eval >= account['MOIS_EVALUATION_INI']) or
-                         (an_eval == 0 and mois_eval == 12))
-                )
+            # Keep only relevant periods (line 120 in SAS)
+            keep = (
+                    age <= account['AGE_FIN_CONTRAT'] and
+                    (an_eval > 1 or
+                     (an_eval == 1 and mois_eval >= account['MOIS_EVALUATION_INI']) or
+                     (an_eval == 0 and mois_eval == 12))
+            )
 
-                if keep:
-                    rows.append({
-                        'ID_COMPTE': int(account['ID_COMPTE']),
-                        'SCN_EVAL': scn_eval,
-                        'AN_EVAL': an_eval,
-                        'MOIS_EVAL': mois_eval,
-                        'ANNEE_REELLE': annee_reelle,
-                        'AGE': age,
-                        'I_SEXE': int(account['I_SEXE']),
-                        'I_PRODUIT_REGR': int(account['I_PRODUIT_REGR']),
-                        'ID_PRODUIT': int(account['ID_PRODUIT']),
-                        'ID_LAPSE': int(account['ID_LAPSE']),
-                        'I_REGIME_2': int(account['I_REGIME_2']),
-                        'ID_DEPOT': int(account['ID_DEPOT']),
-                        'ID_ACQUI': int(account.get('ID_ACQUI', 1)),
-                        'AGE_ECH_MIN': int(account['AGE_ECH_MIN']),
-                        'AGE_FIN_CONTRAT': int(account['AGE_FIN_CONTRAT']),
-                        'MOIS_NAIS': int(account['MOIS_NAIS']),
-                        'AGE_DECAISSEMENT': int(account['AGE_DECAISSEMENT']),
-                    })
+            if keep:
+                rows.append({
+                    'ID_COMPTE': int(account['ID_COMPTE']),
+                    'SCN_EVAL': scn_eval,
+                    'AN_EVAL': an_eval,
+                    'MOIS_EVAL': mois_eval,
+                    'ANNEE_REELLE': annee_reelle,
+                    'AGE': age,
+                    'I_SEXE': int(account['I_SEXE']),
+                    'I_PRODUIT_REGR': int(account['I_PRODUIT_REGR']),
+                    'ID_PRODUIT': int(account['ID_PRODUIT']),
+                    'ID_LAPSE': int(account['ID_LAPSE']),
+                    'I_REGIME_2': int(account['I_REGIME_2']),
+                    'ID_DEPOT': int(account['ID_DEPOT']),
+                    'ID_ACQUI': int(account.get('ID_ACQUI', 1)),
+                    'AGE_ECH_MIN': int(account['AGE_ECH_MIN']),
+                    'AGE_FIN_CONTRAT': int(account['AGE_FIN_CONTRAT']),
+                    'MOIS_NAIS': int(account['MOIS_NAIS']),
+                    'AGE_DECAISSEMENT': int(account['AGE_DECAISSEMENT']),
+                })
 
     return pd.DataFrame(rows)
 
@@ -1364,7 +1368,7 @@ def calculate_duree_max10(row: Dict, account: pd.Series) -> int:
     return min(duree, 10)
 
 
-def process_single_row(row: Dict, state: Dict, lookups: Dict, prev_scn: int,
+def process_single_row(row: Dict, state: Dict, lookups: Dict,
                        original_account: pd.Series) -> Tuple[Dict, Dict]:
     """
     Process a single projection row with all calculations.
@@ -1373,9 +1377,6 @@ def process_single_row(row: Dict, state: Dict, lookups: Dict, prev_scn: int,
     """
     freq = CONFIG['FREQ_EVAL']
     AJUST_NOUV_AFFAIRES = 1.0
-
-    if row['SCN_EVAL'] != prev_scn:
-        state = initialize_state(original_account)
 
     if state['TX_SURVIE'] == 0 or (state['MT_VM_PROJ'] == 0 and row['I_PRODUIT_REGR'] == 0):
         return None, state
@@ -1483,6 +1484,8 @@ def project_account_wrapper(account_id: int, population: pd.DataFrame,
 
     ENHANCED: Adds logic to save a detailed trace for a specific account/scenario,
     mimicking the SAS `TEST` dataset for easy debugging and comparison.
+    
+    REFACTORED: Scenario loop is now explicit at this level for clarity.
     """
     account = population[population['ID_COMPTE'] == account_id].iloc[0]
 
@@ -1491,36 +1494,38 @@ def project_account_wrapper(account_id: int, population: pd.DataFrame,
     create_debug_file = (account_id == config['NO_COMPTE_SORTIE'])
     debug_data = []
 
-    # LEVEL 2: Create expanded timeline
-    timeline = create_expanded_timeline(account, config)
-    if len(timeline) == 0:
-        return pd.DataFrame()
-
-    # LEVEL 3: Process each row with state retention
+    # LEVEL 2: Loop through all scenarios
     results = []
-    state = initialize_state(account)
-    prev_scn = 1
+    
+    for scn_eval in range(1, config['NB_SC'] + 1):
+        # Create timeline for this specific scenario
+        timeline = create_expanded_timeline(account, config, scn_eval)
+        
+        if len(timeline) == 0:
+            continue
 
-    for idx, row in timeline.iterrows():
-        row_dict = row.to_dict()
+        # LEVEL 3: Process each row with state retention within this scenario
+        # Initialize state fresh for each scenario
+        state = initialize_state(account)
 
-        # Process the row
-        result_row, new_state = process_single_row(row_dict, state, lookups, prev_scn, account)
+        for idx, row in timeline.iterrows():
+            row_dict = row.to_dict()
 
-        # Update the state for the next iteration
-        state = new_state
+            # Process the row
+            result_row, new_state = process_single_row(row_dict, state, lookups, account)
 
-        # Only append if result is not None (policy still active)
-        if result_row is not None:
-            results.append(result_row)
+            # Update the state for the next iteration
+            state = new_state
 
-            # If this is the debug scenario, save all intermediate variables
-            if create_debug_file and row_dict['SCN_EVAL'] == config['NO_SCN_SORTIE']:
-                # Combine the original row, the calculated results, and the full state
-                full_debug_row = {**row_dict, **result_row, **state}
-                debug_data.append(full_debug_row)
+            # Only append if result is not None (policy still active)
+            if result_row is not None:
+                results.append(result_row)
 
-        prev_scn = row_dict['SCN_EVAL']
+                # If this is the debug scenario, save all intermediate variables
+                if create_debug_file and scn_eval == config['NO_SCN_SORTIE']:
+                    # Combine the original row, the calculated results, and the full state
+                    full_debug_row = {**row_dict, **result_row, **state}
+                    debug_data.append(full_debug_row)
 
     # If a debug file was created, save it to CSV
     if create_debug_file and debug_data:
