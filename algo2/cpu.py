@@ -3,29 +3,26 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Tuple, Any
 from datetime import datetime
-import multiprocessing as mp
-from functools import partial
+import math
+from numba import cuda
 from paths import HERE
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-# Default configuration, can be overridden by arguments in run_projection
 CONFIG = {
-    'nb_thread_tot': 12,
     'NBCPT': 9999999,
     'NB_SC': 100,
     'NB_AN_PROJECTION': 100,
     'FREQ_EVAL': 12,
-    # These will be overridden by debug arguments if provided
     'NO_COMPTE_SORTIE': 6522,
     'NO_SCN_SORTIE': 2,
 }
 
 
 # =============================================================================
-# UTILITY FUNCTIONS
+# UTILITY FUNCTIONS (CPU)
 # =============================================================================
 
 def parse_percentage(value):
@@ -33,26 +30,18 @@ def parse_percentage(value):
     if pd.isna(value):
         return 0.0
     if isinstance(value, str):
-        # Remove whitespace
         value = value.strip()
-
-        # Check for parentheses (negative values)
         is_negative = False
         if value.startswith('(') and value.endswith(')'):
             is_negative = True
-            value = value[1:-1].strip()  # Remove parentheses
-
-        # Check for percentage sign
+            value = value[1:-1].strip()
         if '%' in value:
             value = value.replace('%', '').strip()
             numeric_value = float(value) / 100.0
         else:
             numeric_value = float(value)
-
-        # Apply negative if parentheses were present
         if is_negative:
             numeric_value = -numeric_value
-
         return numeric_value
     return float(value)
 
@@ -90,77 +79,61 @@ def load_all_data(data_path: Path) -> Dict[str, pd.DataFrame]:
     data['frais_admin'] = pd.read_csv(data_path.joinpath("FRAIS_ADMIN.csv"), sep=';', encoding='utf-8')
     data['min_ferr'] = pd.read_csv(data_path.joinpath("MIN_FERR.csv"), sep=';', encoding='utf-8')
     data['tx_lapse_part'] = pd.read_csv(data_path.joinpath("TX_LAPSE_PART.csv"), sep=';', encoding='utf-8')
-
-    # NEW: Load missing tables
     data['tx_lapse_tot'] = pd.read_csv(data_path.joinpath("TX_LAPSE_TOT.csv"), sep=';', encoding='utf-8')
     data['acquisition'] = pd.read_csv(data_path.joinpath("ACQUISITION.csv"), sep=';', encoding='utf-8')
     data['coussins_escap'] = pd.read_csv(data_path.joinpath("COUSSINS_ESCAP.csv"), sep=';', encoding='utf-8')
 
-    # Normalize all column names to uppercase for consistency
+    # Normalize all column names
     print("  Normalizing column names...")
     for key in data:
         data[key] = normalize_column_names(data[key])
 
-    # Load POPULATION
+    # Clean numeric columns
     print("  Loading POPULATION...")
     pct_cols = [col for col in data['population'].columns if col.startswith('PC_') or col.startswith('TAUX_')]
     data['population'] = clean_numeric(data['population'], pct_cols)
 
-    # Load MORTALITE
     print("  Loading MORTALITE...")
     data['mortalite'] = clean_numeric(data['mortalite'], ['QX'])
 
-    # Load RENDEMENTS
     print("  Loading RENDEMENTS...")
     rend_cols = ['FORWARD_RATE', 'AJUST_FORWARD_RATE_VM_0', 'RENDDEX_AN', 'RENDMM_AN',
                  'RENDTSX_AN', 'RENDSP500_AN', 'RENDEAFE_AN']
     data['rendements'] = clean_numeric(data['rendements'], rend_cols)
 
-    # Load DEPOTS_FUTURS
     print("  Loading DEPOTS_FUTURS...")
     data['depots_futurs'] = clean_numeric(data['depots_futurs'], ['PC_DEPOT_ANNUEL'])
 
-    # Load FRAIS_ADMIN
     print("  Loading FRAIS_ADMIN...")
     data['frais_admin'] = clean_numeric(data['frais_admin'], ['FRAIS'])
 
-    # Load MIN_FERR
     print("  Loading MIN_FERR...")
     data['min_ferr'] = clean_numeric(data['min_ferr'], ['MIN_FERR'])
 
-    # Load TX_LAPSE_PART
     print("  Loading TX_LAPSE_PART...")
     lapse_cols = ['TX_LAPSE_PART_MIN', 'TX_LAPSE_PART_MAX']
     data['tx_lapse_part'] = clean_numeric(data['tx_lapse_part'], lapse_cols)
 
-    # NEW: Load TX_LAPSE_TOT
     print("  Loading TX_LAPSE_TOT...")
-    # TX_LAPSE values are already in decimal format (not percentages)
-    # FACT_DIM is also decimal
-    # Just ensure they're numeric
     for col in ['TX_LAPSE_TOT_MIN', 'TX_LAPSE_TOT_MAX', 'FACT_DIM']:
         if col in data['tx_lapse_tot'].columns:
             data['tx_lapse_tot'][col] = pd.to_numeric(data['tx_lapse_tot'][col], errors='coerce').fillna(0)
 
-    # NEW: Load ACQUISITION
     print("  Loading ACQUISITION...")
     acq_cols = ['PC_COMMISSION_VENTE_RF', 'PC_COMMISSION_VENTE_AC',
                 'PC_COMMISSION_MAINTIEN_RF', 'PC_COMMISSION_MAINTIEN_AC',
                 'PC_FRAIS_AN_AC', 'PC_FRAIS_AN_RF']
     data['acquisition'] = clean_numeric(data['acquisition'], acq_cols)
 
-    # NEW: Load COUSSINS_ESCAP
     print("  Loading COUSSINS_ESCAP...")
-    # Only TX_ and FACTEUR_ columns need percentage parsing, BASE_ columns are integers
     coussin_cols = [col for col in data['coussins_escap'].columns
                     if col.startswith('TX_') or col.startswith('FACTEUR_')]
     data['coussins_escap'] = clean_numeric(data['coussins_escap'], coussin_cols)
-    # BASE columns should be integers
     base_cols = [col for col in data['coussins_escap'].columns if col.startswith('BASE_')]
     for col in base_cols:
         data['coussins_escap'][col] = data['coussins_escap'][col].astype(int)
 
-    # Filter data based on config
+    # Filter data
     data['rendements'] = data['rendements'][
         (data['rendements']['SCN_EVAL'] <= CONFIG['NB_SC']) &
         (data['rendements']['AN_EVAL'] <= CONFIG['NB_AN_PROJECTION'])
@@ -175,1610 +148,1214 @@ def load_all_data(data_path: Path) -> Dict[str, pd.DataFrame]:
 
 
 # =============================================================================
-# HASH TABLE / FAST LOOKUP CREATION
+# GPU LOOKUP TABLE CREATION
 # =============================================================================
 
-def create_mortality_lookup(df: pd.DataFrame) -> Dict[Tuple, float]:
-    """Create O(1) lookup for mortality rates."""
-    lookup = {}
+def create_gpu_mortality_lookup(df: pd.DataFrame):
+    """Create flattened array for mortality lookup on GPU."""
+    # Create a 4D array indexed by: [i_sexe, age, year, i_produit_regr]
+    max_sexe = 2
+    max_age = 121
+    max_year = df['ANNEE_REELLE'].max() + 1
+    max_produit = df['I_PRODUIT_REGR'].max() + 1
+
+    # Initialize with default value
+    lookup = np.full((max_sexe, max_age, max_year, max_produit), 0.001, dtype=np.float32)
+
     for _, row in df.iterrows():
-        key = (int(row['I_SEXE']), int(row['AGE_MORTALITE']),
-               int(row['ANNEE_REELLE']), int(row['I_PRODUIT_REGR']))
-        lookup[key] = float(row['QX'])
+        i_sexe = int(row['I_SEXE'])
+        age = int(row['AGE_MORTALITE'])
+        year = int(row['ANNEE_REELLE'])
+        i_produit = int(row['I_PRODUIT_REGR'])
+        lookup[i_sexe, age, year, i_produit] = float(row['QX'])
+
     return lookup
 
 
-def create_returns_lookup(df: pd.DataFrame) -> Dict[Tuple, Dict]:
-    """Create O(1) lookup for investment returns."""
-    lookup = {}
+def create_gpu_returns_lookup(df: pd.DataFrame):
+    """Create flattened arrays for returns lookup on GPU."""
+    max_scn = df['SCN_EVAL'].max() + 1
+    max_an = df['AN_EVAL'].max() + 1
+    max_mois = df['MOIS_EVAL'].max() + 1
+
+    # Create separate arrays for each return type
+    forward_rate = np.zeros((max_scn, max_an, max_mois), dtype=np.float32)
+    ajust_forward = np.zeros((max_scn, max_an, max_mois), dtype=np.float32)
+    rend_dex = np.zeros((max_scn, max_an, max_mois), dtype=np.float32)
+    rend_mm = np.zeros((max_scn, max_an, max_mois), dtype=np.float32)
+    rend_tsx = np.zeros((max_scn, max_an, max_mois), dtype=np.float32)
+    rend_sp500 = np.zeros((max_scn, max_an, max_mois), dtype=np.float32)
+    rend_eafe = np.zeros((max_scn, max_an, max_mois), dtype=np.float32)
+
     for _, row in df.iterrows():
-        key = (int(row['SCN_EVAL']), int(row['AN_EVAL']), int(row['MOIS_EVAL']))
-        lookup[key] = {
-            'FORWARD_RATE': float(row['FORWARD_RATE']),
-            'AJUST_FORWARD_RATE_VM_0': float(row['AJUST_FORWARD_RATE_VM_0']),
-            'RENDDEX_AN': float(row['RENDDEX_AN']),
-            'RENDMM_AN': float(row['RENDMM_AN']),
-            'RENDTSX_AN': float(row['RENDTSX_AN']),
-            'RENDSP500_AN': float(row['RENDSP500_AN']),
-            'RENDEAFE_AN': float(row['RENDEAFE_AN']),
-        }
+        scn = int(row['SCN_EVAL'])
+        an = int(row['AN_EVAL'])
+        mois = int(row['MOIS_EVAL'])
+        forward_rate[scn, an, mois] = float(row['FORWARD_RATE'])
+        ajust_forward[scn, an, mois] = float(row['AJUST_FORWARD_RATE_VM_0'])
+        rend_dex[scn, an, mois] = float(row['RENDDEX_AN'])
+        rend_mm[scn, an, mois] = float(row['RENDMM_AN'])
+        rend_tsx[scn, an, mois] = float(row['RENDTSX_AN'])
+        rend_sp500[scn, an, mois] = float(row['RENDSP500_AN'])
+        rend_eafe[scn, an, mois] = float(row['RENDEAFE_AN'])
+
+    return (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe)
+
+
+def create_gpu_min_ferr_lookup(df: pd.DataFrame):
+    """Create array for minimum FERR lookup."""
+    max_age = 121
+    lookup = np.zeros(max_age, dtype=np.float32)
+    for _, row in df.iterrows():
+        age = int(row['AGE'])
+        lookup[age] = float(row['MIN_FERR'])
     return lookup
 
 
-def create_min_ferr_lookup(df: pd.DataFrame) -> Dict[int, float]:
-    """Create O(1) lookup for minimum RRIF withdrawals."""
-    return {int(row['AGE']): float(row['MIN_FERR'])
-            for _, row in df.iterrows()}
+def create_gpu_lapse_part_lookup(df: pd.DataFrame):
+    """Create arrays for partial lapse lookup."""
+    max_age = 121
+    max_id_lapse = df['ID_LAPSE'].max() + 1
+    max_regime = df['I_REGIME_2'].max() + 1
+    max_niv = 4
 
+    tx_min = np.zeros((max_age, max_id_lapse, max_regime, max_niv), dtype=np.float32)
+    tx_max = np.zeros((max_age, max_id_lapse, max_regime, max_niv), dtype=np.float32)
 
-def create_lapse_part_lookup(df: pd.DataFrame) -> Dict[Tuple, Dict]:
-    """Create O(1) lookup for partial lapse rates."""
-    lookup = {}
     for _, row in df.iterrows():
-        key = (int(row['AGE']), int(row['ID_LAPSE']),
-               int(row['I_REGIME_2']), int(row['LAPSE_NIV_PART']))
-        lookup[key] = {
-            'TX_LAPSE_PART_MIN': float(row['TX_LAPSE_PART_MIN']),
-            'TX_LAPSE_PART_MAX': float(row['TX_LAPSE_PART_MAX']),
-        }
+        age = int(row['AGE'])
+        id_lapse = int(row['ID_LAPSE'])
+        regime = int(row['I_REGIME_2'])
+        niv = int(row['LAPSE_NIV_PART'])
+        tx_min[age, id_lapse, regime, niv] = float(row['TX_LAPSE_PART_MIN'])
+        tx_max[age, id_lapse, regime, niv] = float(row['TX_LAPSE_PART_MAX'])
+
+    return tx_min, tx_max
+
+
+def create_gpu_lapse_tot_lookup(df: pd.DataFrame):
+    """Create arrays for total lapse lookup."""
+    max_duree = 11
+    max_id_lapse = df['ID_LAPSE'].max() + 1
+    max_niv = 4
+
+    tx_min = np.zeros((max_duree, max_id_lapse, max_niv), dtype=np.float32)
+    tx_max = np.zeros((max_duree, max_id_lapse, max_niv), dtype=np.float32)
+    fact_dim = np.ones((max_duree, max_id_lapse, max_niv), dtype=np.float32)
+
+    for _, row in df.iterrows():
+        duree = int(row['DUREE_MAX10'])
+        id_lapse = int(row['ID_LAPSE'])
+        niv = int(row['LAPSE_NIV_TOT'])
+        tx_min[duree, id_lapse, niv] = float(row['TX_LAPSE_TOT_MIN'])
+        tx_max[duree, id_lapse, niv] = float(row['TX_LAPSE_TOT_MAX'])
+        fact_dim[duree, id_lapse, niv] = float(row['FACT_DIM'])
+
+    return tx_min, tx_max, fact_dim
+
+
+def create_gpu_fees_lookup(df: pd.DataFrame):
+    """Create array for fees lookup."""
+    max_produit = df['ID_PRODUIT'].max() + 1
+    max_year = df['ANNEE_REELLE'].max() + 1
+
+    lookup = np.zeros((max_produit, max_year), dtype=np.float32)
+    for _, row in df.iterrows():
+        produit = int(row['ID_PRODUIT'])
+        year = int(row['ANNEE_REELLE'])
+        lookup[produit, year] = float(row['FRAIS'])
+
     return lookup
 
 
-def create_lapse_tot_lookup(df: pd.DataFrame) -> Dict[Tuple, Dict]:
-    """Create O(1) lookup for total lapse rates."""
-    lookup = {}
+def create_gpu_deposits_lookup(df: pd.DataFrame):
+    """Create arrays for deposits lookup."""
+    max_duree = 11
+    max_id_depot = df['ID_DEPOT'].max() + 1
+
+    pc_depot = np.zeros((max_duree, max_id_depot), dtype=np.float32)
+    var_fct = np.zeros((max_duree, max_id_depot), dtype=np.int32)
+    age_max = np.full((max_duree, max_id_depot), 999, dtype=np.int32)
+    i_even = np.zeros((max_duree, max_id_depot), dtype=np.int32)
+
     for _, row in df.iterrows():
-        key = (int(row['DUREE_MAX10']), int(row['ID_LAPSE']), int(row['LAPSE_NIV_TOT']))
-        lookup[key] = {
-            'TX_LAPSE_TOT_MIN': float(row['TX_LAPSE_TOT_MIN']),
-            'TX_LAPSE_TOT_MAX': float(row['TX_LAPSE_TOT_MAX']),
-            'FACT_DIM': float(row['FACT_DIM']),
-        }
-    return lookup
+        duree = int(row['DUREE_MAX10'])
+        id_depot = int(row['ID_DEPOT'])
+        pc_depot[duree, id_depot] = float(row['PC_DEPOT_ANNUEL'])
+        var_fct[duree, id_depot] = int(row['VAR_DEPOT_FCT'])
+        age_max[duree, id_depot] = int(row['AGE_MAX_DEPOT'])
+        i_even[duree, id_depot] = int(row['I_EVEN_CESSE_DEPOT'])
+
+    return pc_depot, var_fct, age_max, i_even
 
 
-def create_fees_lookup(df: pd.DataFrame) -> Dict[Tuple, float]:
-    """Create O(1) lookup for fees."""
-    return {(int(row['ID_PRODUIT']), int(row['ANNEE_REELLE'])): float(row['FRAIS'])
-            for _, row in df.iterrows()}
+def create_gpu_acquisition_lookup(df: pd.DataFrame):
+    """Create arrays for acquisition lookup."""
+    max_duree = 11
+    max_id_acqui = df['ID_ACQUI'].max() + 1
 
+    pc_vente_rf = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
+    pc_vente_ac = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
+    pc_maintien_rf = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
+    pc_maintien_ac = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
+    pc_frais_ac = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
+    pc_frais_rf = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
 
-def create_deposits_lookup(df: pd.DataFrame) -> Dict[Tuple, Dict]:
-    """Create O(1) lookup for future deposits."""
-    lookup = {}
     for _, row in df.iterrows():
-        key = (int(row['DUREE_MAX10']), int(row['ID_DEPOT']))
-        lookup[key] = {
-            'PC_DEPOT_ANNUEL': float(row['PC_DEPOT_ANNUEL']),
-            'VAR_DEPOT_FCT': int(row['VAR_DEPOT_FCT']),
-            'AGE_MAX_DEPOT': int(row['AGE_MAX_DEPOT']),
-            'I_EVEN_CESSE_DEPOT': int(row['I_EVEN_CESSE_DEPOT']),
-        }
-    return lookup
+        duree = int(row['DUREE_MAX10'])
+        id_acqui = int(row['ID_ACQUI'])
+        pc_vente_rf[duree, id_acqui] = float(row['PC_COMMISSION_VENTE_RF'])
+        pc_vente_ac[duree, id_acqui] = float(row['PC_COMMISSION_VENTE_AC'])
+        pc_maintien_rf[duree, id_acqui] = float(row['PC_COMMISSION_MAINTIEN_RF'])
+        pc_maintien_ac[duree, id_acqui] = float(row['PC_COMMISSION_MAINTIEN_AC'])
+        pc_frais_ac[duree, id_acqui] = float(row['PC_FRAIS_AN_AC'])
+        pc_frais_rf[duree, id_acqui] = float(row['PC_FRAIS_AN_RF'])
+
+    return pc_vente_rf, pc_vente_ac, pc_maintien_rf, pc_maintien_ac, pc_frais_ac, pc_frais_rf
 
 
-def create_acquisition_lookup(df: pd.DataFrame) -> Dict[Tuple, Dict]:
-    """Create O(1) lookup for acquisition costs."""
-    lookup = {}
+def create_gpu_coussins_lookup(df: pd.DataFrame):
+    """Create arrays for cushions lookup."""
+    max_cat_prod = 8
+    max_cat1 = 6
+    max_cat2 = 7
+
+    # Create arrays for all cushion parameters
+    base_passif = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.int32)
+    tx_passif = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.float32)
+    base_credit = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.int32)
+    tx_credit = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.float32)
+    base_marche = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.int32)
+    tx_marche = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.float32)
+    base_depense = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.int32)
+    tx_depense = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.float32)
+    base_decheance = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.int32)
+    tx_decheance = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.float32)
+    base_mortalite = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.int32)
+    tx_mortalite = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.float32)
+    base_depot = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.int32)
+    tx_depot = np.zeros((max_cat_prod, max_cat1, max_cat2), dtype=np.float32)
+    facteur_80 = np.ones((max_cat_prod, max_cat1, max_cat2), dtype=np.float32)
+    facteur_90 = np.ones((max_cat_prod, max_cat1, max_cat2), dtype=np.float32)
+
     for _, row in df.iterrows():
-        key = (int(row['DUREE_MAX10']), int(row['ID_ACQUI']))
-        lookup[key] = {
-            'PC_COMMISSION_VENTE_RF': float(row['PC_COMMISSION_VENTE_RF']),
-            'PC_COMMISSION_VENTE_AC': float(row['PC_COMMISSION_VENTE_AC']),
-            'PC_COMMISSION_MAINTIEN_RF': float(row['PC_COMMISSION_MAINTIEN_RF']),
-            'PC_COMMISSION_MAINTIEN_AC': float(row['PC_COMMISSION_MAINTIEN_AC']),
-            'PC_FRAIS_AN_AC': float(row['PC_FRAIS_AN_AC']),
-            'PC_FRAIS_AN_RF': float(row['PC_FRAIS_AN_RF']),
-        }
-    return lookup
+        cp = int(row['CODE_CAT_PRODUIT'])
+        c1 = int(row['CAT_COUSSIN_1'])
+        c2 = int(row['CAT_COUSSIN_2'])
 
+        base_passif[cp, c1, c2] = int(row['BASE_PASSIF_REDRESSE'])
+        tx_passif[cp, c1, c2] = float(row['TX_PASSIF_REDRESSE'])
+        base_credit[cp, c1, c2] = int(row['BASE_COUSSIN_CREDIT'])
+        tx_credit[cp, c1, c2] = float(row['TX_COUSSIN_CREDIT'])
+        base_marche[cp, c1, c2] = int(row['BASE_COUSSIN_MARCHE'])
+        tx_marche[cp, c1, c2] = float(row['TX_COUSSIN_MARCHE'])
+        base_depense[cp, c1, c2] = int(row['BASE_COUSSIN_DEPENSE'])
+        tx_depense[cp, c1, c2] = float(row['TX_COUSSIN_DEPENSE'])
+        base_decheance[cp, c1, c2] = int(row['BASE_COUSSIN_DECHEANCE'])
+        tx_decheance[cp, c1, c2] = float(row['TX_COUSSIN_DECHEANCE'])
+        base_mortalite[cp, c1, c2] = int(row['BASE_COUSSIN_MORTALITE'])
+        tx_mortalite[cp, c1, c2] = float(row['TX_COUSSIN_MORTALITE'])
+        base_depot[cp, c1, c2] = int(row['BASE_COUSSIN_DEPOT'])
+        tx_depot[cp, c1, c2] = float(row['TX_COUSSIN_DEPOT'])
+        facteur_80[cp, c1, c2] = float(row['FACTEUR_AGE_80'])
+        facteur_90[cp, c1, c2] = float(row['FACTEUR_AGE_90'])
 
-def create_coussins_lookup(df: pd.DataFrame) -> Dict[Tuple, Dict]:
-    """Create O(1) lookup for ESCAP cushions."""
-    lookup = {}
-    for _, row in df.iterrows():
-        key = (int(row['CODE_CAT_PRODUIT']), int(row['CAT_COUSSIN_1']), int(row['CAT_COUSSIN_2']))
-        lookup[key] = {
-            'BASE_PASSIF_REDRESSE': int(row['BASE_PASSIF_REDRESSE']),
-            'TX_PASSIF_REDRESSE': float(row['TX_PASSIF_REDRESSE']),
-            'BASE_COUSSIN_CREDIT': int(row['BASE_COUSSIN_CREDIT']),
-            'TX_COUSSIN_CREDIT': float(row['TX_COUSSIN_CREDIT']),
-            'BASE_COUSSIN_MARCHE': int(row['BASE_COUSSIN_MARCHE']),
-            'TX_COUSSIN_MARCHE': float(row['TX_COUSSIN_MARCHE']),
-            'BASE_COUSSIN_DEPENSE': int(row['BASE_COUSSIN_DEPENSE']),
-            'TX_COUSSIN_DEPENSE': float(row['TX_COUSSIN_DEPENSE']),
-            'BASE_COUSSIN_DECHEANCE': int(row['BASE_COUSSIN_DECHEANCE']),
-            'TX_COUSSIN_DECHEANCE': float(row['TX_COUSSIN_DECHEANCE']),
-            'BASE_COUSSIN_MORTALITE': int(row['BASE_COUSSIN_MORTALITE']),
-            'TX_COUSSIN_MORTALITE': float(row['TX_COUSSIN_MORTALITE']),
-            'BASE_COUSSIN_DEPOT': int(row['BASE_COUSSIN_DEPOT']),
-            'TX_COUSSIN_DEPOT': float(row['TX_COUSSIN_DEPOT']),
-            'FACTEUR_AGE_80': float(row['FACTEUR_AGE_80']),
-            'FACTEUR_AGE_90': float(row['FACTEUR_AGE_90']),
-        }
-    return lookup
-
-
-def create_all_lookups(data: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
-    """Create all hash table equivalents."""
-    print("Creating fast lookup structures...")
-
-    lookups = {
-        'mortality': create_mortality_lookup(data['mortalite']),
-        'returns': create_returns_lookup(data['rendements']),
-        'min_ferr': create_min_ferr_lookup(data['min_ferr']),
-        'lapse_part': create_lapse_part_lookup(data['tx_lapse_part']),
-        'lapse_tot': create_lapse_tot_lookup(data['tx_lapse_tot']),
-        'fees': create_fees_lookup(data['frais_admin']),
-        'deposits': create_deposits_lookup(data['depots_futurs']),
-        'acquisition': create_acquisition_lookup(data['acquisition']),
-        'coussins': create_coussins_lookup(data['coussins_escap']),
-    }
-
-    print(f"  Created {len(lookups['mortality'])} mortality entries")
-    print(f"  Created {len(lookups['returns'])} return scenarios")
-    print(f"  Created {len(lookups['lapse_tot'])} total lapse entries")
-    print(f"  Created {len(lookups['acquisition'])} acquisition entries")
-    print(f"  Created {len(lookups['coussins'])} cushion entries")
-    print("Lookup structures created")
-    return lookups
+    return (base_passif, tx_passif, base_credit, tx_credit, base_marche, tx_marche,
+            base_depense, tx_depense, base_decheance, tx_decheance, base_mortalite, tx_mortalite,
+            base_depot, tx_depot, facteur_80, facteur_90)
 
 
 # =============================================================================
-# HELPER CALCULATION FUNCTIONS
+# GPU KERNEL - MAIN PROJECTION ENGINE
 # =============================================================================
 
-def calculate_age(birth_year: int, birth_month: int, current_year: int, current_month: int) -> int:
-    """Calculate age at a given point in time."""
-    age = current_year - birth_year
-    if current_month < birth_month:
-        age -= 1
-    return max(age, 1)
-
-
-def calculate_lapse_level_total(vm_vg_ratio: float) -> int:
-    """Determine lapse level based on moneyness (returns 1, 2, or 3)."""
-    if vm_vg_ratio <= 0.5:
-        return 1
-    elif vm_vg_ratio <= 0.75:
-        return 2
-    else:
-        return 3
-
-
-def calculate_lapse_level_partial(vm_vg_ratio: float) -> int:
-    """Determine partial lapse level (returns 1, 2, or 3)."""
-    if vm_vg_ratio <= 0.5:
-        return 1
-    elif vm_vg_ratio <= 0.75:
-        return 2
-    else:
-        return 3
-
-
-# =============================================================================
-# LEVEL 2: CREATE EXPANDED TIMELINE
-# =============================================================================
-
-def create_expanded_timeline(account: pd.Series, config: Dict, scn_eval: int) -> pd.DataFrame:
+@cuda.jit
+def projection_kernel(
+        # Account data
+        account_data,  # Shape: (n_accounts, n_account_fields)
+        account_ids,
+        # Scenario parameters
+        n_scenarios,
+        n_years,
+        freq_eval,
+        # Lookup tables - Mortality
+        mortality_lookup,
+        # Lookup tables - Returns
+        forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe,
+        # Lookup tables - Lapse
+        min_ferr_lookup,
+        lapse_part_min, lapse_part_max,
+        lapse_tot_min, lapse_tot_max, lapse_tot_fact,
+        # Lookup tables - Deposits
+        deposits_pc, deposits_var, deposits_age_max, deposits_i_even,
+        # Lookup tables - Fees
+        fees_lookup,
+        # Lookup tables - Acquisition
+        acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf,
+        # Lookup tables - Cushions
+        cous_base_passif, cous_tx_passif, cous_base_credit, cous_tx_credit,
+        cous_base_marche, cous_tx_marche, cous_base_depense, cous_tx_depense,
+        cous_base_decheance, cous_tx_decheance, cous_base_mortalite, cous_tx_mortalite,
+        cous_base_depot, cous_tx_depot, cous_facteur_80, cous_facteur_90,
+        # Output arrays
+        output_results  # Shape: (n_accounts, n_scenarios, max_timesteps, n_output_fields)
+):
     """
-    LEVEL 2: Create the skeleton of year × month combinations for a single scenario.
-    Equivalent to lines 103-125 in SAS code.
-    
-    Args:
-        account: Account data
-        config: Configuration dictionary
-        scn_eval: Scenario number to create timeline for
+    Main CUDA kernel - processes one account-scenario combination per thread.
+    Each thread loops through all timesteps sequentially (state dependency).
     """
-    rows = []
-
-    for an_eval in range(0, config['NB_AN_PROJECTION'] + 1):
-        for mois_simul in range(1, config['FREQ_EVAL'] + 1):
-
-            # Calculate real year and month
-            annee_reelle = int(account['ANNEE_EVALUATION_INI']) + an_eval - 1
-            mois_eval = mois_simul * 12 // config['FREQ_EVAL']
-
-            # Calculate age
-            age = calculate_age(
-                int(account['ANNEE_NAIS']),
-                int(account['MOIS_NAIS']),
-                annee_reelle,
-                mois_eval
-            )
-
-            # Keep only relevant periods (line 120 in SAS)
-            keep = (
-                    age <= account['AGE_FIN_CONTRAT'] and
-                    (an_eval > 1 or
-                     (an_eval == 1 and mois_eval >= account['MOIS_EVALUATION_INI']) or
-                     (an_eval == 0 and mois_eval == 12))
-            )
-
-            if keep:
-                rows.append({
-                    'ID_COMPTE': int(account['ID_COMPTE']),
-                    'SCN_EVAL': scn_eval,
-                    'AN_EVAL': an_eval,
-                    'MOIS_EVAL': mois_eval,
-                    'ANNEE_REELLE': annee_reelle,
-                    'AGE': age,
-                    'I_SEXE': int(account['I_SEXE']),
-                    'I_PRODUIT_REGR': int(account['I_PRODUIT_REGR']),
-                    'ID_PRODUIT': int(account['ID_PRODUIT']),
-                    'ID_LAPSE': int(account['ID_LAPSE']),
-                    'I_REGIME_2': int(account['I_REGIME_2']),
-                    'ID_DEPOT': int(account['ID_DEPOT']),
-                    'ID_ACQUI': int(account.get('ID_ACQUI', 1)),
-                    'AGE_ECH_MIN': int(account['AGE_ECH_MIN']),
-                    'AGE_FIN_CONTRAT': int(account['AGE_FIN_CONTRAT']),
-                    'MOIS_NAIS': int(account['MOIS_NAIS']),
-                    'AGE_DECAISSEMENT': int(account['AGE_DECAISSEMENT']),
-                })
-
-    return pd.DataFrame(rows)
-
-
-# =============================================================================
-# LEVEL 3: PROJECTION CALCULATIONS WITH STATE
-# =============================================================================
-
-def initialize_state(account: pd.Series) -> Dict[str, float]:
-    """Initialize state variables for projection from account data."""
-    return {
-        'MT_VM_PROJ': float(account['MT_VM']),
-        'MT_GAR_DECES_PROJ': float(account['MT_GAR_DECES']),
-        'MT_GAR_ECH_PROJ': float(account['MT_GAR_ECH']),
-        'MT_SRG_PROJ': float(account['MT_SRG']),
-        'MT_BCB_PROJ': float(account.get('MT_BCB', 0)),
-        'MT_DEX_PROJ': float(account['MT_DEX']),
-        'MT_MM_PROJ': float(account['MT_MM']),
-        'MT_TSX_PROJ': float(account['MT_TSX']),
-        'MT_SP500_PROJ': float(account['MT_SP500']),
-        'MT_EAFE_PROJ': float(account['MT_EAFE']),
-        'MT_BONI_DECES_PROJ': float(account.get('MT_BONI_DECES', 0)),
-        'MT_MRV_MRG_MRA_PROJ': float(account.get('MT_MRV_MRG_MRA', 0)),
-        'TAUX_MRV_MRG_MRA_PROJ': float(account.get('TAUX_MRV_MRG_MRA', 0)),
-        'MT_MIN_FERR_PROJ': 0.0,
-        'ANNEE_ECH_PROJ': int(account.get('ANNEE_ECH', 9999)),
-        'MOIS_ECH_PROJ': int(account.get('MOIS_ECH', 12)),
-        'TX_SURVIE': 1.0,
-        'TX_SURVIE_DEB': 1.0,
-        'TX_ACTUALISATION': 1.0,
-        'PC_HONORAIRES_GEST': float(account['PC_HONORAIRES_GEST']),
-        'PC_FRAIS_GARANTIE': float(account['PC_FRAIS_GARANTIE']),
-        'PC_GAR_DECES_1': float(account['PC_GAR_DECES_1']),
-        'PC_BONI_DECES': float(account.get('PC_BONI_DECES', 0)),
-        'PC_RFG': float(account.get('PC_RFG', 0)),
-        'PC_REVENU_FDS': float(account.get('PC_REVENU_FDS', 0)),
-        'PC_GAR_ECH': float(account.get('PC_GAR_ECH', 0)),
-        'PC_GAR_ECH_DEP_FUT': float(account.get('PC_GAR_ECH_DEP_FUT', 0)),
-        'AJUSTEMENT_COMMISSION': float(account.get('AJUSTEMENT_COMMISSION', 1.0)),
-        'MT_RF': float(account.get('MT_RF', 0)),
-        'MT_VM': float(account['MT_VM']),
-    }
-
-
-def lookup_mortality(lookups: Dict, row: Dict, state: Dict) -> float:
-    """Lookup mortality rate with fallback."""
-    mois_nais = int(row['MOIS_NAIS'])
-    mois_eval = int(row['MOIS_EVAL'])
-
-    # Calculate age_MORTALITE same as SAS
-    month_diff = mois_nais - mois_eval
-    if month_diff <= 0:
-        month_diff += 12
-
-    if month_diff <= 6:
-        age_mort = int(row['AGE']) + 1
-    else:
-        age_mort = int(row['AGE'])
-
-    age_mort = min(age_mort, 120)
-    key = (row['I_SEXE'], age_mort, int(row['ANNEE_REELLE']), row['I_PRODUIT_REGR'])
-    return lookups['mortality'].get(key, 0.001)
-
-
-def lookup_returns(lookups: Dict, row: Dict, state: Dict) -> Dict[str, float]:
-    """Lookup investment returns with fallback to zero returns."""
-    key = (int(row['SCN_EVAL']), int(row['AN_EVAL']), int(row['MOIS_EVAL']))
-    returns = lookups['returns'].get(key, {
-        'FORWARD_RATE': 0.0,
-        'AJUST_FORWARD_RATE_VM_0': 0.0,
-        'RENDDEX_AN': 0.0,
-        'RENDMM_AN': 0.0,
-        'RENDTSX_AN': 0.0,
-        'RENDSP500_AN': 0.0,
-        'RENDEAFE_AN': 0.0,
-    })
-
-    # Adjust forward rate if VM is 0 (for RGS that become non-liquid)
-    if state['MT_VM_PROJ'] == 0:
-        returns['FORWARD_RATE'] += returns['AJUST_FORWARD_RATE_VM_0']
-
-    return returns
-
-
-def apply_investment_returns(state: Dict, returns: Dict, AJUST_NOUV_AFFAIRES: float) -> Dict:
-    """Apply investment returns to each asset class using CONTINUOUS COMPOUNDING."""
-    # FIXED: Use exp() for continuous compounding to match SAS
-    state['MT_DEX_PROJ'] *= np.exp(returns['RENDDEX_AN'] * AJUST_NOUV_AFFAIRES)
-    state['MT_MM_PROJ'] *= np.exp(returns['RENDMM_AN'] * AJUST_NOUV_AFFAIRES)
-    state['MT_TSX_PROJ'] *= np.exp(returns['RENDTSX_AN'] * AJUST_NOUV_AFFAIRES)
-    state['MT_SP500_PROJ'] *= np.exp(returns['RENDSP500_AN'] * AJUST_NOUV_AFFAIRES)
-    state['MT_EAFE_PROJ'] *= np.exp(returns['RENDEAFE_AN'] * AJUST_NOUV_AFFAIRES)
-
-    state['MT_VM_AV_RETRAIT_FRAIS'] = (state['MT_DEX_PROJ'] + state['MT_MM_PROJ'] +
-                                       state['MT_TSX_PROJ'] + state['MT_SP500_PROJ'] +
-                                       state['MT_EAFE_PROJ'])
-    return state
-
-
-def update_discount_factor(state: Dict, forward_rate: float, AJUST_NOUV_AFFAIRES: float) -> Dict:
-    """Update the discount factor using continuous compounding."""
-    state['TX_ACTUALISATION'] = state['TX_ACTUALISATION'] * np.exp(-forward_rate * AJUST_NOUV_AFFAIRES)
-    return state
-
-
-def calculate_lapse_rates(state: Dict, lookups: Dict, row: Dict, account: pd.Series, freq: int,
-                          AJUST_NOUV_AFFAIRES: float, duree_max10: int) -> Tuple[float, float, float]:
-    """
-    Calculate total and partial lapse rates with proper interpolation.
-
-    Args:
-        duree_max10: Duration from issue date (1-10), calculated from dates not counter
-    """
-    # Check if VM is 0 for RGS - no lapse
-    if state['MT_VM_PROJ'] == 0:
-        return 0.0, 0.0, 0.0
-
-    # Calculate VM/VG ratio (moneyness)
-    pc_gar_ech = state['PC_GAR_ECH']
-    pc_gar_deces = state['PC_GAR_DECES_1']
-
-    # Handle division by zero gracefully
-    ratio1 = pc_gar_ech / max(state['MT_GAR_ECH_PROJ'], 0.01) if state['MT_GAR_ECH_PROJ'] > 0 else 9999
-    ratio2 = pc_gar_deces / max(state['MT_BONI_DECES_PROJ'] + state['MT_GAR_DECES_PROJ'], 0.01)
-    ratio3 = 1 / max(state['MT_SRG_PROJ'], 0.01) if state['MT_SRG_PROJ'] > 0 else 9999
-
-    vm_vg_ratio = min(10, (state['MT_VM_PROJ'] + state['MT_VM_AV_RETRAIT_FRAIS']) / 2 * min(ratio1, ratio2, ratio3))
-
-    # ===== TOTAL LAPSE CALCULATION =====
-    lapse_niv_tot = calculate_lapse_level_total(vm_vg_ratio)
-
-    key_tot = (duree_max10, row['ID_LAPSE'], lapse_niv_tot)
-    lapse_tot_info = lookups['lapse_tot'].get(key_tot, {
-        'TX_LAPSE_TOT_MIN': 0.0, 'TX_LAPSE_TOT_MAX': 0.0, 'FACT_DIM': 1.0
-    })
-
-    tx_lapse_tot_min = lapse_tot_info['TX_LAPSE_TOT_MIN']
-    tx_lapse_tot_max = lapse_tot_info['TX_LAPSE_TOT_MAX']
-    fact_dim = lapse_tot_info['FACT_DIM']
-
-    # Interpolate total lapse
-    if tx_lapse_tot_min == tx_lapse_tot_max:
-        lapse_tot = tx_lapse_tot_min
-    else:
-        if lapse_niv_tot == 1:
-            interpolation = (vm_vg_ratio - 0.00) / 0.5 if vm_vg_ratio > 0 else 0
-        elif lapse_niv_tot == 2:
-            interpolation = (vm_vg_ratio - 0.5) / (0.75 - 0.5)
-        else:  # lapse_niv_tot == 3
-            interpolation = (vm_vg_ratio - 0.75) / (999.99 - 0.75)
-        lapse_tot = interpolation * (tx_lapse_tot_max - tx_lapse_tot_min) + tx_lapse_tot_min
-
-    if row['AGE'] >= row['AGE_DECAISSEMENT']:
-        lapse_tot *= fact_dim
-
-    # ===== PARTIAL LAPSE CALCULATION =====
-    lapse_niv_part = calculate_lapse_level_partial(vm_vg_ratio)
-    key_part = (int(row['AGE']), row['ID_LAPSE'], row['I_REGIME_2'], lapse_niv_part)
-    lapse_part_info = lookups['lapse_part'].get(key_part, {
-        'TX_LAPSE_PART_MIN': 0.0, 'TX_LAPSE_PART_MAX': 0.0
-    })
-
-    tx_lapse_part_min = lapse_part_info['TX_LAPSE_PART_MIN']
-    tx_lapse_part_max = lapse_part_info['TX_LAPSE_PART_MAX']
-
-    # Interpolate partial lapse
-    if tx_lapse_part_min == tx_lapse_part_max:
-        lapse_part = tx_lapse_part_min
-    else:
-        if lapse_niv_part == 1:
-            interpolation = (vm_vg_ratio - 0.00) / 0.5 if vm_vg_ratio > 0 else 0
-        elif lapse_niv_part == 2:
-            interpolation = (vm_vg_ratio - 0.5) / (0.75 - 0.5)
-        else:  # lapse_niv_part == 3
-            interpolation = (vm_vg_ratio - 0.75) / (999.99 - 0.75)
-        lapse_part = interpolation * (tx_lapse_part_max - tx_lapse_part_min) + tx_lapse_part_min
-
-    # Convert annual rates to period rates
-    exponent = (1 / freq) * AJUST_NOUV_AFFAIRES
-    lapse = 1 - (1 - lapse_tot - lapse_part) ** exponent
-
-    return lapse_tot, lapse_part, lapse
-
-
-def process_deposits(state: Dict, lookups: Dict, row: Dict, account: pd.Series, freq: int,
-                     duree_max10: int) -> Tuple[Dict, float]:
-    """
-    Add deposits and update guarantees.
-
-    Args:
-        duree_max10: Duration from issue date (1-10), calculated from dates not counter
-    """
-    key = (duree_max10, row['ID_DEPOT'])
-    deposit_info = lookups['deposits'].get(key, {})
-
-    pc_depot_annuel = deposit_info.get('PC_DEPOT_ANNUEL', 0.0)
-    var_depot_fct = deposit_info.get('VAR_DEPOT_FCT', 0)
-    age_max_depot = deposit_info.get('AGE_MAX_DEPOT', 999)
-    i_even_cesse_depot = deposit_info.get('I_EVEN_CESSE_DEPOT', 0)
-
-    age_retrait = row['AGE'] + 1
-    age_decaissement = row['AGE_DECAISSEMENT']
-    mt_tpa_depot = account.get('MT_TPA_DEPOT', 0)
-
-    # Check if deposits should cease
-    if (pc_depot_annuel == 0 or
-            (i_even_cesse_depot == 1 and age_retrait >= age_decaissement) or
-            (age_max_depot < row['AGE']) or
-            (state['MT_VM_PROJ'] <= 0 and row['I_PRODUIT_REGR'] == 0)):
-        depot_futur = 0.0
-    elif mt_tpa_depot > 0:
-        depot_futur = mt_tpa_depot
-    else:
-        # Use VM or normalized death guarantee
-        if var_depot_fct == 1:
-            base = state['MT_VM_PROJ']
-        else:
-            base = account['MT_GAR_DECES'] / state['PC_GAR_DECES_1']
-        depot_futur = base * pc_depot_annuel
-
-    # Adjust for frequency
-    depot_futur = depot_futur / freq
-
-    if depot_futur > 0:
-        # Allocate proportionally to current allocation
-        total_vm = state['MT_VM_PROJ']
-        if total_vm > 0:
-            state['MT_DEX_PROJ'] += depot_futur * (state['MT_DEX_PROJ'] / total_vm)
-            state['MT_MM_PROJ'] += depot_futur * (state['MT_MM_PROJ'] / total_vm)
-            state['MT_TSX_PROJ'] += depot_futur * (state['MT_TSX_PROJ'] / total_vm)
-            state['MT_SP500_PROJ'] += depot_futur * (state['MT_SP500_PROJ'] / total_vm)
-            state['MT_EAFE_PROJ'] += depot_futur * (state['MT_EAFE_PROJ'] / total_vm)
-
-        # Update guarantees
-        state['MT_GAR_DECES_PROJ'] += depot_futur
-        state['MT_GAR_ECH_PROJ'] += depot_futur * state['PC_GAR_ECH_DEP_FUT']
-
-        if state['MT_SRG_PROJ'] > 0:
-            state['MT_SRG_PROJ'] += depot_futur
-
-    return state, depot_futur
-
-
-def calculate_mrv_amount(state: Dict, row: Dict, account: pd.Series, freq: int) -> Dict:
-    """Calculate MRV/MRG/MRA amount for RGS products."""
-    if row['I_PRODUIT_REGR'] != 1:
-        return state
-
-    age_retrait = row['AGE'] + 1
-    age_mrv_permis = account.get('AGE_MRV_PERMIS', 65)
-    table_taux_mrv = account.get('TABLE_TAUX_MRV_MRG_MRA', 1)
-    mois_eval = row['MOIS_EVAL']
-
-    # Check if withdrawals should cease
-    base_amount = state['MT_SRG_PROJ'] if table_taux_mrv == 1 else state['MT_VM_PROJ']
-    if age_retrait < age_mrv_permis and base_amount == 0:
-        state['MT_MRV_MRG_MRA_PROJ'] = 0
-        return state
-
-    # Only recalculate at end of year
-    if mois_eval != 12 / CONFIG['FREQ_EVAL']:
-        return state
-
-    # RGS 2.1 logic
-    if table_taux_mrv == 2:
-        should_reinit = (age_retrait == max(age_mrv_permis, row['AGE_DECAISSEMENT']) or
-                         (state['MT_SRG_PROJ'] == state['MT_VM_PROJ'] and state['MT_VM_PROJ'] != 0))
-
-        if should_reinit:
-            # Determine rate based on age
-            if age_retrait < 60:
-                state['TAUX_MRV_MRG_MRA_PROJ'] = 0.03
-            elif age_retrait < 65:
-                state['TAUX_MRV_MRG_MRA_PROJ'] = 0.035
-            elif age_retrait < 70:
-                state['TAUX_MRV_MRG_MRA_PROJ'] = 0.04
-            elif age_retrait < 75:
-                state['TAUX_MRV_MRG_MRA_PROJ'] = 0.0425
-            else:
-                state['TAUX_MRV_MRG_MRA_PROJ'] = 0.05
-
-            state['MT_MRV_MRG_MRA_PROJ'] = state['TAUX_MRV_MRG_MRA_PROJ'] * state['MT_SRG_PROJ']
-        else:
-            # Can't decrease
-            state['MT_MRV_MRG_MRA_PROJ'] = max(state['MT_MRV_MRG_MRA_PROJ'],
-                                               state['TAUX_MRV_MRG_MRA_PROJ'] * state['MT_SRG_PROJ'])
-    else:
-        # RGS 1 and 2
-        if age_retrait == age_mrv_permis:
-            state['MT_MRV_MRG_MRA_PROJ'] = state['TAUX_MRV_MRG_MRA_PROJ'] * state['MT_SRG_PROJ']
-        else:
-            state['MT_MRV_MRG_MRA_PROJ'] = max(state['MT_MRV_MRG_MRA_PROJ'],
-                                               state['TAUX_MRV_MRG_MRA_PROJ'] * state['MT_SRG_PROJ'])
-
-    # Handle excess withdrawals (simplified - only at end of first year)
-    m_mt_mrv_excedent = account.get('M_MT_MRV_EXCEDENT', 0)
-    mois_evaluation_ini = account.get('MOIS_EVALUATION_INI', 1)
-    an_eval = row['AN_EVAL']
-
-    if (m_mt_mrv_excedent > 1 and
-            mois_evaluation_ini != 12 / CONFIG['FREQ_EVAL'] and
-            an_eval == 2 and
-            mois_eval == 12 / CONFIG['FREQ_EVAL']):
-        state['MT_MRV_MRG_MRA_PROJ'] = min(state['MT_MRV_MRG_MRA_PROJ'],
-                                           state['TAUX_MRV_MRG_MRA_PROJ'] * max(state['MT_SRG_PROJ'],
-                                                                                state['MT_VM_PROJ']))
-
-    return state
-
-
-def calculate_withdrawal(state: Dict, lookups: Dict, row: Dict, account: pd.Series, freq: int) -> float:
-    """Calculate total withdrawal amount."""
-    age_retrait = row['AGE'] + 1
-    age_decaissement = row['AGE_DECAISSEMENT']
-    mois_nais = row['MOIS_NAIS']
-    mois_eval = row['MOIS_EVAL']
-
-    # No withdrawal if age not reached or VM is 0 for regular products
-    if (age_retrait < age_decaissement or
-            (age_retrait == age_decaissement and mois_eval >= mois_nais) or
-            (state['MT_VM_PROJ'] <= 0 and row['I_PRODUIT_REGR'] == 0)):
-        return 0.0
-
-    # Minimum FERR withdrawal
-    age = int(row['AGE'])
-    min_ferr_rate = lookups['min_ferr'].get(age, 0.0)
-
-    # Calculate MIN_FERR_PROJ at start of year or first evaluation month
-    if (row['AN_EVAL'] == 1 and mois_eval == account.get('MOIS_EVALUATION_INI', 1)) or mois_eval == 12 / CONFIG[
-        'FREQ_EVAL']:
-        state['MT_MIN_FERR_PROJ'] = state['MT_VM_PROJ'] * min_ferr_rate
-
-    min_withdrawal = state['MT_MIN_FERR_PROJ']
-
-    # Get withdrawal parameters
-    var_retrait_fct = account.get('VAR_RETRAIT_FCT', 1)
-    mt_tpa_retrait = account.get('MT_TPA_RETRAIT', 0)
-    pc_retrait_age = account.get('PC_RETRAIT_AGE', 1.0)
-    mt_retrait_max = account.get('MT_RETRAIT_MAX', 999999999)
-
-    # Calculate retrait based on VAR_RETRAIT_FCT
-    if var_retrait_fct == 1:
-        retrait = mt_tpa_retrait if mt_tpa_retrait > 0 else state['MT_VM_PROJ'] * pc_retrait_age
-    elif var_retrait_fct == 2:
-        if mt_tpa_retrait > min_withdrawal:
-            retrait = mt_tpa_retrait
-        else:
-            retrait = min_withdrawal * max(pc_retrait_age, 1)
-    elif var_retrait_fct == 3:
-        retrait = max(min_withdrawal, state['MT_MRV_MRG_MRA_PROJ']) * pc_retrait_age
-    else:
-        retrait = 0.0
-
-    # Apply maximum and frequency adjustment
-    retrait = min(retrait, mt_retrait_max) / freq
-
-    return retrait
-
-
-def apply_management_fees(state: Dict, freq: int, AJUST_NOUV_AFFAIRES: float) -> Dict:
-    """Apply management fees (RFG)."""
-    state['MT_VM_AV_RETRAIT'] = state['MT_VM_AV_RETRAIT_FRAIS'] * np.exp(-state['PC_RFG'] / freq * AJUST_NOUV_AFFAIRES)
-    return state
-
-
-def calculate_guarantee_fees(state: Dict, row: Dict, freq: int, AJUST_NOUV_AFFAIRES: float, tx_survie_deb: float) -> \
-        Tuple[float, float]:
-    """Calculate guarantee fees (primes garanties)."""
-    i_frais_sur_srg = row.get('I_FRAIS_SUR_SRG', 0)
-
-    if i_frais_sur_srg == 0:
-        primes_garanties = min(state['MT_VM_AV_RETRAIT'] * state['PC_FRAIS_GARANTIE'] / freq * AJUST_NOUV_AFFAIRES,
-                               state['MT_VM_AV_RETRAIT']) * tx_survie_deb
-    else:
-        primes_garanties = min(state['MT_SRG_PROJ'] * state['PC_FRAIS_GARANTIE'] / freq * AJUST_NOUV_AFFAIRES,
-                               state['MT_VM_AV_RETRAIT']) * tx_survie_deb
-
-    vp_primes_garanties = primes_garanties * state['TX_ACTUALISATION']
-
-    # Update VM after guarantee fees
-    if i_frais_sur_srg == 0:
-        state['MT_VM_AV_RETRAIT'] = max(state['MT_VM_AV_RETRAIT'] -
-                                        state['MT_VM_AV_RETRAIT'] * state[
-                                            'PC_FRAIS_GARANTIE'] / freq * AJUST_NOUV_AFFAIRES, 0)
-    else:
-        state['MT_VM_AV_RETRAIT'] = max(state['MT_VM_AV_RETRAIT'] -
-                                        state['MT_SRG_PROJ'] * state['PC_FRAIS_GARANTIE'] / freq * AJUST_NOUV_AFFAIRES,
-                                        0)
-
-    return primes_garanties, vp_primes_garanties
-
-
-def update_guarantees_for_withdrawal(state: Dict, retrait: float) -> Tuple[Dict, float]:
-    """Update guarantees and SRG proportionally to withdrawal."""
-    mt_vm_av_retrait = state['MT_VM_AV_RETRAIT']
-    mt_srg_av_retrait = state['MT_SRG_PROJ']
-
-    if mt_vm_av_retrait <= retrait:
-        state['MT_GAR_ECH_PROJ'] = 0
-        state['MT_GAR_DECES_PROJ'] = 0
-        state['MT_BONI_DECES_PROJ'] = 0
-    else:
-        proportion = 1 - retrait / mt_vm_av_retrait
-        state['MT_GAR_ECH_PROJ'] *= proportion
-        state['MT_GAR_DECES_PROJ'] *= proportion
-        state['MT_BONI_DECES_PROJ'] *= proportion
-        state['MT_SRG_PROJ'] = max(state['MT_SRG_PROJ'] - retrait, 0)
-
-    # VM after withdrawal
-    mt_vm_ap_retrait = max(mt_vm_av_retrait - retrait, 0)
-
-    return state, mt_vm_ap_retrait, mt_srg_av_retrait
-
-
-def process_deposits_and_update_vm(state: Dict, depot_futur: float, mt_vm_ap_retrait: float) -> Dict:
-    """Process deposits and update final VM."""
-    if mt_vm_ap_retrait > 0:
-        state['MT_VM_PROJ'] = mt_vm_ap_retrait + depot_futur
-    else:
-        state['MT_VM_PROJ'] = mt_vm_ap_retrait
-
-    return state
-
-
-def calculate_mrv_benefit(state: Dict, retrait: float, mt_vm_av_retrait: float,
-                          row: Dict, tx_survie_deb: float) -> Tuple[float, float]:
-    """Calculate MRV benefit for guaranteed income."""
-    if row['I_PRODUIT_REGR'] == 1:
-        prest_mrv = -max(retrait - mt_vm_av_retrait, 0) * tx_survie_deb
-    else:
-        prest_mrv = 0
-
-    vp_prest_mrv = prest_mrv * state['TX_ACTUALISATION']
-    return prest_mrv, vp_prest_mrv
-
-
-def calculate_death_benefit(state: Dict, qx: float, tx_survie_deb: float,
-                            mt_vm_ap_retrait_depot: float) -> Tuple[float, float]:
-    """Calculate death benefit."""
-    prest_deces = qx * -max(0, state['MT_GAR_DECES_PROJ'] + state['MT_BONI_DECES_PROJ'] -
-                            mt_vm_ap_retrait_depot) * tx_survie_deb
-    vp_prest_deces = prest_deces * state['TX_ACTUALISATION']
-    return prest_deces, vp_prest_deces
-
-
-def process_maturity_benefit(state: Dict, row: Dict, account: pd.Series, mt_vm_ap_retrait: float) -> Tuple[
-    Dict, float, float]:
-    """Process maturity benefit if it occurs."""
-    annee_ech_proj = state['ANNEE_ECH_PROJ']
-    mois_ech_proj = state['MOIS_ECH_PROJ']
-    age_fin_contrat = row['AGE_FIN_CONTRAT']
-    mois_nais = row['MOIS_NAIS']
-    freq = CONFIG['FREQ_EVAL']
-
-    # Check if maturity occurs
-    maturity_occurs = False
-    if row['ANNEE_REELLE'] == annee_ech_proj and row['MOIS_EVAL'] == mois_ech_proj:
-        maturity_occurs = True
-    elif row['AGE'] == age_fin_contrat:
-        target_month = 12 if mois_nais == 12 / freq else mois_nais - 12 / freq
-        if row['MOIS_EVAL'] == target_month:
-            maturity_occurs = True
-
-    if maturity_occurs:
-        prest_ech = -max(0, state['MT_GAR_ECH_PROJ'] - mt_vm_ap_retrait) * state['TX_SURVIE']
-
-        # Update maturity parameters
-        nb_an_ech = account.get('NB_AN_ECH', 10)
-        state['ANNEE_ECH_PROJ'] = annee_ech_proj + nb_an_ech
-        state['MOIS_ECH_PROJ'] = row['MOIS_EVAL']
-
-        # Update VM and guarantees
-        state['MT_VM_PROJ'] = mt_vm_ap_retrait + max(0, state['MT_GAR_ECH_PROJ'] - mt_vm_ap_retrait)
-        state['MT_GAR_ECH_PROJ'] = state['MT_VM_PROJ'] * state['PC_GAR_ECH']
-
-        # Reset death guarantee if applicable
-        i_reset_deces_ech = account.get('I_RESET_DECES_ECH', 0)
-        if i_reset_deces_ech == 1:
-            state['MT_GAR_DECES_PROJ'] = state['MT_VM_PROJ'] * state['PC_GAR_DECES_1']
-
-        # Apply renewal rate
-        age_max_renouv_ech = account.get('AGE_MAX_RENOUV_ECH', 999)
-        pc_renouv_ech = account.get('PC_RENOUV_ECH', 1.0)
-        if row['AGE'] > age_max_renouv_ech:
-            pc_renouv_ech = 0
-        state['TX_SURVIE'] *= pc_renouv_ech
-    else:
-        prest_ech = 0
-
-    vp_prest_ech = prest_ech * state['TX_ACTUALISATION']
-    return state, prest_ech, vp_prest_ech
-
-
-def update_death_guarantee_adjustments(state: Dict, row: Dict, account: pd.Series, freq: int) -> Dict:
-    """Apply adjustments to death guarantee (CPGIA)."""
-    ajustement_mensuel_gar = account.get('AJUSTEMENT_MENSUEL_GAR', 0)
-    state['MT_GAR_DECES_PROJ'] = state['MT_GAR_DECES_PROJ'] - ajustement_mensuel_gar * 12 / freq
-    return state
-
-
-def process_srg_bcb_resets(state: Dict, row: Dict, account: pd.Series) -> Dict:
-    """Process SRG/BCB resets for RGS products."""
-    if row['I_PRODUIT_REGR'] != 1:
-        return state
-
-    annee_cotis = account.get('ANNEE_COTIS', account.get('ANNEE_EVALUATION_INI', row['ANNEE_REELLE']))
-    mois_cotis = account.get('MOIS_COTIS', 1)
-    freq_reset_srg = account.get('FREQ_RESET_SRG', 3)
-    max_reset_srg = account.get('MAX_RESET_SRG', 80)
-
-    # Check if SRG reset should occur
-    if (row['AGE'] < max_reset_srg and
-            state['MT_SRG_PROJ'] < state['MT_VM_PROJ'] and
-            row['ANNEE_REELLE'] > annee_cotis):
-
-        years_since_issue = row['ANNEE_REELLE'] - annee_cotis
-        if (int(years_since_issue / freq_reset_srg) == years_since_issue / freq_reset_srg and
-                row['MOIS_EVAL'] == mois_cotis):
-            state['MT_SRG_PROJ'] = state['MT_VM_PROJ']
-            state['MT_BCB_PROJ'] = max(state['MT_BCB_PROJ'], state['MT_VM_PROJ'])
-
-    # Bonus to SRG if not yet in decumulation
-    age_decaissement = row['AGE_DECAISSEMENT']
-    pc_boni_srg = account.get('PC_BONI_SRG', 0)
-    if row['AGE'] < age_decaissement and row['MOIS_EVAL'] == 12:
-        state['MT_SRG_PROJ'] = state['MT_SRG_PROJ'] + pc_boni_srg * state['MT_BCB_PROJ']
-
-    return state
-
-
-def process_death_guarantee_resets(state: Dict, row: Dict, account: pd.Series) -> Dict:
-    """Process automatic death guarantee resets."""
-    annee_cotis = account.get('ANNEE_COTIS', account.get('ANNEE_EVALUATION_INI', row['ANNEE_REELLE']))
-    mois_cotis = account.get('MOIS_COTIS', 1)
-    freq_reset_deces = account.get('FREQ_RESET_DECES', 3)
-    max_reset_deces = account.get('MAX_RESET_DECES', 80)
-    mois_nais = row['MOIS_NAIS']
-    freq = CONFIG['FREQ_EVAL']
-
-    # Check if death guarantee reset should occur
-    should_reset = False
-    if (row['AGE'] < max_reset_deces and
-            (state['MT_GAR_DECES_PROJ'] + state['MT_BONI_DECES_PROJ']) < (
-                    state['MT_VM_PROJ'] * state['PC_GAR_DECES_1']) and
-            row['ANNEE_REELLE'] > annee_cotis):
-
-        years_since_issue = row['ANNEE_REELLE'] - annee_cotis
-
-        # Regular reset
-        if (int(years_since_issue / freq_reset_deces) == years_since_issue / freq_reset_deces and
-                row['MOIS_EVAL'] == mois_cotis):
-            should_reset = True
-
-        # Final reset at max age
-        target_month = 12 if mois_nais == 12 / freq else mois_nais - 12 / freq
-        if row['AGE'] == max_reset_deces - 1 and row['MOIS_EVAL'] == target_month:
-            should_reset = True
-
-    if should_reset:
-        state['MT_GAR_DECES_PROJ'] = state['MT_VM_PROJ'] * state['PC_GAR_DECES_1']
-        state['MT_BONI_DECES_PROJ'] = 0
-
-    return state
-
-
-def process_facultative_maturity_reset(state: Dict, row: Dict, account: pd.Series) -> Dict:
-    """Process facultative maturity guarantee reset (semi-annual)."""
-    i_reset_facul_ech = account.get('I_RESET_FACUL_ECH', 0)
-    max_reset_facul_ech = account.get('MAX_RESET_FACUL_ECH', 80)
-    ratio_vm_vg_reset_ech = account.get('RATIO_VM_VG_RESET_ECH', 1.0)
-    nb_an_ech = account.get('NB_AN_ECH', 10)
-    age_ech_min = row['AGE_ECH_MIN']
-    annee_nais = account.get('ANNEE_NAIS', 1950)
-    mois_nais = row['MOIS_NAIS']
-
-    # Only in June and December
-    if row['MOIS_EVAL'] not in [6, 12]:
-        return state
-
-    # Check conditions for facultative reset
-    if (i_reset_facul_ech == 1 and
-            row['AGE'] <= max_reset_facul_ech and
-            state['MT_GAR_ECH_PROJ'] > 0 and
-            (state['MT_VM_PROJ'] * state['PC_GAR_ECH']) >= ratio_vm_vg_reset_ech * state['MT_GAR_ECH_PROJ']):
-
-        state['MT_GAR_ECH_PROJ'] = max(state['MT_GAR_ECH_PROJ'], state['MT_VM_PROJ'] * state['PC_GAR_ECH'])
-        state['ANNEE_ECH_PROJ'] = max(row['ANNEE_REELLE'] + nb_an_ech, annee_nais + age_ech_min)
-
-        if state['ANNEE_ECH_PROJ'] == annee_nais + age_ech_min:
-            state['MOIS_ECH_PROJ'] = mois_nais
-        else:
-            state['MOIS_ECH_PROJ'] = row['MOIS_EVAL']
-
-    return state
-
-
-def process_death_guarantee_age_change(state: Dict, row: Dict, account: pd.Series) -> Dict:
-    """Change death guarantee percentage if age threshold reached."""
-    age_chang_deces = account.get('AGE_CHANG_DECES', 999)
-    pc_gar_deces_2 = account.get('PC_GAR_DECES_2', state['PC_GAR_DECES_1'])
-    mois_nais = row['MOIS_NAIS']
-    freq = CONFIG['FREQ_EVAL']
-
-    target_month = 12 if mois_nais == 12 / freq else mois_nais - 12 / freq
-
-    if row['AGE'] == age_chang_deces - 1 and row['MOIS_EVAL'] == target_month:
-        state['MT_GAR_DECES_PROJ'] = state['MT_GAR_DECES_PROJ'] * pc_gar_deces_2 / state['PC_GAR_DECES_1']
-        state['PC_GAR_DECES_1'] = pc_gar_deces_2
-
-    return state
-
-
-def rebalance_portfolio(state: Dict, account: pd.Series) -> Dict:
-    """Rebalance portfolio to original allocation."""
-    mt_vm_orig = state['MT_VM']
-
-    if mt_vm_orig > 0 and state['MT_VM_PROJ'] > 0:
-        state['MT_SP500_PROJ'] = state['MT_VM_PROJ'] * account['MT_SP500'] / mt_vm_orig
-        state['MT_TSX_PROJ'] = state['MT_VM_PROJ'] * account['MT_TSX'] / mt_vm_orig
-        state['MT_EAFE_PROJ'] = state['MT_VM_PROJ'] * account['MT_EAFE'] / mt_vm_orig
-        state['MT_DEX_PROJ'] = state['MT_VM_PROJ'] * account['MT_DEX'] / mt_vm_orig
-        state['MT_MM_PROJ'] = state['MT_VM_PROJ'] * account['MT_MM'] / mt_vm_orig
-
-    return state
-
-
-def calculate_acquisition_costs(state: Dict, lookups: Dict, row: Dict, account: pd.Series,
-                                depot_futur: float, lapse: float, qx: float,
-                                mt_vm_ap_retrait: float, tx_survie_deb: float,
-                                freq: int, AJUST_NOUV_AFFAIRES: float,
-                                duree_max10: int) -> Dict[str, float]:
-    """
-    Calculate acquisition costs with proper lookups.
-
-    Args:
-        duree_max10: Duration from issue date (1-10), calculated from dates not counter
-    """
-    # Check if VM before withdrawal fees is 0
-    if state['MT_VM_AV_RETRAIT_FRAIS'] == 0:
-        return {
-            'COMM_VENTE': 0.0,
-            'VP_COMM_VENTE': 0.0,
-            'FRAIS_ACQUIS': 0.0,
-            'VP_FRAIS_ACQUIS': 0.0,
-            'PC_COMMISSION_MAINTIEN': 0.0,
-        }
-
-    # Lookup acquisition parameters
-    key = (duree_max10, row['ID_ACQUI'])
-    acq_info = lookups['acquisition'].get(key, {
-        'PC_COMMISSION_VENTE_RF': 0.0,
-        'PC_COMMISSION_VENTE_AC': 0.0,
-        'PC_COMMISSION_MAINTIEN_RF': 0.0,
-        'PC_COMMISSION_MAINTIEN_AC': 0.0,
-        'PC_FRAIS_AN_AC': 0.0,
-        'PC_FRAIS_AN_RF': 0.0,
-    })
-
-    # Get allocation info
-    mt_vm = state['MT_VM']
-    mt_rf = state['MT_RF']
-    ajustement_commission = state['AJUSTEMENT_COMMISSION']
-
-    if mt_vm > 0:
-        # Calculate weighted average rates
-        pc_commission_vente = ((acq_info['PC_COMMISSION_VENTE_AC'] * (mt_vm - mt_rf) / mt_vm +
-                                acq_info['PC_COMMISSION_VENTE_RF'] * mt_rf / mt_vm) *
-                               ajustement_commission)
-
-        pc_commission_maintien = ((acq_info['PC_COMMISSION_MAINTIEN_AC'] * (mt_vm - mt_rf) / mt_vm +
-                                   acq_info['PC_COMMISSION_MAINTIEN_RF'] * mt_rf / mt_vm) *
-                                  ajustement_commission)
-
-        pc_frais_an = (acq_info['PC_FRAIS_AN_AC'] * (mt_vm - mt_rf) / mt_vm +
-                       acq_info['PC_FRAIS_AN_RF'] * mt_rf / mt_vm)
-    else:
-        pc_commission_vente = 0.0
-        pc_commission_maintien = 0.0
-        pc_frais_an = 0.0
-
-    comm_vente = -pc_commission_vente * depot_futur * state['TX_SURVIE']
-    vp_comm_vente = comm_vente * state['TX_ACTUALISATION']
-
-    # Calculate recovery from lapses
-    frais_acquis = pc_frais_an * mt_vm_ap_retrait * lapse * tx_survie_deb * (1 - qx)
-    vp_frais_acquis = frais_acquis * state['TX_ACTUALISATION']
-
-    return {
-        'COMM_VENTE': comm_vente,
-        'VP_COMM_VENTE': vp_comm_vente,
-        'FRAIS_ACQUIS': frais_acquis,
-        'VP_FRAIS_ACQUIS': vp_frais_acquis,
-        'PC_COMMISSION_MAINTIEN': pc_commission_maintien,
-    }
-
-
-def calculate_fees(state: Dict, lookups: Dict, row: Dict, tx_survie_deb: float,
-                   freq: int, AJUST_NOUV_AFFAIRES: float, pc_commission_maintien: float) -> Dict[str, float]:
-    """Calculate all ongoing fees."""
-    # Fixed fees
-    fee_key = (row['ID_PRODUIT'], int(row['ANNEE_REELLE']))
-    fixed_fee_annual = lookups['fees'].get(fee_key, 0.0)
-
-    # Only charge if VM > 0 or there are MRV benefits
-    if state['MT_VM_AV_RETRAIT'] <= 0:
-        # Check if there are MRV benefits (would need VP_PREST_MRV, but we can use a proxy)
-        # For now, assume no fees if VM is 0
-        frais_fixes = 0.0
-    else:
-        frais_fixes = -fixed_fee_annual / freq * AJUST_NOUV_AFFAIRES * tx_survie_deb
-
-    vp_frais_fixes = frais_fixes * state['TX_ACTUALISATION']
-
-    # Management fees (honoraires)
-    hon_gest = -state['MT_VM_AV_RETRAIT_FRAIS'] * (
-            np.exp(state['PC_HONORAIRES_GEST'] / freq * AJUST_NOUV_AFFAIRES) - 1) * tx_survie_deb
-    vp_hon_gest = hon_gest * state['TX_ACTUALISATION']
-
-    # Maintenance commission
-    comm_maintien = -state['MT_VM_AV_RETRAIT_FRAIS'] * (
-            np.exp(pc_commission_maintien / freq * AJUST_NOUV_AFFAIRES) - 1) * tx_survie_deb
-    vp_comm_maintien = comm_maintien * state['TX_ACTUALISATION']
-
-    # Variable premiums
-    primes_variables = (state['MT_VM_AV_RETRAIT_FRAIS'] *
-                        np.exp(-(state['PC_RFG'] - state['PC_REVENU_FDS']) / freq * AJUST_NOUV_AFFAIRES) *
-                        -(np.exp(-state['PC_REVENU_FDS'] / freq * AJUST_NOUV_AFFAIRES) - 1) *
-                        tx_survie_deb)
-    vp_primes_variables = primes_variables * state['TX_ACTUALISATION']
-
-    return {
-        'FRAIS_FIXES': frais_fixes,
-        'VP_FRAIS_FIXES': vp_frais_fixes,
-        'HON_GEST': hon_gest,
-        'VP_HON_GEST': vp_hon_gest,
-        'COMM_MAINTIEN': comm_maintien,
-        'VP_COMM_MAINTIEN': vp_comm_maintien,
-        'PRIMES_VARIABLES': primes_variables,
-        'VP_PRIMES_VARIABLES': vp_primes_variables,
-    }
-
-
-def calculate_escap_cushions(state: Dict, lookups: Dict, row: Dict, account: pd.Series, freq: int,
-                             duree_max10: int) -> Dict[str, float]:
-    """
-    Calculate ESCAP cushions.
-
-    Args:
-        duree_max10: Duration from issue date (1-10), calculated from dates not counter
-    """
-    id_produit = row['ID_PRODUIT']
-
-    # Determine CODE_CAT_PRODUIT
-    if id_produit == 22:
-        code_cat_produit = 0
-    elif id_produit in [12, 13, 14, 15, 16]:
-        code_cat_produit = 1
-    elif id_produit in [17, 18, 19, 20, 21]:
-        code_cat_produit = 2
-    elif id_produit == 6:
-        code_cat_produit = 3
-    elif id_produit in [4, 7]:
-        code_cat_produit = 4
-    elif id_produit in [5, 8]:
-        code_cat_produit = 5
-    elif id_produit in [2, 3]:
-        code_cat_produit = 6
-    else:
-        code_cat_produit = 7
-
-    # Determine CAT_COUSSIN_1 (based on % fixed income)
-    if state['MT_VM_PROJ'] > 0:
-        pct_rf = (state['MT_DEX_PROJ'] + state['MT_MM_PROJ']) / state['MT_VM_PROJ']
-    else:
-        pct_rf = 0
-
-    if code_cat_produit in [0, 6]:
-        cat_coussin_1 = 0
-    elif code_cat_produit == 7 and pct_rf < 0.5:
-        cat_coussin_1 = 4
-    elif code_cat_produit == 7:
-        cat_coussin_1 = 5
-    elif pct_rf < 1 / 3:
-        cat_coussin_1 = 1
-    elif pct_rf < 2 / 3:
-        cat_coussin_1 = 2
-    else:
-        cat_coussin_1 = 3
-
-    # Determine CAT_COUSSIN_2 (based on moneyness for RGS, duration for others)
-    # Calculate VM/VG ratio
-    pc_gar_ech = state['PC_GAR_ECH']
-    pc_gar_deces = state['PC_GAR_DECES_1']
-    ratio1 = pc_gar_ech / max(state['MT_GAR_ECH_PROJ'], 0.01) if state['MT_GAR_ECH_PROJ'] > 0 else 999
-    ratio2 = pc_gar_deces / max(state['MT_BONI_DECES_PROJ'] + state['MT_GAR_DECES_PROJ'], 0.01)
-    ratio3 = 1 / max(state['MT_SRG_PROJ'], 0.01) if state['MT_SRG_PROJ'] > 0 else 999
-    vm_vg_ratio = min(10, (state['MT_VM_PROJ'] + state['MT_VM_AV_RETRAIT_FRAIS']) / 2 * min(ratio1, ratio2, ratio3))
-
-    if code_cat_produit == 7 and vm_vg_ratio < 0.7:
-        cat_coussin_2 = 4
-    elif code_cat_produit == 7 and vm_vg_ratio < 0.9:
-        cat_coussin_2 = 5
-    elif code_cat_produit == 7:
-        cat_coussin_2 = 6
-    elif duree_max10 <= 3:
-        cat_coussin_2 = 1
-    elif duree_max10 <= 6:
-        cat_coussin_2 = 2
-    else:
-        cat_coussin_2 = 3
-
-    # Lookup cushion parameters
-    key = (code_cat_produit, cat_coussin_1, cat_coussin_2)
-    cushion_info = lookups['coussins'].get(key, {
-        'BASE_PASSIF_REDRESSE': 0,
-        'TX_PASSIF_REDRESSE': 0.0,
-        'BASE_COUSSIN_CREDIT': 0,
-        'TX_COUSSIN_CREDIT': 0.0,
-        'BASE_COUSSIN_MARCHE': 0,
-        'TX_COUSSIN_MARCHE': 0.0,
-        'BASE_COUSSIN_DEPENSE': 0,
-        'TX_COUSSIN_DEPENSE': 0.0,
-        'BASE_COUSSIN_DECHEANCE': 0,
-        'TX_COUSSIN_DECHEANCE': 0.0,
-        'BASE_COUSSIN_MORTALITE': 0,
-        'TX_COUSSIN_MORTALITE': 0.0,
-        'BASE_COUSSIN_DEPOT': 0,
-        'TX_COUSSIN_DEPOT': 0.0,
-        'FACTEUR_AGE_80': 1.0,
-        'FACTEUR_AGE_90': 1.0,
-    })
-
-    # For RGS with VM=0, set certain cushions to 0
-    if code_cat_produit == 7 and state['MT_VM_PROJ'] == 0:
-        cushion_info['TX_COUSSIN_CREDIT'] = 0
-        cushion_info['TX_COUSSIN_MARCHE'] = 0
-        cushion_info['TX_COUSSIN_DECHEANCE'] = 0
-        cushion_info['TX_COUSSIN_DEPOT'] = 0
-
-    # Determine age factor
-    if row['AGE'] < 80:
-        age_factor = 1.0
-    elif row['AGE'] < 90:
-        age_factor = cushion_info['FACTEUR_AGE_80']
-    else:
-        age_factor = cushion_info['FACTEUR_AGE_90']
-
-    # Calculate base amount for cushions
-    max_guarantee = max(state['MT_GAR_ECH_PROJ'],
-                        state['MT_GAR_DECES_PROJ'] + state['MT_BONI_DECES_PROJ'],
-                        state['MT_SRG_PROJ'])
-
-    # Calculate each cushion
-    results = {}
-    for cushion_name in ['PASSIF_REDRESSE', 'COUSSIN_CREDIT', 'COUSSIN_MARCHE',
-                         'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT']:
-
-        base_key = f'BASE_{cushion_name}'
-        tx_key = f'TX_{cushion_name}'
-
-        if cushion_info[base_key] == 0:
-            base_amount = max_guarantee
-        else:
-            base_amount = state['MT_VM_PROJ']
-
-        cushion_amount = cushion_info[tx_key] * base_amount * age_factor * state['TX_SURVIE']
-        results[cushion_name] = cushion_amount
-        results[f'VP_{cushion_name}'] = cushion_amount * state['TX_ACTUALISATION'] / freq
-
-    return results
-
-
-def update_survival_and_discount(state: Dict, qx: float, lapse: float) -> Dict:
-    """Update cumulative survival probability."""
-    state['TX_SURVIE'] = state['TX_SURVIE'] * (1 - qx) * (1 - lapse)
-    return state
-
-
-def accumulate_death_bonus(state: Dict, row: Dict, account: pd.Series, freq: int, AJUST_NOUV_AFFAIRES: float) -> Dict:
-    """Accumulate death bonus before withdrawals."""
-    pc_boni_deces = state['PC_BONI_DECES']
-    max_boni_deces = account.get('MAX_BONI_DECES', 999)
-
-    if pc_boni_deces > 0 and row['AGE'] < max_boni_deces:
-        state['MT_BONI_DECES_PROJ'] = (state['MT_BONI_DECES_PROJ'] +
-                                       state['MT_GAR_DECES_PROJ'] * pc_boni_deces / freq * AJUST_NOUV_AFFAIRES)
-    else:
-        state['MT_BONI_DECES_PROJ'] = 0
-
-    return state
-
-
-def apply_fees_and_update_vm(state: Dict, row: Dict, freq: int, AJUST_NOUV_AFFAIRES: float, tx_survie_deb: float) -> \
-        Tuple[Dict, float, float]:
-    """
-    NEW: Encapsulates the fee deduction waterfall to ensure correct order of operations.
-    This function replicates SAS lines 454-472.
-
-    1. Applies management fees (RFG) continuously.
-    2. Calculates guarantee fee cash flow (Primes Garanties).
-    3. Deducts guarantee fee amount from VM.
-    4. Returns updated state and cash flows.
-    """
-    # Step 1: Apply management fees (PC_RFG) using continuous compounding.
-    # SAS: MT_VM_AV_RETRAIT = MT_VM_AV_RETRAIT_FRAIS * EXP(-PC_RFG / &FREQ_EVAL. * AJUST_NOUV_AFFAIRES);
-    mt_vm_av_retrait = state['MT_VM_AV_RETRAIT_FRAIS'] * np.exp(-state['PC_RFG'] / freq * AJUST_NOUV_AFFAIRES)
-
-    # Step 2: Calculate the guarantee fee *amount* (Primes Garanties) before applying survival.
-    # The base for the fee is the VM *after* management fees.
-    i_frais_sur_srg = row.get('I_FRAIS_SUR_SRG', 0)
-
-    if i_frais_sur_srg == 0:
-        # Fee is based on the post-RFG market value
-        base_fee_calc = mt_vm_av_retrait
-    else:
-        # Fee is based on the SRG
-        base_fee_calc = state['MT_SRG_PROJ']
-
-    guarantee_fee_amount = base_fee_calc * state['PC_FRAIS_GARANTIE'] / freq * AJUST_NOUV_AFFAIRES
-
-    # The fee cannot exceed the available market value
-    guarantee_fee_amount = min(guarantee_fee_amount, mt_vm_av_retrait)
-
-    # Calculate the final cash flow with survival probability
-    primes_garanties = guarantee_fee_amount * tx_survie_deb
-    vp_primes_garanties = primes_garanties * state['TX_ACTUALISATION']
-
-    # Step 3: Deduct the guarantee fee *amount* from the market value.
-    # SAS: MT_VM_AV_RETRAIT = MAX(MT_VM_AV_RETRAIT - ..., 0);
-    mt_vm_av_retrait_final = max(mt_vm_av_retrait - guarantee_fee_amount, 0)
-
-    # Step 4: Update the state with the final VM value to be used for withdrawals.
-    state['MT_VM_AV_RETRAIT'] = mt_vm_av_retrait_final
-
-    return state, primes_garanties, vp_primes_garanties
-
-
-def calculate_duree_max10(row: Dict, account: pd.Series) -> int:
-    """
-    Calculate duration from issue date (matches SAS formula exactly).
-
-    SAS: duree_max10=min(10,int((annee_reelle+mois_eval/12)-(ANNEE_COTIS+MOIS_COTIS/12))+1);
-    """
-    annee_cotis = account.get('ANNEE_COTIS', account.get('ANNEE_EVALUATION_INI', row['ANNEE_REELLE']))
-    mois_cotis = account.get('MOIS_COTIS', 1)
-
-    current_date = row['ANNEE_REELLE'] + row['MOIS_EVAL'] / 12
-    issue_date = annee_cotis + mois_cotis / 12
-
-    duree = int(current_date - issue_date) + 1
-    return min(duree, 10)
-
-
-def process_single_row(row: Dict, state: Dict, lookups: Dict,
-                       original_account: pd.Series) -> Tuple[Dict, Dict]:
-    """
-    Process a single projection row with all calculations.
-
-    FIXED: Now calculates duree_max10 from dates at each step instead of using counter.
-    """
-    freq = CONFIG['FREQ_EVAL']
+    # Get global thread ID
+    account_idx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    scenario_idx = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
+
+    # Boundary check
+    if account_idx >= account_data.shape[0] or scenario_idx >= n_scenarios:
+        return
+
+    # Load account data into registers (avoiding repeated global memory access)
+    acc = account_data[account_idx]
+
+    # Account static data indices (must match the order in account_data array)
+    ID_COMPTE = int(acc[0])
+    ANNEE_EVALUATION_INI = int(acc[1])
+    MOIS_EVALUATION_INI = int(acc[2])
+    ANNEE_NAIS = int(acc[3])
+    MOIS_NAIS = int(acc[4])
+    I_SEXE = int(acc[5])
+    I_PRODUIT_REGR = int(acc[6])
+    ID_PRODUIT = int(acc[7])
+    ID_LAPSE = int(acc[8])
+    I_REGIME_2 = int(acc[9])
+    ID_DEPOT = int(acc[10])
+    ID_ACQUI = int(acc[11])
+    AGE_ECH_MIN = int(acc[12])
+    AGE_FIN_CONTRAT = int(acc[13])
+    AGE_DECAISSEMENT = int(acc[14])
+
+    # Initialize state variables
+    MT_VM_PROJ = acc[15]
+    MT_GAR_DECES_PROJ = acc[16]
+    MT_GAR_ECH_PROJ = acc[17]
+    MT_SRG_PROJ = acc[18]
+    MT_BCB_PROJ = acc[19]
+    MT_DEX_PROJ = acc[20]
+    MT_MM_PROJ = acc[21]
+    MT_TSX_PROJ = acc[22]
+    MT_SP500_PROJ = acc[23]
+    MT_EAFE_PROJ = acc[24]
+    MT_BONI_DECES_PROJ = acc[25]
+    MT_MRV_MRG_MRA_PROJ = acc[26]
+    TAUX_MRV_MRG_MRA_PROJ = acc[27]
+    MT_MIN_FERR_PROJ = 0.0
+    ANNEE_ECH_PROJ = int(acc[28])
+    MOIS_ECH_PROJ = int(acc[29])
+
+    TX_SURVIE = 1.0
+    TX_ACTUALISATION = 1.0
+
+    PC_HONORAIRES_GEST = acc[30]
+    PC_FRAIS_GARANTIE = acc[31]
+    PC_GAR_DECES_1 = acc[32]
+    PC_BONI_DECES = acc[33]
+    PC_RFG = acc[34]
+    PC_REVENU_FDS = acc[35]
+    PC_GAR_ECH = acc[36]
+    PC_GAR_ECH_DEP_FUT = acc[37]
+    AJUSTEMENT_COMMISSION = acc[38]
+    MT_RF = acc[39]
+    MT_VM_ORIG = acc[40]
+
+    # Additional parameters
+    ANNEE_COTIS = int(acc[41]) if acc[41] > 0 else ANNEE_EVALUATION_INI
+    MOIS_COTIS = int(acc[42]) if acc[42] > 0 else 1
+
+    # Scenario-specific processing
+    scn_eval = scenario_idx + 1  # Scenarios are 1-indexed
+
+    output_idx = 0
     AJUST_NOUV_AFFAIRES = 1.0
 
-    if state['TX_SURVIE'] == 0 or (state['MT_VM_PROJ'] == 0 and row['I_PRODUIT_REGR'] == 0):
-        return None, state
+    # Loop through years
+    for an_eval in range(0, n_years + 1):
+        # Loop through months within the year
+        for mois_simul in range(1, freq_eval + 1):
+            # Calculate real year and month
+            annee_reelle = ANNEE_EVALUATION_INI + an_eval - 1
+            mois_eval = mois_simul * 12 // freq_eval
 
-    # CRITICAL FIX: Calculate duration from dates, not from counter
-    duree_max10 = calculate_duree_max10(row, original_account)
+            # Calculate age
+            age = annee_reelle - ANNEE_NAIS
+            if mois_eval < MOIS_NAIS:
+                age -= 1
+            if age < 1:
+                age = 1
 
-    tx_survie_deb = state['TX_SURVIE']
+            # Check if we should keep this period
+            keep = (age <= AGE_FIN_CONTRAT and
+                    (an_eval > 1 or
+                     (an_eval == 1 and mois_eval >= MOIS_EVALUATION_INI) or
+                     (an_eval == 0 and mois_eval == 12)))
 
-    # Step 1: Lookups (Mortality & Returns)
-    qx = lookup_mortality(lookups, row, state)
-    qx = 1 - (1 - qx) ** (1 / freq * AJUST_NOUV_AFFAIRES)
-    returns = lookup_returns(lookups, row, state)
+            if not keep:
+                continue
 
-    # Step 2: Update Discount Factor & Apply Investment Returns
-    state = update_discount_factor(state, returns['FORWARD_RATE'], AJUST_NOUV_AFFAIRES)
-    state = apply_investment_returns(state, returns, AJUST_NOUV_AFFAIRES)
+            # Check if policy is still active
+            if TX_SURVIE == 0 or (MT_VM_PROJ == 0 and I_PRODUIT_REGR == 0):
+                break
 
-    # Step 3: Calculate Lapse Rates (passing duree_max10)
-    lapse_tot, lapse_part, lapse = calculate_lapse_rates(state, lookups, row, original_account, freq,
-                                                         AJUST_NOUV_AFFAIRES, duree_max10)
+            # Calculate duration from issue date
+            current_date = annee_reelle + mois_eval / 12.0
+            issue_date = ANNEE_COTIS + MOIS_COTIS / 12.0
+            duree = int(current_date - issue_date) + 1
+            duree_max10 = min(duree, 10)
 
-    # Step 4: Update Cumulative Survival Probability
-    state = update_survival_and_discount(state, qx, lapse)
+            TX_SURVIE_DEB = TX_SURVIE
 
-    # Step 5: Accumulate Death Bonus
-    state = accumulate_death_bonus(state, row, original_account, freq, AJUST_NOUV_AFFAIRES)
+            # ============= STEP 1: LOOKUP MORTALITY =============
+            month_diff = MOIS_NAIS - mois_eval
+            if month_diff <= 0:
+                month_diff += 12
 
-    # Step 6: Apply all fees and update the Market Value before withdrawals
-    state, primes_garanties, vp_primes_garanties = apply_fees_and_update_vm(
-        state, row, freq, AJUST_NOUV_AFFAIRES, tx_survie_deb
-    )
+            if month_diff <= 6:
+                age_mort = age + 1
+            else:
+                age_mort = age
 
-    # Step 7: Calculate MRV and Withdrawals
-    state = calculate_mrv_amount(state, row, original_account, freq)
-    retrait = calculate_withdrawal(state, lookups, row, original_account, freq)
+            age_mort = min(age_mort, 120)
 
-    # Step 8: Calculate Deposits (passing duree_max10)
-    _, depot_futur = process_deposits(state, lookups, row, original_account, freq, duree_max10)
+            # Boundary checks for mortality lookup
+            if (I_SEXE < mortality_lookup.shape[0] and
+                    age_mort < mortality_lookup.shape[1] and
+                    annee_reelle < mortality_lookup.shape[2] and
+                    I_PRODUIT_REGR < mortality_lookup.shape[3]):
+                qx = mortality_lookup[I_SEXE, age_mort, annee_reelle, I_PRODUIT_REGR]
+            else:
+                qx = 0.001
 
-    # Step 9: Process Benefits and update VM/Guarantees
-    prest_mrv, vp_prest_mrv = calculate_mrv_benefit(state, retrait, state['MT_VM_AV_RETRAIT'], row, tx_survie_deb)
-    state, mt_vm_ap_retrait, mt_srg_av_retrait = update_guarantees_for_withdrawal(state, retrait)
+            # Convert annual to period rate
+            qx = 1.0 - math.pow(1.0 - qx, (1.0 / freq_eval * AJUST_NOUV_AFFAIRES))
 
-    state = process_deposits_and_update_vm(state, depot_futur, mt_vm_ap_retrait)
-    mt_vm_ap_retrait_depot = state['MT_VM_PROJ']
+            # ============= STEP 2: LOOKUP RETURNS =============
+            if (scn_eval < forward_rate.shape[0] and
+                    an_eval < forward_rate.shape[1] and
+                    mois_eval < forward_rate.shape[2]):
+                fwd_rate = forward_rate[scn_eval, an_eval, mois_eval]
+                ajust_fwd = ajust_forward[scn_eval, an_eval, mois_eval]
+                r_dex = rend_dex[scn_eval, an_eval, mois_eval]
+                r_mm = rend_mm[scn_eval, an_eval, mois_eval]
+                r_tsx = rend_tsx[scn_eval, an_eval, mois_eval]
+                r_sp500 = rend_sp500[scn_eval, an_eval, mois_eval]
+                r_eafe = rend_eafe[scn_eval, an_eval, mois_eval]
+            else:
+                fwd_rate = 0.0
+                ajust_fwd = 0.0
+                r_dex = 0.0
+                r_mm = 0.0
+                r_tsx = 0.0
+                r_sp500 = 0.0
+                r_eafe = 0.0
 
-    prest_deces, vp_prest_deces = calculate_death_benefit(state, qx, tx_survie_deb, mt_vm_ap_retrait_depot)
-    state, prest_ech, vp_prest_ech = process_maturity_benefit(state, row, original_account, mt_vm_ap_retrait)
+            # Adjust forward rate if VM is 0
+            if MT_VM_PROJ == 0:
+                fwd_rate += ajust_fwd
 
-    # Step 10: Process Resets and Adjustments
-    state = update_death_guarantee_adjustments(state, row, original_account, freq)
-    state = process_srg_bcb_resets(state, row, original_account)
-    state = process_death_guarantee_resets(state, row, original_account)
-    state = process_facultative_maturity_reset(state, row, original_account)
-    state = process_death_guarantee_age_change(state, row, original_account)
-    state = rebalance_portfolio(state, original_account)
+            # ============= STEP 3: UPDATE DISCOUNT & APPLY RETURNS =============
+            TX_ACTUALISATION *= math.exp(-fwd_rate * AJUST_NOUV_AFFAIRES)
 
-    # Step 11: Calculate remaining cash flows (passing duree_max10)
-    acquisition = calculate_acquisition_costs(state, lookups, row, original_account,
-                                              depot_futur, lapse, qx, mt_vm_ap_retrait,
-                                              tx_survie_deb, freq, AJUST_NOUV_AFFAIRES, duree_max10)
-    fees = calculate_fees(state, lookups, row, tx_survie_deb, freq, AJUST_NOUV_AFFAIRES,
-                          acquisition['PC_COMMISSION_MAINTIEN'])
-    cushions = calculate_escap_cushions(state, lookups, row, original_account, freq, duree_max10)
+            # Apply investment returns using continuous compounding
+            MT_DEX_PROJ *= math.exp(r_dex * AJUST_NOUV_AFFAIRES)
+            MT_MM_PROJ *= math.exp(r_mm * AJUST_NOUV_AFFAIRES)
+            MT_TSX_PROJ *= math.exp(r_tsx * AJUST_NOUV_AFFAIRES)
+            MT_SP500_PROJ *= math.exp(r_sp500 * AJUST_NOUV_AFFAIRES)
+            MT_EAFE_PROJ *= math.exp(r_eafe * AJUST_NOUV_AFFAIRES)
 
-    # Step 12: Final tracking metrics
-    valeur_marchande = state['MT_VM_PROJ'] * state['TX_SURVIE']
-    vp_valeur_marchande = valeur_marchande * state['TX_ACTUALISATION'] / freq
+            MT_VM_AV_RETRAIT_FRAIS = (MT_DEX_PROJ + MT_MM_PROJ + MT_TSX_PROJ +
+                                      MT_SP500_PROJ + MT_EAFE_PROJ)
 
-    # Assemble final output row
-    result_row = {
-        'ID_COMPTE': row['ID_COMPTE'], 'SCN_EVAL': row['SCN_EVAL'], 'AN_EVAL': row['AN_EVAL'],
-        'MOIS_EVAL': row['MOIS_EVAL'],
-        'PRIMES_GARANTIES': primes_garanties, 'PREST_DECES': prest_deces, 'PREST_ECH': prest_ech,
-        'PREST_MRV': prest_mrv,
-        'FRAIS_ACQUIS': acquisition['FRAIS_ACQUIS'], 'COMM_VENTE': acquisition['COMM_VENTE'],
-        'PRIMES_VARIABLES': fees['PRIMES_VARIABLES'], 'FRAIS_FIXES': fees['FRAIS_FIXES'], 'HON_GEST': fees['HON_GEST'],
-        'COMM_MAINTIEN': fees['COMM_MAINTIEN'],
-        'VALEUR_MARCHANDE': valeur_marchande,
-        **{k: v for k, v in cushions.items() if not k.startswith('VP_')},
-        'VP_FRAIS_ACQUIS': acquisition['VP_FRAIS_ACQUIS'],
-        'VP_COMM_VENTE': acquisition['VP_COMM_VENTE'],
-        'VP_PRIMES_GARANTIES': vp_primes_garanties,
-        'VP_PRIMES_VARIABLES': fees['VP_PRIMES_VARIABLES'],
-        'VP_FRAIS_FIXES': fees['VP_FRAIS_FIXES'],
-        'VP_HON_GEST': fees['VP_HON_GEST'],
-        'VP_COMM_MAINTIEN': fees['VP_COMM_MAINTIEN'],
-        'VP_PREST_ECH': vp_prest_ech, 'VP_PREST_MRV': vp_prest_mrv, 'VP_PREST_DECES': vp_prest_deces,
-        'VP_VALEUR_MARCHANDE': vp_valeur_marchande,
-        **{k: v for k, v in cushions.items() if k.startswith('VP_')},
-    }
+            # ============= STEP 4: CALCULATE LAPSE RATES =============
+            lapse_tot = 0.0
+            lapse_part = 0.0
+            lapse = 0.0
 
-    return result_row, state
+            if MT_VM_PROJ > 0:
+                # Calculate VM/VG ratio
+                ratio1 = 9999.0
+                if MT_GAR_ECH_PROJ > 0.01:
+                    ratio1 = PC_GAR_ECH / MT_GAR_ECH_PROJ
+
+                ratio2 = PC_GAR_DECES_1 / max(MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ, 0.01)
+
+                ratio3 = 9999.0
+                if MT_SRG_PROJ > 0.01:
+                    ratio3 = 1.0 / MT_SRG_PROJ
+
+                vm_avg = (MT_VM_PROJ + MT_VM_AV_RETRAIT_FRAIS) / 2.0
+                vm_vg_ratio = min(10.0, vm_avg * min(ratio1, min(ratio2, ratio3)))
+
+                # Total lapse
+                if vm_vg_ratio <= 0.5:
+                    lapse_niv_tot = 1
+                    interpolation_tot = vm_vg_ratio / 0.5 if vm_vg_ratio > 0 else 0.0
+                elif vm_vg_ratio <= 0.75:
+                    lapse_niv_tot = 2
+                    interpolation_tot = (vm_vg_ratio - 0.5) / 0.25
+                else:
+                    lapse_niv_tot = 3
+                    interpolation_tot = (vm_vg_ratio - 0.75) / 999.24
+
+                # Lookup total lapse parameters
+                if (duree_max10 < lapse_tot_min.shape[0] and
+                        ID_LAPSE < lapse_tot_min.shape[1] and
+                        lapse_niv_tot < lapse_tot_min.shape[2]):
+                    tx_lapse_tot_min = lapse_tot_min[duree_max10, ID_LAPSE, lapse_niv_tot]
+                    tx_lapse_tot_max = lapse_tot_max[duree_max10, ID_LAPSE, lapse_niv_tot]
+                    fact_dim = lapse_tot_fact[duree_max10, ID_LAPSE, lapse_niv_tot]
+                else:
+                    tx_lapse_tot_min = 0.0
+                    tx_lapse_tot_max = 0.0
+                    fact_dim = 1.0
+
+                if tx_lapse_tot_min == tx_lapse_tot_max:
+                    lapse_tot = tx_lapse_tot_min
+                else:
+                    lapse_tot = interpolation_tot * (tx_lapse_tot_max - tx_lapse_tot_min) + tx_lapse_tot_min
+
+                if age >= AGE_DECAISSEMENT:
+                    lapse_tot *= fact_dim
+
+                # Partial lapse
+                if vm_vg_ratio <= 0.5:
+                    lapse_niv_part = 1
+                    interpolation_part = vm_vg_ratio / 0.5 if vm_vg_ratio > 0 else 0.0
+                elif vm_vg_ratio <= 0.75:
+                    lapse_niv_part = 2
+                    interpolation_part = (vm_vg_ratio - 0.5) / 0.25
+                else:
+                    lapse_niv_part = 3
+                    interpolation_part = (vm_vg_ratio - 0.75) / 999.24
+
+                # Lookup partial lapse parameters
+                if (age < lapse_part_min.shape[0] and
+                        ID_LAPSE < lapse_part_min.shape[1] and
+                        I_REGIME_2 < lapse_part_min.shape[2] and
+                        lapse_niv_part < lapse_part_min.shape[3]):
+                    tx_lapse_part_min = lapse_part_min[age, ID_LAPSE, I_REGIME_2, lapse_niv_part]
+                    tx_lapse_part_max = lapse_part_max[age, ID_LAPSE, I_REGIME_2, lapse_niv_part]
+                else:
+                    tx_lapse_part_min = 0.0
+                    tx_lapse_part_max = 0.0
+
+                if tx_lapse_part_min == tx_lapse_part_max:
+                    lapse_part = tx_lapse_part_min
+                else:
+                    lapse_part = interpolation_part * (tx_lapse_part_max - tx_lapse_part_min) + tx_lapse_part_min
+
+                # Convert to period rates
+                exponent = (1.0 / freq_eval) * AJUST_NOUV_AFFAIRES
+                lapse = 1.0 - math.pow(1.0 - lapse_tot - lapse_part, exponent)
+
+            # ============= STEP 5: UPDATE SURVIVAL =============
+            TX_SURVIE *= (1.0 - qx) * (1.0 - lapse)
+
+            # ============= STEP 6: ACCUMULATE DEATH BONUS =============
+            max_boni_deces = int(acc[43]) if len(acc) > 43 else 999
+            if PC_BONI_DECES > 0 and age < max_boni_deces:
+                MT_BONI_DECES_PROJ += (MT_GAR_DECES_PROJ * PC_BONI_DECES /
+                                       freq_eval * AJUST_NOUV_AFFAIRES)
+            else:
+                MT_BONI_DECES_PROJ = 0.0
+
+            # ============= STEP 7: APPLY FEES =============
+            # Apply management fees (RFG)
+            MT_VM_AV_RETRAIT = MT_VM_AV_RETRAIT_FRAIS * math.exp(
+                -PC_RFG / freq_eval * AJUST_NOUV_AFFAIRES)
+
+            # Calculate guarantee fee
+            i_frais_sur_srg = int(acc[44]) if len(acc) > 44 else 0
+            if i_frais_sur_srg == 0:
+                base_fee_calc = MT_VM_AV_RETRAIT
+            else:
+                base_fee_calc = MT_SRG_PROJ
+
+            guarantee_fee_amount = (base_fee_calc * PC_FRAIS_GARANTIE /
+                                    freq_eval * AJUST_NOUV_AFFAIRES)
+            guarantee_fee_amount = min(guarantee_fee_amount, MT_VM_AV_RETRAIT)
+
+            primes_garanties = guarantee_fee_amount * TX_SURVIE_DEB
+            vp_primes_garanties = primes_garanties * TX_ACTUALISATION
+
+            # Deduct guarantee fee
+            MT_VM_AV_RETRAIT = max(MT_VM_AV_RETRAIT - guarantee_fee_amount, 0.0)
+
+            # ============= STEP 8: CALCULATE WITHDRAWALS =============
+            retrait = 0.0
+            age_retrait = age + 1
+
+            if (age_retrait >= AGE_DECAISSEMENT and
+                    not (age_retrait == AGE_DECAISSEMENT and mois_eval >= MOIS_NAIS) and
+                    not (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)):
+
+                # Minimum FERR
+                if age < min_ferr_lookup.shape[0]:
+                    min_ferr_rate = min_ferr_lookup[age]
+                else:
+                    min_ferr_rate = 0.0
+
+                # Update MIN_FERR at start of year
+                if ((an_eval == 1 and mois_eval == MOIS_EVALUATION_INI) or
+                        mois_eval == 12 // freq_eval):
+                    MT_MIN_FERR_PROJ = MT_VM_PROJ * min_ferr_rate
+
+                # Calculate withdrawal (simplified - would need more account parameters)
+                retrait = MT_MIN_FERR_PROJ / freq_eval
+
+            # ============= STEP 9: PROCESS DEPOSITS =============
+            depot_futur = 0.0
+
+            if (duree_max10 < deposits_pc.shape[0] and
+                    ID_DEPOT < deposits_pc.shape[1]):
+                pc_depot_annuel = deposits_pc[duree_max10, ID_DEPOT]
+                var_depot_fct = deposits_var[duree_max10, ID_DEPOT]
+                age_max_depot = deposits_age_max[duree_max10, ID_DEPOT]
+                i_even_cesse = deposits_i_even[duree_max10, ID_DEPOT]
+            else:
+                pc_depot_annuel = 0.0
+                var_depot_fct = 0
+                age_max_depot = 999
+                i_even_cesse = 0
+
+            # Check if deposits should cease
+            if not (pc_depot_annuel == 0 or
+                    (i_even_cesse == 1 and age_retrait >= AGE_DECAISSEMENT) or
+                    (age_max_depot < age) or
+                    (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)):
+
+                # Calculate deposit base
+                if var_depot_fct == 1:
+                    base_depot = MT_VM_PROJ
+                else:
+                    base_depot = MT_GAR_DECES_PROJ / PC_GAR_DECES_1 if PC_GAR_DECES_1 > 0 else 0.0
+
+                depot_futur = base_depot * pc_depot_annuel / freq_eval
+
+            # Allocate deposits proportionally
+            if depot_futur > 0 and MT_VM_PROJ > 0:
+                MT_DEX_PROJ += depot_futur * (MT_DEX_PROJ / MT_VM_PROJ)
+                MT_MM_PROJ += depot_futur * (MT_MM_PROJ / MT_VM_PROJ)
+                MT_TSX_PROJ += depot_futur * (MT_TSX_PROJ / MT_VM_PROJ)
+                MT_SP500_PROJ += depot_futur * (MT_SP500_PROJ / MT_VM_PROJ)
+                MT_EAFE_PROJ += depot_futur * (MT_EAFE_PROJ / MT_VM_PROJ)
+
+                MT_GAR_DECES_PROJ += depot_futur
+                MT_GAR_ECH_PROJ += depot_futur * PC_GAR_ECH_DEP_FUT
+                if MT_SRG_PROJ > 0:
+                    MT_SRG_PROJ += depot_futur
+
+            # ============= STEP 10: UPDATE VM AND GUARANTEES =============
+            # Process withdrawal
+            mt_vm_av_retrait = MT_VM_AV_RETRAIT
+
+            if mt_vm_av_retrait <= retrait:
+                MT_GAR_ECH_PROJ = 0.0
+                MT_GAR_DECES_PROJ = 0.0
+                MT_BONI_DECES_PROJ = 0.0
+            elif mt_vm_av_retrait > 0:
+                proportion = 1.0 - retrait / mt_vm_av_retrait
+                MT_GAR_ECH_PROJ *= proportion
+                MT_GAR_DECES_PROJ *= proportion
+                MT_BONI_DECES_PROJ *= proportion
+                MT_SRG_PROJ = max(MT_SRG_PROJ - retrait, 0.0)
+
+            mt_vm_ap_retrait = max(mt_vm_av_retrait - retrait, 0.0)
+
+            # Add deposits
+            MT_VM_PROJ = mt_vm_ap_retrait + depot_futur
+
+            # ============= STEP 11: CALCULATE BENEFITS =============
+            # MRV benefit
+            if I_PRODUIT_REGR == 1:
+                prest_mrv = -max(retrait - mt_vm_av_retrait, 0.0) * TX_SURVIE_DEB
+            else:
+                prest_mrv = 0.0
+            vp_prest_mrv = prest_mrv * TX_ACTUALISATION
+
+            # Death benefit
+            mt_vm_ap_retrait_depot = MT_VM_PROJ
+            prest_deces = (qx * -max(0.0, MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ -
+                                     mt_vm_ap_retrait_depot) * TX_SURVIE_DEB)
+            vp_prest_deces = prest_deces * TX_ACTUALISATION
+
+            # Maturity benefit (simplified)
+            prest_ech = 0.0
+            vp_prest_ech = 0.0
+
+            # ============= STEP 12: REBALANCE PORTFOLIO =============
+            if MT_VM_ORIG > 0 and MT_VM_PROJ > 0:
+                MT_SP500_PROJ = MT_VM_PROJ * acc[23] / MT_VM_ORIG
+                MT_TSX_PROJ = MT_VM_PROJ * acc[22] / MT_VM_ORIG
+                MT_EAFE_PROJ = MT_VM_PROJ * acc[24] / MT_VM_ORIG
+                MT_DEX_PROJ = MT_VM_PROJ * acc[20] / MT_VM_ORIG
+                MT_MM_PROJ = MT_VM_PROJ * acc[21] / MT_VM_ORIG
+
+            # ============= STEP 13: CALCULATE ACQUISITION COSTS =============
+            comm_vente = 0.0
+            vp_comm_vente = 0.0
+            frais_acquis = 0.0
+            vp_frais_acquis = 0.0
+            pc_commission_maintien = 0.0
+
+            if MT_VM_AV_RETRAIT_FRAIS > 0:
+                if (duree_max10 < acq_vente_rf.shape[0] and
+                        ID_ACQUI < acq_vente_rf.shape[1]):
+
+                    pc_vente_rf = acq_vente_rf[duree_max10, ID_ACQUI]
+                    pc_vente_ac = acq_vente_ac[duree_max10, ID_ACQUI]
+                    pc_maint_rf = acq_maintien_rf[duree_max10, ID_ACQUI]
+                    pc_maint_ac = acq_maintien_ac[duree_max10, ID_ACQUI]
+                    pc_fr_ac = acq_frais_ac[duree_max10, ID_ACQUI]
+                    pc_fr_rf = acq_frais_rf[duree_max10, ID_ACQUI]
+
+                    if MT_VM_ORIG > 0:
+                        pc_commission_vente = ((pc_vente_ac * (MT_VM_ORIG - MT_RF) / MT_VM_ORIG +
+                                                pc_vente_rf * MT_RF / MT_VM_ORIG) *
+                                               AJUSTEMENT_COMMISSION)
+                        pc_commission_maintien = ((pc_maint_ac * (MT_VM_ORIG - MT_RF) / MT_VM_ORIG +
+                                                   pc_maint_rf * MT_RF / MT_VM_ORIG) *
+                                                  AJUSTEMENT_COMMISSION)
+                        pc_frais_an = (pc_fr_ac * (MT_VM_ORIG - MT_RF) / MT_VM_ORIG +
+                                       pc_fr_rf * MT_RF / MT_VM_ORIG)
+
+                        comm_vente = -pc_commission_vente * depot_futur * TX_SURVIE
+                        vp_comm_vente = comm_vente * TX_ACTUALISATION
+                        frais_acquis = (pc_frais_an * mt_vm_ap_retrait * lapse *
+                                        TX_SURVIE_DEB * (1.0 - qx))
+                        vp_frais_acquis = frais_acquis * TX_ACTUALISATION
+
+            # ============= STEP 14: CALCULATE OTHER FEES =============
+            # Fixed fees
+            if (ID_PRODUIT < fees_lookup.shape[0] and
+                    annee_reelle < fees_lookup.shape[1]):
+                fixed_fee_annual = fees_lookup[ID_PRODUIT, annee_reelle]
+            else:
+                fixed_fee_annual = 0.0
+
+            if MT_VM_AV_RETRAIT > 0:
+                frais_fixes = -fixed_fee_annual / freq_eval * AJUST_NOUV_AFFAIRES * TX_SURVIE_DEB
+            else:
+                frais_fixes = 0.0
+            vp_frais_fixes = frais_fixes * TX_ACTUALISATION
+
+            # Management fees (honoraires)
+            hon_gest = (-MT_VM_AV_RETRAIT_FRAIS *
+                        (math.exp(PC_HONORAIRES_GEST / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0) *
+                        TX_SURVIE_DEB)
+            vp_hon_gest = hon_gest * TX_ACTUALISATION
+
+            # Maintenance commission
+            comm_maintien = (-MT_VM_AV_RETRAIT_FRAIS *
+                             (math.exp(pc_commission_maintien / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0) *
+                             TX_SURVIE_DEB)
+            vp_comm_maintien = comm_maintien * TX_ACTUALISATION
+
+            # Variable premiums
+            primes_variables = (MT_VM_AV_RETRAIT_FRAIS *
+                                math.exp(-(PC_RFG - PC_REVENU_FDS) / freq_eval * AJUST_NOUV_AFFAIRES) *
+                                -(math.exp(-PC_REVENU_FDS / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0) *
+                                TX_SURVIE_DEB)
+            vp_primes_variables = primes_variables * TX_ACTUALISATION
+
+            # Market value tracking
+            valeur_marchande = MT_VM_PROJ * TX_SURVIE
+            vp_valeur_marchande = valeur_marchande * TX_ACTUALISATION / freq_eval
+
+            # ============= STEP 16: CALCULATE CUSHIONS =============
+            # Determine CODE_CAT_PRODUIT
+            if ID_PRODUIT == 22:
+                code_cat_produit = 0
+            elif ID_PRODUIT in [12, 13, 14, 15, 16]:
+                code_cat_produit = 1
+            elif ID_PRODUIT in [17, 18, 19, 20, 21]:
+                code_cat_produit = 2
+            elif ID_PRODUIT == 6:
+                code_cat_produit = 3
+            elif ID_PRODUIT in [4, 7]:
+                code_cat_produit = 4
+            elif ID_PRODUIT in [5, 8]:
+                code_cat_produit = 5
+            elif ID_PRODUIT in [2, 3]:
+                code_cat_produit = 6
+            else:
+                code_cat_produit = 7
+
+            # Determine CAT_COUSSIN_1 (based on % fixed income)
+            if MT_VM_PROJ > 0:
+                pct_rf = (MT_DEX_PROJ + MT_MM_PROJ) / MT_VM_PROJ
+            else:
+                pct_rf = 0.0
+
+            if code_cat_produit in [0, 6]:
+                cat_coussin_1 = 0
+            elif code_cat_produit == 7 and pct_rf < 0.5:
+                cat_coussin_1 = 4
+            elif code_cat_produit == 7:
+                cat_coussin_1 = 5
+            elif pct_rf < 1.0 / 3.0:
+                cat_coussin_1 = 1
+            elif pct_rf < 2.0 / 3.0:
+                cat_coussin_1 = 2
+            else:
+                cat_coussin_1 = 3
+
+            # Determine CAT_COUSSIN_2
+            ratio1 = 9999.0
+            if MT_GAR_ECH_PROJ > 0.01:
+                ratio1 = PC_GAR_ECH / MT_GAR_ECH_PROJ
+            ratio2 = PC_GAR_DECES_1 / max(MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ, 0.01)
+            ratio3 = 9999.0
+            if MT_SRG_PROJ > 0.01:
+                ratio3 = 1.0 / MT_SRG_PROJ
+            vm_avg = (MT_VM_PROJ + MT_VM_AV_RETRAIT_FRAIS) / 2.0
+            vm_vg_ratio = min(10.0, vm_avg * min(ratio1, min(ratio2, ratio3)))
+
+            if code_cat_produit == 7 and vm_vg_ratio < 0.7:
+                cat_coussin_2 = 4
+            elif code_cat_produit == 7 and vm_vg_ratio < 0.9:
+                cat_coussin_2 = 5
+            elif code_cat_produit == 7:
+                cat_coussin_2 = 6
+            elif duree_max10 <= 3:
+                cat_coussin_2 = 1
+            elif duree_max10 <= 6:
+                cat_coussin_2 = 2
+            else:
+                cat_coussin_2 = 3
+
+            # Lookup cushion parameters
+            passif_redresse = 0.0
+            coussin_credit = 0.0
+            coussin_marche = 0.0
+            coussin_depense = 0.0
+            coussin_decheance = 0.0
+            coussin_mortalite = 0.0
+            coussin_depot = 0.0
+            vp_passif_redresse = 0.0
+            vp_coussin_credit = 0.0
+            vp_coussin_marche = 0.0
+            vp_coussin_depense = 0.0
+            vp_coussin_decheance = 0.0
+            vp_coussin_mortalite = 0.0
+            vp_coussin_depot = 0.0
+
+            if (code_cat_produit < cous_base_passif.shape[0] and
+                    cat_coussin_1 < cous_base_passif.shape[1] and
+                    cat_coussin_2 < cous_base_passif.shape[2]):
+
+                # Get all cushion parameters
+                base_passif = cous_base_passif[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                tx_passif = cous_tx_passif[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                base_credit = cous_base_credit[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                tx_credit = cous_tx_credit[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                base_marche = cous_base_marche[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                tx_marche = cous_tx_marche[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                base_depense = cous_base_depense[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                tx_depense = cous_tx_depense[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                base_decheance = cous_base_decheance[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                tx_decheance = cous_tx_decheance[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                base_mortalite = cous_base_mortalite[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                tx_mortalite = cous_tx_mortalite[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                base_depot_c = cous_base_depot[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                tx_depot = cous_tx_depot[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                facteur_80 = cous_facteur_80[code_cat_produit, cat_coussin_1, cat_coussin_2]
+                facteur_90 = cous_facteur_90[code_cat_produit, cat_coussin_1, cat_coussin_2]
+
+                # For RGS with VM=0, set certain cushions to 0
+                if code_cat_produit == 7 and MT_VM_PROJ == 0:
+                    tx_credit = 0.0
+                    tx_marche = 0.0
+                    tx_decheance = 0.0
+                    tx_depot = 0.0
+
+                # Determine age factor
+                if age < 80:
+                    age_factor = 1.0
+                elif age < 90:
+                    age_factor = facteur_80
+                else:
+                    age_factor = facteur_90
+
+                # Calculate base amount
+                max_guarantee = max(MT_GAR_ECH_PROJ, max(MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ, MT_SRG_PROJ))
+
+                # Calculate each cushion
+                base_amount_passif = max_guarantee if base_passif == 0 else MT_VM_PROJ
+                passif_redresse = tx_passif * base_amount_passif * age_factor * TX_SURVIE
+                vp_passif_redresse = passif_redresse * TX_ACTUALISATION / freq_eval
+
+                base_amount_credit = max_guarantee if base_credit == 0 else MT_VM_PROJ
+                coussin_credit = tx_credit * base_amount_credit * age_factor * TX_SURVIE
+                vp_coussin_credit = coussin_credit * TX_ACTUALISATION / freq_eval
+
+                base_amount_marche = max_guarantee if base_marche == 0 else MT_VM_PROJ
+                coussin_marche = tx_marche * base_amount_marche * age_factor * TX_SURVIE
+                vp_coussin_marche = coussin_marche * TX_ACTUALISATION / freq_eval
+
+                base_amount_depense = max_guarantee if base_depense == 0 else MT_VM_PROJ
+                coussin_depense = tx_depense * base_amount_depense * age_factor * TX_SURVIE
+                vp_coussin_depense = coussin_depense * TX_ACTUALISATION / freq_eval
+
+                base_amount_decheance = max_guarantee if base_decheance == 0 else MT_VM_PROJ
+                coussin_decheance = tx_decheance * base_amount_decheance * age_factor * TX_SURVIE
+                vp_coussin_decheance = coussin_decheance * TX_ACTUALISATION / freq_eval
+
+                base_amount_mortalite = max_guarantee if base_mortalite == 0 else MT_VM_PROJ
+                coussin_mortalite = tx_mortalite * base_amount_mortalite * age_factor * TX_SURVIE
+                vp_coussin_mortalite = coussin_mortalite * TX_ACTUALISATION / freq_eval
+
+                base_amount_depot_c = max_guarantee if base_depot_c == 0 else MT_VM_PROJ
+                coussin_depot = tx_depot * base_amount_depot_c * age_factor * TX_SURVIE
+                vp_coussin_depot = coussin_depot * TX_ACTUALISATION / freq_eval
+
+            # ============= STEP 15: STORE RESULTS =============
+            # Store results in output array
+            if output_idx < output_results.shape[2]:
+                output_results[account_idx, scenario_idx, output_idx, 0] = ID_COMPTE
+                output_results[account_idx, scenario_idx, output_idx, 1] = scn_eval
+                output_results[account_idx, scenario_idx, output_idx, 2] = an_eval
+                output_results[account_idx, scenario_idx, output_idx, 3] = mois_eval
+                output_results[account_idx, scenario_idx, output_idx, 4] = primes_garanties
+                output_results[account_idx, scenario_idx, output_idx, 5] = prest_deces
+                output_results[account_idx, scenario_idx, output_idx, 6] = prest_ech
+                output_results[account_idx, scenario_idx, output_idx, 7] = prest_mrv
+                output_results[account_idx, scenario_idx, output_idx, 8] = frais_acquis
+                output_results[account_idx, scenario_idx, output_idx, 9] = comm_vente
+                output_results[account_idx, scenario_idx, output_idx, 10] = primes_variables
+                output_results[account_idx, scenario_idx, output_idx, 11] = frais_fixes
+                output_results[account_idx, scenario_idx, output_idx, 12] = hon_gest
+                output_results[account_idx, scenario_idx, output_idx, 13] = comm_maintien
+                output_results[account_idx, scenario_idx, output_idx, 14] = valeur_marchande
+                # Cushions
+                output_results[account_idx, scenario_idx, output_idx, 15] = passif_redresse
+                output_results[account_idx, scenario_idx, output_idx, 16] = coussin_credit
+                output_results[account_idx, scenario_idx, output_idx, 17] = coussin_marche
+                output_results[account_idx, scenario_idx, output_idx, 18] = coussin_depense
+                output_results[account_idx, scenario_idx, output_idx, 19] = coussin_decheance
+                output_results[account_idx, scenario_idx, output_idx, 20] = coussin_mortalite
+                output_results[account_idx, scenario_idx, output_idx, 21] = coussin_depot
+                # VP values
+                output_results[account_idx, scenario_idx, output_idx, 22] = vp_frais_acquis
+                output_results[account_idx, scenario_idx, output_idx, 23] = vp_comm_vente
+                output_results[account_idx, scenario_idx, output_idx, 24] = vp_primes_garanties
+                output_results[account_idx, scenario_idx, output_idx, 25] = vp_primes_variables
+                output_results[account_idx, scenario_idx, output_idx, 26] = vp_frais_fixes
+                output_results[account_idx, scenario_idx, output_idx, 27] = vp_hon_gest
+                output_results[account_idx, scenario_idx, output_idx, 28] = vp_comm_maintien
+                output_results[account_idx, scenario_idx, output_idx, 29] = vp_prest_ech
+                output_results[account_idx, scenario_idx, output_idx, 30] = vp_prest_mrv
+                output_results[account_idx, scenario_idx, output_idx, 31] = vp_prest_deces
+                output_results[account_idx, scenario_idx, output_idx, 32] = vp_valeur_marchande
+                # VP Cushions
+                output_results[account_idx, scenario_idx, output_idx, 33] = vp_passif_redresse
+                output_results[account_idx, scenario_idx, output_idx, 34] = vp_coussin_credit
+                output_results[account_idx, scenario_idx, output_idx, 35] = vp_coussin_marche
+                output_results[account_idx, scenario_idx, output_idx, 36] = vp_coussin_depense
+                output_results[account_idx, scenario_idx, output_idx, 37] = vp_coussin_decheance
+                output_results[account_idx, scenario_idx, output_idx, 38] = vp_coussin_mortalite
+                output_results[account_idx, scenario_idx, output_idx, 39] = vp_coussin_depot
+
+                output_idx += 1
 
 
 # =============================================================================
-# MAIN PROJECTION FUNCTION (COMBINES ALL LEVELS)
+# GPU EXECUTION WRAPPER
 # =============================================================================
 
-def project_account_wrapper(account_id: int, population: pd.DataFrame,
-                            lookups: Dict, config: Dict, output_path: Path) -> pd.DataFrame:
-    """
-    Wrapper for parallel processing a single account.
-
-    ENHANCED: Adds logic to save a detailed trace for a specific account/scenario,
-    mimicking the SAS `TEST` dataset for easy debugging and comparison.
-    
-    REFACTORED: Scenario loop is now explicit at this level for clarity.
-    """
-    account = population[population['ID_COMPTE'] == account_id].iloc[0]
-
-    # --- DEBUGGING FEATURE ---
-    # Check if this is the specific account and scenario we want to debug
-    create_debug_file = (account_id == config['NO_COMPTE_SORTIE'])
-    debug_data = []
-
-    # LEVEL 2: Loop through all scenarios
-    results = []
-    
-    for scn_eval in range(1, config['NB_SC'] + 1):
-        # Create timeline for this specific scenario
-        timeline = create_expanded_timeline(account, config, scn_eval)
-        
-        if len(timeline) == 0:
-            continue
-
-        # LEVEL 3: Process each row with state retention within this scenario
-        # Initialize state fresh for each scenario
-        state = initialize_state(account)
-
-        for idx, row in timeline.iterrows():
-            row_dict = row.to_dict()
-
-            # Process the row
-            result_row, new_state = process_single_row(row_dict, state, lookups, account)
-
-            # Update the state for the next iteration
-            state = new_state
-
-            # Only append if result is not None (policy still active)
-            if result_row is not None:
-                results.append(result_row)
-
-                # If this is the debug scenario, save all intermediate variables
-                if create_debug_file and scn_eval == config['NO_SCN_SORTIE']:
-                    # Combine the original row, the calculated results, and the full state
-                    full_debug_row = {**row_dict, **result_row, **state}
-                    debug_data.append(full_debug_row)
-
-    # If a debug file was created, save it to CSV
-    if create_debug_file and debug_data:
-        debug_df = pd.DataFrame(debug_data)
-        
-        # Apply year filter for debug output if specified
-        start_year = config.get('START_YEAR_OUT')
-        end_year = config.get('END_YEAR_OUT')
-        if start_year is not None or end_year is not None:
-            print(f"  - Filtering TEST_PY.csv for years {start_year or 'start'} to {end_year or 'end'}...")
-            if start_year is not None:
-                debug_df = debug_df[debug_df['AN_EVAL'] >= start_year]
-            if end_year is not None:
-                debug_df = debug_df[debug_df['AN_EVAL'] <= end_year]
-        
-        # Ensure output directory exists before saving
-        output_path.mkdir(parents=True, exist_ok=True)
-        debug_filename = output_path.joinpath("TEST_PY.csv")
-        debug_df.to_csv(debug_filename, index=False, sep=';')
-        print(f"  ✓ Saved debug file for account {account_id} to {debug_filename} ({len(debug_df)} rows)")
-
-    # Return the main results
-    if not results:
-        return pd.DataFrame()
-
-    final_df = pd.DataFrame(results)
-    print(f"  Completed account {account_id}: {len(final_df)} projection rows generated.")
-    return final_df
-
-
-# =============================================================================
-# AGGREGATION FUNCTIONS
-# =============================================================================
-
-def aggregate_by_scenario(df: pd.DataFrame) -> pd.DataFrame:
-    """Average results across scenarios for each account/time period."""
-    group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
-
-    value_cols = [col for col in df.columns if col not in group_cols + ['SCN_EVAL']]
-
-    result = df.groupby(group_cols, as_index=False)[value_cols].mean()
-
-    return result
-
-
-def aggregate_flux_projetes(df: pd.DataFrame) -> pd.DataFrame:
-    """Create FLUX_PROJETES: sum by time period across all accounts."""
-    group_cols = ['AN_EVAL', 'MOIS_EVAL']
-
-    # Exclude VP columns and ID columns
-    value_cols = [col for col in df.columns if not col.startswith('VP_') and
-                  col not in group_cols + ['ID_COMPTE', 'SCN_EVAL']]
-
-    result = df.groupby(group_cols, as_index=False)[value_cols].sum()
-
-    return result
-
-
-def aggregate_vp_flux_compte(df: pd.DataFrame) -> pd.DataFrame:
-    """Create VP_FLUX_COMPTE: present values by account with specific column order."""
-
-    # Define the exact column order as requested
-    requested_columns = [
-        'ID_COMPTE',
-        'VP_FRAIS_ACQUIS',
-        'VP_COMM_VENTE',
-        'VP_PRIMES_GARANTIES',
-        'VP_PRIMES_VARIABLES',
-        'VP_FRAIS_FIXES',
-        'VP_HON_GEST',
-        'VP_COMM_MAINTIEN',
-        'VP_PREST_ECH',
-        'VP_PREST_MRV',
-        'VP_PREST_DECES',
-        'VP_PASSIF_REDRESSE',
-        'VP_COUSSIN_CREDIT',
-        'VP_COUSSIN_MARCHE',
-        'VP_COUSSIN_DEPENSE',
-        'VP_COUSSIN_DECHEANCE',
-        'VP_COUSSIN_MORTALITE',
-        'VP_COUSSIN_DEPOT',
-        'VP_VALEUR_MARCHANDE'
+def prepare_account_data(population_df):
+    """Convert account DataFrame to numpy array for GPU."""
+    # Define the columns to extract in order
+    columns = [
+        'ID_COMPTE', 'ANNEE_EVALUATION_INI', 'MOIS_EVALUATION_INI',
+        'ANNEE_NAIS', 'MOIS_NAIS', 'I_SEXE', 'I_PRODUIT_REGR',
+        'ID_PRODUIT', 'ID_LAPSE', 'I_REGIME_2', 'ID_DEPOT', 'ID_ACQUI',
+        'AGE_ECH_MIN', 'AGE_FIN_CONTRAT', 'AGE_DECAISSEMENT',
+        'MT_VM', 'MT_GAR_DECES', 'MT_GAR_ECH', 'MT_SRG', 'MT_BCB',
+        'MT_DEX', 'MT_MM', 'MT_TSX', 'MT_SP500', 'MT_EAFE',
+        'MT_BONI_DECES', 'MT_MRV_MRG_MRA', 'TAUX_MRV_MRG_MRA',
+        'ANNEE_ECH', 'MOIS_ECH',
+        'PC_HONORAIRES_GEST', 'PC_FRAIS_GARANTIE', 'PC_GAR_DECES_1',
+        'PC_BONI_DECES', 'PC_RFG', 'PC_REVENU_FDS', 'PC_GAR_ECH',
+        'PC_GAR_ECH_DEP_FUT', 'AJUSTEMENT_COMMISSION', 'MT_RF', 'MT_VM',
+        'ANNEE_COTIS', 'MOIS_COTIS', 'MAX_BONI_DECES', 'I_FRAIS_SUR_SRG'
     ]
 
-    # Get VP columns that exist in the dataframe (exclude ID_COMPTE)
-    vp_cols = [col for col in requested_columns[1:] if col in df.columns]
+    # Fill missing columns with defaults
+    for col in columns:
+        if col not in population_df.columns:
+            if col in ['MT_BCB', 'MT_BONI_DECES', 'MT_MRV_MRG_MRA', 'TAUX_MRV_MRG_MRA',
+                       'PC_BONI_DECES', 'PC_REVENU_FDS', 'MT_RF']:
+                population_df[col] = 0.0
+            elif col in ['ANNEE_ECH', 'MAX_BONI_DECES']:
+                population_df[col] = 9999
+            elif col in ['MOIS_ECH']:
+                population_df[col] = 12
+            elif col in ['AJUSTEMENT_COMMISSION']:
+                population_df[col] = 1.0
+            elif col in ['ANNEE_COTIS']:
+                population_df[col] = population_df.get('ANNEE_EVALUATION_INI', 2020)
+            elif col in ['MOIS_COTIS', 'I_FRAIS_SUR_SRG']:
+                population_df[col] = 0
 
-    # Group by ID_COMPTE and sum all VP columns
-    result = df.groupby('ID_COMPTE', as_index=False)[vp_cols].sum()
+    account_data = population_df[columns].values.astype(np.float32)
+    account_ids = population_df['ID_COMPTE'].values.astype(np.int32)
 
-    # Reorder to match requested column order
-    final_columns = ['ID_COMPTE'] + [col for col in requested_columns[1:] if col in result.columns]
-    result = result[final_columns]
-
-    return result
-
-
-def aggregate_vp_flux_total(df: pd.DataFrame) -> pd.DataFrame:
-    """Create VP_FLUX_TOTAL: total present value across all accounts."""
-
-    vp_cols = [
-        'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES',
-        'VP_PRIMES_VARIABLES', 'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN',
-        'VP_PREST_ECH', 'VP_PREST_MRV', 'VP_PREST_DECES',
-        'VP_PASSIF_REDRESSE', 'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE',
-        'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE', 'VP_COUSSIN_MORTALITE',
-        'VP_COUSSIN_DEPOT'
-    ]
-
-    # Filter for columns that actually exist in the dataframe
-    existing_vp_cols = [col for col in vp_cols if col in df.columns]
-
-    # Calculate total PV of flows per account
-    df['VP_FLUX_TOT'] = df[existing_vp_cols].sum(axis=1)
-
-    result = pd.DataFrame({
-        'CATEGORIE': ['TOTAL'],
-        'VP_FLUX_TOT': [df['VP_FLUX_TOT'].sum()]
-    })
-
-    return result
+    return account_data, account_ids
 
 
-# =============================================================================
-# MAIN EXECUTION FUNCTION
-# =============================================================================
-
-# MODIFIED: Added new arguments with default values
-def run_projection(data_path: Path, output_path: Path, nb_an_projection: int, nb_scenarios: int,
-                   use_parallel: bool = False, max_accounts: int = None,
-                   debug_account_id: int = None, debug_scenario_id: int = None,
-                   debug_start_year_out: int = None, debug_end_year_out: int = None):
+def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int, nb_scenarios: int,
+                       max_accounts: int = None, threads_per_block=(16, 16)):
     """
-    Main function to run the complete actuarial projection.
+    Main function to run GPU-accelerated projection.
 
     Args:
-        data_path: Path to input CSV files.
-        output_path: Path for output files.
-        nb_an_projection: The number of years to project.
-        nb_scenarios: The number of economic scenarios to run.
-        use_parallel: Whether to use multiprocessing.
-        max_accounts: Maximum number of accounts to process (for testing). None processes all.
-        debug_account_id: Account ID for which to generate a detailed calculation trace.
-        debug_scenario_id: Scenario ID for the detailed calculation trace.
-        debug_start_year_out: The start year for filtering the TEST_PY.csv debug output (does not affect calculations).
-        debug_end_year_out: The end year for filtering the TEST_PY.csv debug output (does not affect calculations).
+        data_path: Path to input CSV files
+        output_path: Path for output files
+        nb_an_projection: Number of years to project
+        nb_scenarios: Number of economic scenarios
+        max_accounts: Maximum number of accounts (for testing)
+        threads_per_block: CUDA block dimensions (accounts, scenarios)
     """
     start_time = datetime.now()
-    print(f"Starting projection at {start_time}")
+    print(f"Starting GPU projection at {start_time}")
     print("=" * 60)
 
-    # --- MODIFIED: Update global config with runtime arguments ---
+    # Update config
     CONFIG['NB_AN_PROJECTION'] = nb_an_projection
     CONFIG['NB_SC'] = nb_scenarios
     print(f"Configuration: {nb_an_projection} years, {nb_scenarios} scenarios")
 
-    # NEW: Handle debug and trace arguments
-    if debug_account_id is not None and debug_scenario_id is not None:
-        CONFIG['NO_COMPTE_SORTIE'] = debug_account_id
-        CONFIG['NO_SCN_SORTIE'] = debug_scenario_id
-        print(
-            f"DEBUG MODE: Detailed trace will be generated for Account ID: {debug_account_id}, Scenario: {debug_scenario_id}")
-    # Store year filter for debug output (TEST_PY.csv)
-    CONFIG['START_YEAR_OUT'] = debug_start_year_out
-    CONFIG['END_YEAR_OUT'] = debug_end_year_out
-    # -------------------------------------------------------------
-
     # Load data
     data = load_all_data(data_path)
 
-    # Create lookups
-    lookups = create_all_lookups(data)
-
-    # Get account list
-    account_ids = data['population']['ID_COMPTE'].unique()
     if max_accounts:
-        account_ids = account_ids[:max_accounts]
+        data['population'] = data['population'].head(max_accounts)
 
-    print(f"\nProcessing {len(account_ids)} accounts...")
-    print("=" * 60)
+    n_accounts = len(data['population'])
+    print(f"\nPreparing {n_accounts} accounts for GPU processing...")
 
-    # Process accounts
-    if use_parallel and CONFIG['nb_thread_tot'] > 1:
-        print(f"Using {CONFIG['nb_thread_tot']} parallel processes")
-        with mp.Pool(processes=CONFIG['nb_thread_tot']) as pool:
-            func = partial(project_account_wrapper,
-                           population=data['population'],
-                           lookups=lookups,
-                           config=CONFIG,
-                           output_path=output_path)
-            results = pool.map(func, account_ids)
-    else:
-        print("Using sequential processing")
-        results = []
-        for i, account_id in enumerate(account_ids, 1):
-            print(f"[{i}/{len(account_ids)}] Processing account {account_id}...")
-            result = project_account_wrapper(account_id, data['population'], lookups, CONFIG, output_path)
-            results.append(result)
+    # Prepare account data
+    account_data, account_ids = prepare_account_data(data['population'])
 
-    # Combine all results
-    print("\n" + "=" * 60)
-    print("Combining results...")
-    all_results = pd.concat([r for r in results if not r.empty], ignore_index=True)
+    # Create GPU lookup tables
+    print("Creating GPU lookup tables...")
+    mortality_lookup = create_gpu_mortality_lookup(data['mortalite'])
 
-    if all_results.empty:
-        print("No results generated. Exiting.")
-        return None
+    (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx,
+     rend_sp500, rend_eafe) = create_gpu_returns_lookup(data['rendements'])
 
+    min_ferr_lookup = create_gpu_min_ferr_lookup(data['min_ferr'])
+    lapse_part_min, lapse_part_max = create_gpu_lapse_part_lookup(data['tx_lapse_part'])
+    lapse_tot_min, lapse_tot_max, lapse_tot_fact = create_gpu_lapse_tot_lookup(data['tx_lapse_tot'])
+
+    (deposits_pc, deposits_var, deposits_age_max,
+     deposits_i_even) = create_gpu_deposits_lookup(data['depots_futurs'])
+
+    fees_lookup = create_gpu_fees_lookup(data['frais_admin'])
+
+    (acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac,
+     acq_frais_ac, acq_frais_rf) = create_gpu_acquisition_lookup(data['acquisition'])
+
+    (cous_base_passif, cous_tx_passif, cous_base_credit, cous_tx_credit,
+     cous_base_marche, cous_tx_marche, cous_base_depense, cous_tx_depense,
+     cous_base_decheance, cous_tx_decheance, cous_base_mortalite, cous_tx_mortalite,
+     cous_base_depot, cous_tx_depot, cous_facteur_80,
+     cous_facteur_90) = create_gpu_coussins_lookup(data['coussins_escap'])
+
+    # Allocate output array
+    max_timesteps = (nb_an_projection + 1) * CONFIG['FREQ_EVAL']
+    n_output_fields = 40  # Number of output columns per timestep (includes all cushions)
+    output_results = np.zeros((n_accounts, nb_scenarios, max_timesteps, n_output_fields),
+                              dtype=np.float32)
+
+    print(f"Output array shape: {output_results.shape}")
+    print(f"Total output size: {output_results.nbytes / 1024 ** 3:.2f} GB")
+
+    # Copy data to GPU
+    print("\nCopying data to GPU...")
+    d_account_data = cuda.to_device(account_data)
+    d_account_ids = cuda.to_device(account_ids)
+    d_mortality = cuda.to_device(mortality_lookup)
+    d_forward_rate = cuda.to_device(forward_rate)
+    d_ajust_forward = cuda.to_device(ajust_forward)
+    d_rend_dex = cuda.to_device(rend_dex)
+    d_rend_mm = cuda.to_device(rend_mm)
+    d_rend_tsx = cuda.to_device(rend_tsx)
+    d_rend_sp500 = cuda.to_device(rend_sp500)
+    d_rend_eafe = cuda.to_device(rend_eafe)
+    d_min_ferr = cuda.to_device(min_ferr_lookup)
+    d_lapse_part_min = cuda.to_device(lapse_part_min)
+    d_lapse_part_max = cuda.to_device(lapse_part_max)
+    d_lapse_tot_min = cuda.to_device(lapse_tot_min)
+    d_lapse_tot_max = cuda.to_device(lapse_tot_max)
+    d_lapse_tot_fact = cuda.to_device(lapse_tot_fact)
+    d_deposits_pc = cuda.to_device(deposits_pc)
+    d_deposits_var = cuda.to_device(deposits_var)
+    d_deposits_age_max = cuda.to_device(deposits_age_max)
+    d_deposits_i_even = cuda.to_device(deposits_i_even)
+    d_fees = cuda.to_device(fees_lookup)
+    d_acq_vente_rf = cuda.to_device(acq_vente_rf)
+    d_acq_vente_ac = cuda.to_device(acq_vente_ac)
+    d_acq_maintien_rf = cuda.to_device(acq_maintien_rf)
+    d_acq_maintien_ac = cuda.to_device(acq_maintien_ac)
+    d_acq_frais_ac = cuda.to_device(acq_frais_ac)
+    d_acq_frais_rf = cuda.to_device(acq_frais_rf)
+    d_cous_base_passif = cuda.to_device(cous_base_passif)
+    d_cous_tx_passif = cuda.to_device(cous_tx_passif)
+    d_cous_base_credit = cuda.to_device(cous_base_credit)
+    d_cous_tx_credit = cuda.to_device(cous_tx_credit)
+    d_cous_base_marche = cuda.to_device(cous_base_marche)
+    d_cous_tx_marche = cuda.to_device(cous_tx_marche)
+    d_cous_base_depense = cuda.to_device(cous_base_depense)
+    d_cous_tx_depense = cuda.to_device(cous_tx_depense)
+    d_cous_base_decheance = cuda.to_device(cous_base_decheance)
+    d_cous_tx_decheance = cuda.to_device(cous_tx_decheance)
+    d_cous_base_mortalite = cuda.to_device(cous_base_mortalite)
+    d_cous_tx_mortalite = cuda.to_device(cous_tx_mortalite)
+    d_cous_base_depot = cuda.to_device(cous_base_depot)
+    d_cous_tx_depot = cuda.to_device(cous_tx_depot)
+    d_cous_facteur_80 = cuda.to_device(cous_facteur_80)
+    d_cous_facteur_90 = cuda.to_device(cous_facteur_90)
+    d_output = cuda.to_device(output_results)
+
+    # Calculate grid dimensions
+    blocks_x = (n_accounts + threads_per_block[0] - 1) // threads_per_block[0]
+    blocks_y = (nb_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
+    blocks_per_grid = (blocks_x, blocks_y)
+
+    print(f"\nLaunching kernel:")
+    print(f"  Grid: {blocks_per_grid}")
+    print(f"  Block: {threads_per_block}")
+    print(f"  Total threads: {blocks_x * blocks_y * threads_per_block[0] * threads_per_block[1]}")
+
+    # Launch kernel
+    kernel_start = datetime.now()
+    projection_kernel[blocks_per_grid, threads_per_block](
+        d_account_data, d_account_ids, nb_scenarios, nb_an_projection, CONFIG['FREQ_EVAL'],
+        d_mortality,
+        d_forward_rate, d_ajust_forward, d_rend_dex, d_rend_mm, d_rend_tsx, d_rend_sp500, d_rend_eafe,
+        d_min_ferr,
+        d_lapse_part_min, d_lapse_part_max,
+        d_lapse_tot_min, d_lapse_tot_max, d_lapse_tot_fact,
+        d_deposits_pc, d_deposits_var, d_deposits_age_max, d_deposits_i_even,
+        d_fees,
+        d_acq_vente_rf, d_acq_vente_ac, d_acq_maintien_rf, d_acq_maintien_ac,
+        d_acq_frais_ac, d_acq_frais_rf,
+        d_cous_base_passif, d_cous_tx_passif, d_cous_base_credit, d_cous_tx_credit,
+        d_cous_base_marche, d_cous_tx_marche, d_cous_base_depense, d_cous_tx_depense,
+        d_cous_base_decheance, d_cous_tx_decheance, d_cous_base_mortalite, d_cous_tx_mortalite,
+        d_cous_base_depot, d_cous_tx_depot, d_cous_facteur_80, d_cous_facteur_90,
+        d_output
+    )
+
+    # Wait for kernel to complete
+    cuda.synchronize()
+    kernel_end = datetime.now()
+    kernel_duration = (kernel_end - kernel_start).total_seconds()
+    print(f"\nKernel execution time: {kernel_duration:.2f} seconds")
+
+    # Copy results back from GPU
+    print("Copying results from GPU...")
+    output_results = d_output.copy_to_host()
+
+    # Process results into DataFrame
+    print("Processing results...")
+    results_list = []
+
+    for acc_idx in range(n_accounts):
+        for scn_idx in range(nb_scenarios):
+            for ts_idx in range(max_timesteps):
+                # Check if this timestep has valid data (ID_COMPTE > 0)
+                if output_results[acc_idx, scn_idx, ts_idx, 0] > 0:
+                    row = {
+                        'ID_COMPTE': int(output_results[acc_idx, scn_idx, ts_idx, 0]),
+                        'SCN_EVAL': int(output_results[acc_idx, scn_idx, ts_idx, 1]),
+                        'AN_EVAL': int(output_results[acc_idx, scn_idx, ts_idx, 2]),
+                        'MOIS_EVAL': int(output_results[acc_idx, scn_idx, ts_idx, 3]),
+                        'PRIMES_GARANTIES': output_results[acc_idx, scn_idx, ts_idx, 4],
+                        'PREST_DECES': output_results[acc_idx, scn_idx, ts_idx, 5],
+                        'PREST_ECH': output_results[acc_idx, scn_idx, ts_idx, 6],
+                        'PREST_MRV': output_results[acc_idx, scn_idx, ts_idx, 7],
+                        'FRAIS_ACQUIS': output_results[acc_idx, scn_idx, ts_idx, 8],
+                        'COMM_VENTE': output_results[acc_idx, scn_idx, ts_idx, 9],
+                        'PRIMES_VARIABLES': output_results[acc_idx, scn_idx, ts_idx, 10],
+                        'FRAIS_FIXES': output_results[acc_idx, scn_idx, ts_idx, 11],
+                        'HON_GEST': output_results[acc_idx, scn_idx, ts_idx, 12],
+                        'COMM_MAINTIEN': output_results[acc_idx, scn_idx, ts_idx, 13],
+                        'VALEUR_MARCHANDE': output_results[acc_idx, scn_idx, ts_idx, 14],
+                        'PASSIF_REDRESSE': output_results[acc_idx, scn_idx, ts_idx, 15],
+                        'COUSSIN_CREDIT': output_results[acc_idx, scn_idx, ts_idx, 16],
+                        'COUSSIN_MARCHE': output_results[acc_idx, scn_idx, ts_idx, 17],
+                        'COUSSIN_DEPENSE': output_results[acc_idx, scn_idx, ts_idx, 18],
+                        'COUSSIN_DECHEANCE': output_results[acc_idx, scn_idx, ts_idx, 19],
+                        'COUSSIN_MORTALITE': output_results[acc_idx, scn_idx, ts_idx, 20],
+                        'COUSSIN_DEPOT': output_results[acc_idx, scn_idx, ts_idx, 21],
+                        'VP_FRAIS_ACQUIS': output_results[acc_idx, scn_idx, ts_idx, 22],
+                        'VP_COMM_VENTE': output_results[acc_idx, scn_idx, ts_idx, 23],
+                        'VP_PRIMES_GARANTIES': output_results[acc_idx, scn_idx, ts_idx, 24],
+                        'VP_PRIMES_VARIABLES': output_results[acc_idx, scn_idx, ts_idx, 25],
+                        'VP_FRAIS_FIXES': output_results[acc_idx, scn_idx, ts_idx, 26],
+                        'VP_HON_GEST': output_results[acc_idx, scn_idx, ts_idx, 27],
+                        'VP_COMM_MAINTIEN': output_results[acc_idx, scn_idx, ts_idx, 28],
+                        'VP_PREST_ECH': output_results[acc_idx, scn_idx, ts_idx, 29],
+                        'VP_PREST_MRV': output_results[acc_idx, scn_idx, ts_idx, 30],
+                        'VP_PREST_DECES': output_results[acc_idx, scn_idx, ts_idx, 31],
+                        'VP_VALEUR_MARCHANDE': output_results[acc_idx, scn_idx, ts_idx, 32],
+                        'VP_PASSIF_REDRESSE': output_results[acc_idx, scn_idx, ts_idx, 33],
+                        'VP_COUSSIN_CREDIT': output_results[acc_idx, scn_idx, ts_idx, 34],
+                        'VP_COUSSIN_MARCHE': output_results[acc_idx, scn_idx, ts_idx, 35],
+                        'VP_COUSSIN_DEPENSE': output_results[acc_idx, scn_idx, ts_idx, 36],
+                        'VP_COUSSIN_DECHEANCE': output_results[acc_idx, scn_idx, ts_idx, 37],
+                        'VP_COUSSIN_MORTALITE': output_results[acc_idx, scn_idx, ts_idx, 38],
+                        'VP_COUSSIN_DEPOT': output_results[acc_idx, scn_idx, ts_idx, 39],
+                    }
+                    results_list.append(row)
+
+    all_results = pd.DataFrame(results_list)
     print(f"Total projection rows: {len(all_results):,}")
 
-    # Aggregate results
+    # Aggregate and save results (same as CPU version)
     print("Aggregating results...")
+    from algo2.cpu import (aggregate_by_scenario, aggregate_flux_projetes,
+                                      aggregate_vp_flux_compte, aggregate_vp_flux_total)
 
-    # 1. Average across scenarios (on the full dataset)
-    print("  - Averaging across scenarios...")
     calculs_sommaire = aggregate_by_scenario(all_results)
-
-    # 2. Calculate VP aggregates from the COMPLETE, unfiltered results.
-    # This ensures the total Present Values are correct for the entire projection horizon.
-    print("  - Creating VP by account (full projection)...")
     vp_flux_compte = aggregate_vp_flux_compte(calculs_sommaire)
-
-    print("  - Creating total VP (full projection)...")
     vp_flux_total = aggregate_vp_flux_total(vp_flux_compte)
-
-    # 3. Create Flux projetes from the complete, unfiltered data
-    # Note: Year filtering is only applied to TEST_PY.csv debug output, not to aggregated outputs
-    print("  - Creating flux projetes...")
     flux_projetes = aggregate_flux_projetes(calculs_sommaire)
 
     # Save outputs
     print("\nSaving outputs...")
     output_path.mkdir(parents=True, exist_ok=True)
 
-    flux_projetes.to_csv(output_path.joinpath("FLUX_PROJETES_PY.csv"), index=False, sep=';')
-    vp_flux_compte.to_csv(output_path.joinpath("VP_FLUX_COMPTE_PY.csv"), index=False, sep=';')
-    vp_flux_total.to_csv(output_path.joinpath("VP_FLUX_TOTAL_PY.csv"), index=False, sep=';')
+    flux_projetes.to_csv(output_path.joinpath("FLUX_PROJETES_GPU.csv"), index=False, sep=';')
+    vp_flux_compte.to_csv(output_path.joinpath("VP_FLUX_COMPTE_GPU.csv"), index=False, sep=';')
+    vp_flux_total.to_csv(output_path.joinpath("VP_FLUX_TOTAL_GPU.csv"), index=False, sep=';')
 
-    print(f"  ✓ Saved {output_path}/FLUX_PROJETES_PY.csv")
-    print(f"  ✓ Saved {output_path}/VP_FLUX_COMPTE_PY.csv")
-    print(f"  ✓ Saved {output_path}/VP_FLUX_TOTAL_PY.csv")
+    print(f"  ✓ Saved {output_path}/FLUX_PROJETES_GPU.csv")
+    print(f"  ✓ Saved {output_path}/VP_FLUX_COMPTE_GPU.csv")
+    print(f"  ✓ Saved {output_path}/VP_FLUX_TOTAL_GPU.csv")
 
     # Print summary
     end_time = datetime.now()
-    duration = (end_time - start_time).total_seconds()
+    total_duration = (end_time - start_time).total_seconds()
 
     print("\n" + "=" * 60)
-    print("PROJECTION COMPLETE")
+    print("GPU PROJECTION COMPLETE")
     print("=" * 60)
-    print(f"Processing time: {duration:.2f} seconds ({duration / 60:.2f} minutes)")
-    print(f"Accounts processed: {len(account_ids)}")
+    print(f"Total processing time: {total_duration:.2f} seconds ({total_duration / 60:.2f} minutes)")
+    print(f"Kernel execution time: {kernel_duration:.2f} seconds")
+    print(f"Accounts processed: {n_accounts}")
+    print(f"Scenarios per account: {nb_scenarios}")
     print(f"Total rows generated: {len(all_results):,}")
-    print(f"Rows after averaging: {len(calculs_sommaire):,}")
+    print(f"Speedup potential vs sequential: ~{n_accounts * nb_scenarios:.0f}x")
     print(f"Total PV of flows: ${vp_flux_total['VP_FLUX_TOT'].iloc[0]:,.2f}")
     print("=" * 60)
 
@@ -1795,23 +1372,25 @@ def run_projection(data_path: Path, output_path: Path, nb_an_projection: int, nb
 # =============================================================================
 
 if __name__ == "__main__":
+    # Check CUDA availability
+    if not cuda.is_available():
+        print("ERROR: CUDA is not available. Please check your GPU setup.")
+        exit(1)
+
+    print(f"CUDA Device: {cuda.get_current_device().name}")
+
     # Set paths
     DATA_PATH = HERE.joinpath("algo2/data_in")
-    OUTPUT_PATH = HERE.joinpath("algo2/data_out")
+    OUTPUT_PATH = HERE.joinpath("algo2/data_out_gpu")
 
-    # MODIFIED: Run projection with new arguments
-    results = run_projection(
+    # Run GPU projection
+    results = run_projection_gpu(
         data_path=DATA_PATH,
         output_path=OUTPUT_PATH,
-        nb_an_projection=100,  # Set the number of years to project
-        nb_scenarios=100,  # Set the number of scenarios to run
-        use_parallel=False,  # Set to True for parallel processing
-        max_accounts=3,  # Process only first 3 accounts for testing, None for all
-
-        debug_account_id=1,  # Set Account ID to trace, or None to disable
-        debug_scenario_id=2,  # Set Scenario to trace, or None to disable
-        debug_start_year_out=1,  # Set start year for TEST_PY.csv, or None
-        debug_end_year_out=10  # Set end year for TEST_PY.csv, or None
+        nb_an_projection=100,
+        nb_scenarios=100,
+        max_accounts=10,  # Start with a small number for testing
+        threads_per_block=(16, 8)  # Tune based on your GPU
     )
 
     if results:
@@ -1819,11 +1398,11 @@ if __name__ == "__main__":
         print("SAMPLE RESULTS")
         print("=" * 60)
 
-        print("\nVP_FLUX_TOTAL (Calculated over full projection horizon):")
+        print("\nVP_FLUX_TOTAL:")
         print(results['vp_flux_total'])
 
-        print("\nVP_FLUX_COMPTE (first 5 accounts, calculated over full projection horizon):")
+        print("\nVP_FLUX_COMPTE (first 5 accounts):")
         print(results['vp_flux_compte'].head())
 
-        print(f"\nFLUX_PROJETES (first 10 periods, filtered for specified year range):")
+        print("\nFLUX_PROJETES (first 10 periods):")
         print(results['flux_projetes'].head(10))
