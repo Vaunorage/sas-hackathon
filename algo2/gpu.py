@@ -5,8 +5,6 @@ from typing import Dict, Tuple, Any
 from datetime import datetime
 import math
 from numba import cuda
-
-from algo2.gpu2 import prepare_account_data
 from paths import HERE
 
 # =============================================================================
@@ -25,6 +23,48 @@ CONFIG = {
 # =============================================================================
 # UTILITY FUNCTIONS (CPU)
 # =============================================================================
+
+
+def prepare_account_data(population_df):
+    """Convert account DataFrame to numpy array for GPU."""
+    # Define the columns to extract in order
+    columns = [
+        'ID_COMPTE', 'ANNEE_EVALUATION_INI', 'MOIS_EVALUATION_INI',
+        'ANNEE_NAIS', 'MOIS_NAIS', 'I_SEXE', 'I_PRODUIT_REGR',
+        'ID_PRODUIT', 'ID_LAPSE', 'I_REGIME_2', 'ID_DEPOT', 'ID_ACQUI',
+        'AGE_ECH_MIN', 'AGE_FIN_CONTRAT', 'AGE_DECAISSEMENT',
+        'MT_VM', 'MT_GAR_DECES', 'MT_GAR_ECH', 'MT_SRG', 'MT_BCB',
+        'MT_DEX', 'MT_MM', 'MT_TSX', 'MT_SP500', 'MT_EAFE',
+        'MT_BONI_DECES', 'MT_MRV_MRG_MRA', 'TAUX_MRV_MRG_MRA',
+        'ANNEE_ECH', 'MOIS_ECH',
+        'PC_HONORAIRES_GEST', 'PC_FRAIS_GARANTIE', 'PC_GAR_DECES_1',
+        'PC_BONI_DECES', 'PC_RFG', 'PC_REVENU_FDS', 'PC_GAR_ECH',
+        'PC_GAR_ECH_DEP_FUT', 'AJUSTEMENT_COMMISSION', 'MT_RF', 'MT_VM',
+        'ANNEE_COTIS', 'MOIS_COTIS', 'MAX_BONI_DECES', 'I_FRAIS_SUR_SRG'
+    ]
+
+    # Fill missing columns with defaults
+    for col in columns:
+        if col not in population_df.columns:
+            if col in ['MT_BCB', 'MT_BONI_DECES', 'MT_MRV_MRG_MRA', 'TAUX_MRV_MRG_MRA',
+                       'PC_BONI_DECES', 'PC_REVENU_FDS', 'MT_RF']:
+                population_df[col] = 0.0
+            elif col in ['ANNEE_ECH', 'MAX_BONI_DECES']:
+                population_df[col] = 9999
+            elif col in ['MOIS_ECH']:
+                population_df[col] = 12
+            elif col in ['AJUSTEMENT_COMMISSION']:
+                population_df[col] = 1.0
+            elif col in ['ANNEE_COTIS']:
+                population_df[col] = population_df.get('ANNEE_EVALUATION_INI', 2020)
+            elif col in ['MOIS_COTIS', 'I_FRAIS_SUR_SRG']:
+                population_df[col] = 0
+
+    account_data = population_df[columns].values.astype(np.float32)
+    account_ids = population_df['ID_COMPTE'].values.astype(np.int32)
+
+    return account_data, account_ids
+
 
 def parse_percentage(value):
     """Convert percentage string to float (e.g., '1.5%' -> 0.015, '(0.53%)' -> -0.0053)."""
