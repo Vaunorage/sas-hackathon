@@ -5,6 +5,8 @@ from typing import Dict, Tuple, Any
 from datetime import datetime
 import math
 from numba import cuda
+
+from algo2.gpu2 import prepare_account_data
 from paths import HERE
 
 # =============================================================================
@@ -397,12 +399,14 @@ def projection_kernel(
         cous_base_marche, cous_tx_marche, cous_base_depense, cous_tx_depense,
         cous_base_decheance, cous_tx_decheance, cous_base_mortalite, cous_tx_mortalite,
         cous_base_depot, cous_tx_depot, cous_facteur_80, cous_facteur_90,
-        # Output arrays
-        output_results  # Shape: (n_accounts, n_scenarios, max_timesteps, n_output_fields)
+        # Output arrays - COMPACT FORMAT
+        output_results,  # Shape: (max_total_rows, n_output_fields)
+        output_counter  # Shape: (1,) - atomic counter for next available row
 ):
     """
     Main CUDA kernel - processes one account-scenario combination per thread.
     Each thread loops through all timesteps sequentially (state dependency).
+    Uses atomic operations to write only valid rows to a compact output buffer.
     """
     # Get global thread ID
     account_idx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
@@ -1015,116 +1019,251 @@ def projection_kernel(
                 coussin_depot = tx_depot * base_amount_depot_c * age_factor * TX_SURVIE
                 vp_coussin_depot = coussin_depot * TX_ACTUALISATION / freq_eval
 
-            # ============= STEP 15: STORE RESULTS =============
-            # Store results in output array
-            if output_idx < output_results.shape[2]:
-                output_results[account_idx, scenario_idx, output_idx, 0] = ID_COMPTE
-                output_results[account_idx, scenario_idx, output_idx, 1] = scn_eval
-                output_results[account_idx, scenario_idx, output_idx, 2] = an_eval
-                output_results[account_idx, scenario_idx, output_idx, 3] = mois_eval
-                output_results[account_idx, scenario_idx, output_idx, 4] = primes_garanties
-                output_results[account_idx, scenario_idx, output_idx, 5] = prest_deces
-                output_results[account_idx, scenario_idx, output_idx, 6] = prest_ech
-                output_results[account_idx, scenario_idx, output_idx, 7] = prest_mrv
-                output_results[account_idx, scenario_idx, output_idx, 8] = frais_acquis
-                output_results[account_idx, scenario_idx, output_idx, 9] = comm_vente
-                output_results[account_idx, scenario_idx, output_idx, 10] = primes_variables
-                output_results[account_idx, scenario_idx, output_idx, 11] = frais_fixes
-                output_results[account_idx, scenario_idx, output_idx, 12] = hon_gest
-                output_results[account_idx, scenario_idx, output_idx, 13] = comm_maintien
-                output_results[account_idx, scenario_idx, output_idx, 14] = valeur_marchande
+            # ============= STEP 15: STORE RESULTS ATOMICALLY =============
+            # Get next available row index atomically
+            row_idx = cuda.atomic.add(output_counter, 0, 1)
+
+            # Write to compact output buffer (no sparse array needed)
+            if row_idx < output_results.shape[0]:
+                output_results[row_idx, 0] = ID_COMPTE
+                output_results[row_idx, 1] = scn_eval
+                output_results[row_idx, 2] = an_eval
+                output_results[row_idx, 3] = mois_eval
+                output_results[row_idx, 4] = primes_garanties
+                output_results[row_idx, 5] = prest_deces
+                output_results[row_idx, 6] = prest_ech
+                output_results[row_idx, 7] = prest_mrv
+                output_results[row_idx, 8] = frais_acquis
+                output_results[row_idx, 9] = comm_vente
+                output_results[row_idx, 10] = primes_variables
+                output_results[row_idx, 11] = frais_fixes
+                output_results[row_idx, 12] = hon_gest
+                output_results[row_idx, 13] = comm_maintien
+                output_results[row_idx, 14] = valeur_marchande
                 # Cushions
-                output_results[account_idx, scenario_idx, output_idx, 15] = passif_redresse
-                output_results[account_idx, scenario_idx, output_idx, 16] = coussin_credit
-                output_results[account_idx, scenario_idx, output_idx, 17] = coussin_marche
-                output_results[account_idx, scenario_idx, output_idx, 18] = coussin_depense
-                output_results[account_idx, scenario_idx, output_idx, 19] = coussin_decheance
-                output_results[account_idx, scenario_idx, output_idx, 20] = coussin_mortalite
-                output_results[account_idx, scenario_idx, output_idx, 21] = coussin_depot
+                output_results[row_idx, 15] = passif_redresse
+                output_results[row_idx, 16] = coussin_credit
+                output_results[row_idx, 17] = coussin_marche
+                output_results[row_idx, 18] = coussin_depense
+                output_results[row_idx, 19] = coussin_decheance
+                output_results[row_idx, 20] = coussin_mortalite
+                output_results[row_idx, 21] = coussin_depot
                 # VP values
-                output_results[account_idx, scenario_idx, output_idx, 22] = vp_frais_acquis
-                output_results[account_idx, scenario_idx, output_idx, 23] = vp_comm_vente
-                output_results[account_idx, scenario_idx, output_idx, 24] = vp_primes_garanties
-                output_results[account_idx, scenario_idx, output_idx, 25] = vp_primes_variables
-                output_results[account_idx, scenario_idx, output_idx, 26] = vp_frais_fixes
-                output_results[account_idx, scenario_idx, output_idx, 27] = vp_hon_gest
-                output_results[account_idx, scenario_idx, output_idx, 28] = vp_comm_maintien
-                output_results[account_idx, scenario_idx, output_idx, 29] = vp_prest_ech
-                output_results[account_idx, scenario_idx, output_idx, 30] = vp_prest_mrv
-                output_results[account_idx, scenario_idx, output_idx, 31] = vp_prest_deces
-                output_results[account_idx, scenario_idx, output_idx, 32] = vp_valeur_marchande
+                output_results[row_idx, 22] = vp_frais_acquis
+                output_results[row_idx, 23] = vp_comm_vente
+                output_results[row_idx, 24] = vp_primes_garanties
+                output_results[row_idx, 25] = vp_primes_variables
+                output_results[row_idx, 26] = vp_frais_fixes
+                output_results[row_idx, 27] = vp_hon_gest
+                output_results[row_idx, 28] = vp_comm_maintien
+                output_results[row_idx, 29] = vp_prest_ech
+                output_results[row_idx, 30] = vp_prest_mrv
+                output_results[row_idx, 31] = vp_prest_deces
+                output_results[row_idx, 32] = vp_valeur_marchande
                 # VP Cushions
-                output_results[account_idx, scenario_idx, output_idx, 33] = vp_passif_redresse
-                output_results[account_idx, scenario_idx, output_idx, 34] = vp_coussin_credit
-                output_results[account_idx, scenario_idx, output_idx, 35] = vp_coussin_marche
-                output_results[account_idx, scenario_idx, output_idx, 36] = vp_coussin_depense
-                output_results[account_idx, scenario_idx, output_idx, 37] = vp_coussin_decheance
-                output_results[account_idx, scenario_idx, output_idx, 38] = vp_coussin_mortalite
-                output_results[account_idx, scenario_idx, output_idx, 39] = vp_coussin_depot
+                output_results[row_idx, 33] = vp_passif_redresse
+                output_results[row_idx, 34] = vp_coussin_credit
+                output_results[row_idx, 35] = vp_coussin_marche
+                output_results[row_idx, 36] = vp_coussin_depense
+                output_results[row_idx, 37] = vp_coussin_decheance
+                output_results[row_idx, 38] = vp_coussin_mortalite
+                output_results[row_idx, 39] = vp_coussin_depot
 
-                output_idx += 1
+            output_idx += 1
 
 
+# AGGREGATION FUNCTIONS
 # =============================================================================
-# GPU EXECUTION WRAPPER
-# =============================================================================
 
-def prepare_account_data(population_df):
-    """Convert account DataFrame to numpy array for GPU."""
-    # Define the columns to extract in order
-    columns = [
-        'ID_COMPTE', 'ANNEE_EVALUATION_INI', 'MOIS_EVALUATION_INI',
-        'ANNEE_NAIS', 'MOIS_NAIS', 'I_SEXE', 'I_PRODUIT_REGR',
-        'ID_PRODUIT', 'ID_LAPSE', 'I_REGIME_2', 'ID_DEPOT', 'ID_ACQUI',
-        'AGE_ECH_MIN', 'AGE_FIN_CONTRAT', 'AGE_DECAISSEMENT',
-        'MT_VM', 'MT_GAR_DECES', 'MT_GAR_ECH', 'MT_SRG', 'MT_BCB',
-        'MT_DEX', 'MT_MM', 'MT_TSX', 'MT_SP500', 'MT_EAFE',
-        'MT_BONI_DECES', 'MT_MRV_MRG_MRA', 'TAUX_MRV_MRG_MRA',
-        'ANNEE_ECH', 'MOIS_ECH',
-        'PC_HONORAIRES_GEST', 'PC_FRAIS_GARANTIE', 'PC_GAR_DECES_1',
-        'PC_BONI_DECES', 'PC_RFG', 'PC_REVENU_FDS', 'PC_GAR_ECH',
-        'PC_GAR_ECH_DEP_FUT', 'AJUSTEMENT_COMMISSION', 'MT_RF', 'MT_VM',
-        'ANNEE_COTIS', 'MOIS_COTIS', 'MAX_BONI_DECES', 'I_FRAIS_SUR_SRG'
+def aggregate_by_scenario(df: pd.DataFrame) -> pd.DataFrame:
+    """Average results across scenarios for each account/time period."""
+    group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
+
+    value_cols = [col for col in df.columns if col not in group_cols + ['SCN_EVAL']]
+
+    result = df.groupby(group_cols, as_index=False)[value_cols].mean()
+
+    return result
+
+
+def aggregate_flux_projetes(df: pd.DataFrame) -> pd.DataFrame:
+    """Create FLUX_PROJETES: sum by time period across all accounts."""
+    group_cols = ['AN_EVAL', 'MOIS_EVAL']
+
+    # Exclude VP columns and ID columns
+    value_cols = [col for col in df.columns if not col.startswith('VP_') and
+                  col not in group_cols + ['ID_COMPTE', 'SCN_EVAL']]
+
+    result = df.groupby(group_cols, as_index=False)[value_cols].sum()
+
+    return result
+
+
+def aggregate_vp_flux_compte(df: pd.DataFrame) -> pd.DataFrame:
+    """Create VP_FLUX_COMPTE: present values by account with specific column order."""
+
+    # Define the exact column order as requested
+    requested_columns = [
+        'ID_COMPTE',
+        'VP_FRAIS_ACQUIS',
+        'VP_COMM_VENTE',
+        'VP_PRIMES_GARANTIES',
+        'VP_PRIMES_VARIABLES',
+        'VP_FRAIS_FIXES',
+        'VP_HON_GEST',
+        'VP_COMM_MAINTIEN',
+        'VP_PREST_ECH',
+        'VP_PREST_MRV',
+        'VP_PREST_DECES',
+        'VP_PASSIF_REDRESSE',
+        'VP_COUSSIN_CREDIT',
+        'VP_COUSSIN_MARCHE',
+        'VP_COUSSIN_DEPENSE',
+        'VP_COUSSIN_DECHEANCE',
+        'VP_COUSSIN_MORTALITE',
+        'VP_COUSSIN_DEPOT',
+        'VP_VALEUR_MARCHANDE'
     ]
 
-    # Fill missing columns with defaults
-    for col in columns:
-        if col not in population_df.columns:
-            if col in ['MT_BCB', 'MT_BONI_DECES', 'MT_MRV_MRG_MRA', 'TAUX_MRV_MRG_MRA',
-                       'PC_BONI_DECES', 'PC_REVENU_FDS', 'MT_RF']:
-                population_df[col] = 0.0
-            elif col in ['ANNEE_ECH', 'MAX_BONI_DECES']:
-                population_df[col] = 9999
-            elif col in ['MOIS_ECH']:
-                population_df[col] = 12
-            elif col in ['AJUSTEMENT_COMMISSION']:
-                population_df[col] = 1.0
-            elif col in ['ANNEE_COTIS']:
-                population_df[col] = population_df.get('ANNEE_EVALUATION_INI', 2020)
-            elif col in ['MOIS_COTIS', 'I_FRAIS_SUR_SRG']:
-                population_df[col] = 0
+    # Get VP columns that exist in the dataframe (exclude ID_COMPTE)
+    vp_cols = [col for col in requested_columns[1:] if col in df.columns]
 
-    account_data = population_df[columns].values.astype(np.float32)
-    account_ids = population_df['ID_COMPTE'].values.astype(np.int32)
+    # Group by ID_COMPTE and sum all VP columns
+    result = df.groupby('ID_COMPTE', as_index=False)[vp_cols].sum()
 
-    return account_data, account_ids
+    # Calculate total PV of cash flows (EXCLUDE VP_VALEUR_MARCHANDE)
+    # VP_VALEUR_MARCHANDE is a stock variable, not a cash flow
+    cash_flow_cols = [col for col in vp_cols if col != 'VP_VALEUR_MARCHANDE']
+    result['VP_FLUX_TOT'] = result[cash_flow_cols].sum(axis=1)
+
+    # Reorder to match requested column order
+    final_columns = ['ID_COMPTE'] + [col for col in requested_columns[1:] if col in result.columns] + ['VP_FLUX_TOT']
+    result = result[final_columns]
+
+    return result
 
 
-def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int, nb_scenarios: int,
-                       max_accounts: int = None, threads_per_block=(16, 16)):
+def aggregate_vp_flux_total(df: pd.DataFrame) -> pd.DataFrame:
+    """Create VP_FLUX_TOTAL: total present value across all accounts."""
+
+    # Cash flow columns (exclude VP_VALEUR_MARCHANDE as it's a stock variable)
+    vp_cols = [
+        'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES',
+        'VP_PRIMES_VARIABLES', 'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN',
+        'VP_PREST_ECH', 'VP_PREST_MRV', 'VP_PREST_DECES',
+        'VP_PASSIF_REDRESSE', 'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE',
+        'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE', 'VP_COUSSIN_MORTALITE',
+        'VP_COUSSIN_DEPOT'
+        # NOTE: VP_VALEUR_MARCHANDE is NOT included - it's a balance, not a flow
+    ]
+
+    # If VP_FLUX_TOT already exists and is correctly calculated, use it
+    if 'VP_FLUX_TOT' in df.columns:
+        total_vp = df['VP_FLUX_TOT'].sum()
+    else:
+        # Otherwise, sum the cash flow columns
+        existing_vp_cols = [col for col in vp_cols if col in df.columns]
+        total_vp = df[existing_vp_cols].sum().sum()
+
+    result = pd.DataFrame({
+        'CATEGORIE': ['TOTAL'],
+        'VP_FLUX_TOT': [total_vp]
+    })
+
+    return result
+
+
+def get_gpu_memory_info():
+    """Get available GPU memory in bytes."""
+    try:
+        cuda.select_device(0)
+        gpu = cuda.get_current_device()
+
+        # Get total memory
+        total_memory = cuda.current_context().get_memory_info()[1]
+        free_memory = cuda.current_context().get_memory_info()[0]
+
+        return {
+            'total_gb': total_memory / 1024 ** 3,
+            'free_gb': free_memory / 1024 ** 3,
+            'used_gb': (total_memory - free_memory) / 1024 ** 3
+        }
+    except Exception as e:
+        print(f"Warning: Could not get GPU memory info: {e}")
+        return {'total_gb': 16, 'free_gb': 12, 'used_gb': 4}  # Conservative defaults
+
+
+def calculate_optimal_batch_size(n_accounts, n_scenarios, n_years, freq_eval,
+                                 n_output_fields, memory_margin=0.8):
     """
-    Main function to run GPU-accelerated projection.
+    Calculate optimal batch size based on available GPU memory.
+
+    Args:
+        n_accounts: Total number of accounts
+        n_scenarios: Number of scenarios
+        n_years: Number of years to project
+        freq_eval: Evaluation frequency
+        n_output_fields: Number of output fields per timestep
+        memory_margin: Use only this fraction of available memory (default 0.8)
+
+    Returns:
+        int: Optimal batch size (number of accounts per batch)
+    """
+    mem_info = get_gpu_memory_info()
+    available_gb = mem_info['free_gb'] * memory_margin
+
+    print(f"\nGPU Memory:")
+    print(f"  Total: {mem_info['total_gb']:.2f} GB")
+    print(f"  Free: {mem_info['free_gb']:.2f} GB")
+    print(f"  Using: {available_gb:.2f} GB (with {memory_margin:.0%} margin)")
+
+    # Calculate memory per account (in GB)
+    max_timesteps = (n_years + 1) * freq_eval
+    bytes_per_account = n_scenarios * max_timesteps * n_output_fields * 4  # float32
+    gb_per_account = bytes_per_account / 1024 ** 3
+
+    # Also account for lookup tables (approximately)
+    lookup_table_gb = 0.5  # Conservative estimate
+
+    # Calculate batch size
+    batch_size = int((available_gb - lookup_table_gb) / gb_per_account)
+
+    # Ensure batch size is reasonable
+    batch_size = max(1, min(batch_size, n_accounts))
+
+    # Round down to a nice number
+    if batch_size > 100:
+        batch_size = (batch_size // 100) * 100
+    elif batch_size > 10:
+        batch_size = (batch_size // 10) * 10
+
+    print(f"\nBatch Configuration:")
+    print(f"  Memory per account: {gb_per_account * 1024:.1f} MB")
+    print(f"  Optimal batch size: {batch_size} accounts")
+    print(f"  Number of batches: {(n_accounts + batch_size - 1) // batch_size}")
+    print(f"  Memory per batch: {batch_size * gb_per_account:.2f} GB")
+
+    return batch_size
+
+
+def run_projection_gpu_batched(data_path, output_path, nb_an_projection, nb_scenarios,
+                               max_accounts=None, threads_per_block=(16, 8),
+                               batch_size=None, memory_margin=0.8):
+    """
+    Run GPU projection with automatic batching.
 
     Args:
         data_path: Path to input CSV files
         output_path: Path for output files
         nb_an_projection: Number of years to project
         nb_scenarios: Number of economic scenarios
-        max_accounts: Maximum number of accounts (for testing)
-        threads_per_block: CUDA block dimensions (accounts, scenarios)
+        max_accounts: Maximum number of accounts (None = all)
+        threads_per_block: CUDA block dimensions
+        batch_size: Manual batch size (None = auto-calculate)
+        memory_margin: Fraction of GPU memory to use (default 0.8)
     """
     start_time = datetime.now()
-    print(f"Starting GPU projection at {start_time}")
+    print(f"Starting batched GPU projection at {start_time}")
     print("=" * 60)
 
     # Update config
@@ -1138,50 +1277,41 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     if max_accounts:
         data['population'] = data['population'].head(max_accounts)
 
-    n_accounts = len(data['population'])
-    print(f"\nPreparing {n_accounts} accounts for GPU processing...")
+    n_accounts_total = len(data['population'])
+    print(f"\nTotal accounts to process: {n_accounts_total:,}")
 
-    # Prepare account data
-    account_data, account_ids = prepare_account_data(data['population'])
+    # Calculate batch size if not provided
+    if batch_size is None:
+        batch_size = calculate_optimal_batch_size(
+            n_accounts_total, nb_scenarios, nb_an_projection,
+            CONFIG['FREQ_EVAL'], 40, memory_margin
+        )
+    else:
+        print(f"\nUsing manual batch size: {batch_size}")
 
-    # Create GPU lookup tables
-    print("Creating GPU lookup tables...")
+    # Create GPU lookup tables (shared across all batches)
+    print("\nCreating GPU lookup tables...")
     mortality_lookup = create_gpu_mortality_lookup(data['mortalite'])
-
     (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx,
      rend_sp500, rend_eafe) = create_gpu_returns_lookup(data['rendements'])
-
     min_ferr_lookup = create_gpu_min_ferr_lookup(data['min_ferr'])
     lapse_part_min, lapse_part_max = create_gpu_lapse_part_lookup(data['tx_lapse_part'])
     lapse_tot_min, lapse_tot_max, lapse_tot_fact = create_gpu_lapse_tot_lookup(data['tx_lapse_tot'])
-
     (deposits_pc, deposits_var, deposits_age_max,
      deposits_i_even) = create_gpu_deposits_lookup(data['depots_futurs'])
-
     fees_lookup = create_gpu_fees_lookup(data['frais_admin'])
-
     (acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac,
      acq_frais_ac, acq_frais_rf) = create_gpu_acquisition_lookup(data['acquisition'])
-
     (cous_base_passif, cous_tx_passif, cous_base_credit, cous_tx_credit,
      cous_base_marche, cous_tx_marche, cous_base_depense, cous_tx_depense,
      cous_base_decheance, cous_tx_decheance, cous_base_mortalite, cous_tx_mortalite,
      cous_base_depot, cous_tx_depot, cous_facteur_80,
      cous_facteur_90) = create_gpu_coussins_lookup(data['coussins_escap'])
 
-    # Allocate output array
-    max_timesteps = (nb_an_projection + 1) * CONFIG['FREQ_EVAL']
-    n_output_fields = 40  # Number of output columns per timestep (includes all cushions)
-    output_results = np.zeros((n_accounts, nb_scenarios, max_timesteps, n_output_fields),
-                              dtype=np.float32)
+    print("Lookup tables created")
 
-    print(f"Output array shape: {output_results.shape}")
-    print(f"Total output size: {output_results.nbytes / 1024 ** 3:.2f} GB")
-
-    # Copy data to GPU
-    print("\nCopying data to GPU...")
-    d_account_data = cuda.to_device(account_data)
-    d_account_ids = cuda.to_device(account_ids)
+    # Copy lookup tables to GPU (once, reused across batches)
+    print("\nCopying lookup tables to GPU...")
     d_mortality = cuda.to_device(mortality_lookup)
     d_forward_rate = cuda.to_device(forward_rate)
     d_ajust_forward = cuda.to_device(ajust_forward)
@@ -1223,110 +1353,144 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     d_cous_tx_depot = cuda.to_device(cous_tx_depot)
     d_cous_facteur_80 = cuda.to_device(cous_facteur_80)
     d_cous_facteur_90 = cuda.to_device(cous_facteur_90)
-    d_output = cuda.to_device(output_results)
+    print("Lookup tables on GPU")
 
-    # Calculate grid dimensions
-    blocks_x = (n_accounts + threads_per_block[0] - 1) // threads_per_block[0]
-    blocks_y = (nb_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
-    blocks_per_grid = (blocks_x, blocks_y)
+    # Process in batches
+    n_batches = (n_accounts_total + batch_size - 1) // batch_size
+    all_results = []
+    total_kernel_time = 0
 
-    print(f"\nLaunching kernel:")
-    print(f"  Grid: {blocks_per_grid}")
-    print(f"  Block: {threads_per_block}")
-    print(f"  Total threads: {blocks_x * blocks_y * threads_per_block[0] * threads_per_block[1]}")
+    print(f"\n{'=' * 60}")
+    print(f"PROCESSING {n_batches} BATCHES")
+    print(f"{'=' * 60}")
 
-    # Launch kernel
-    kernel_start = datetime.now()
-    projection_kernel[blocks_per_grid, threads_per_block](
-        d_account_data, d_account_ids, nb_scenarios, nb_an_projection, CONFIG['FREQ_EVAL'],
-        d_mortality,
-        d_forward_rate, d_ajust_forward, d_rend_dex, d_rend_mm, d_rend_tsx, d_rend_sp500, d_rend_eafe,
-        d_min_ferr,
-        d_lapse_part_min, d_lapse_part_max,
-        d_lapse_tot_min, d_lapse_tot_max, d_lapse_tot_fact,
-        d_deposits_pc, d_deposits_var, d_deposits_age_max, d_deposits_i_even,
-        d_fees,
-        d_acq_vente_rf, d_acq_vente_ac, d_acq_maintien_rf, d_acq_maintien_ac,
-        d_acq_frais_ac, d_acq_frais_rf,
-        d_cous_base_passif, d_cous_tx_passif, d_cous_base_credit, d_cous_tx_credit,
-        d_cous_base_marche, d_cous_tx_marche, d_cous_base_depense, d_cous_tx_depense,
-        d_cous_base_decheance, d_cous_tx_decheance, d_cous_base_mortalite, d_cous_tx_mortalite,
-        d_cous_base_depot, d_cous_tx_depot, d_cous_facteur_80, d_cous_facteur_90,
-        d_output
-    )
+    for batch_idx in range(n_batches):
+        batch_start = batch_idx * batch_size
+        batch_end = min(batch_start + batch_size, n_accounts_total)
+        batch_n_accounts = batch_end - batch_start
 
-    # Wait for kernel to complete
-    cuda.synchronize()
-    kernel_end = datetime.now()
-    kernel_duration = (kernel_end - kernel_start).total_seconds()
-    print(f"\nKernel execution time: {kernel_duration:.2f} seconds")
+        print(f"\nBatch {batch_idx + 1}/{n_batches}: Accounts {batch_start + 1} to {batch_end}")
 
-    # Copy results back from GPU
-    print("Copying results from GPU...")
-    output_results = d_output.copy_to_host()
+        # Get batch data
+        batch_population = data['population'].iloc[batch_start:batch_end]
+        batch_account_data, batch_account_ids = prepare_account_data(batch_population)
 
-    # Process results into DataFrame
-    print("Processing results...")
-    results_list = []
+        # Allocate COMPACT output array for this batch
+        # Estimate: ~120 timesteps per account-scenario (conservative)
+        max_timesteps = (nb_an_projection + 1) * CONFIG['FREQ_EVAL']
+        estimated_rows_per_account_scenario = min(120, max_timesteps)
+        max_total_rows = batch_n_accounts * nb_scenarios * estimated_rows_per_account_scenario
+        n_output_fields = 40
+        batch_output_results = np.zeros((max_total_rows, n_output_fields), dtype=np.float32)
+        batch_output_counter = np.zeros(1, dtype=np.int32)
 
-    for acc_idx in range(n_accounts):
-        for scn_idx in range(nb_scenarios):
-            for ts_idx in range(max_timesteps):
-                # Check if this timestep has valid data (ID_COMPTE > 0)
-                if output_results[acc_idx, scn_idx, ts_idx, 0] > 0:
-                    row = {
-                        'ID_COMPTE': int(output_results[acc_idx, scn_idx, ts_idx, 0]),
-                        'SCN_EVAL': int(output_results[acc_idx, scn_idx, ts_idx, 1]),
-                        'AN_EVAL': int(output_results[acc_idx, scn_idx, ts_idx, 2]),
-                        'MOIS_EVAL': int(output_results[acc_idx, scn_idx, ts_idx, 3]),
-                        'PRIMES_GARANTIES': output_results[acc_idx, scn_idx, ts_idx, 4],
-                        'PREST_DECES': output_results[acc_idx, scn_idx, ts_idx, 5],
-                        'PREST_ECH': output_results[acc_idx, scn_idx, ts_idx, 6],
-                        'PREST_MRV': output_results[acc_idx, scn_idx, ts_idx, 7],
-                        'FRAIS_ACQUIS': output_results[acc_idx, scn_idx, ts_idx, 8],
-                        'COMM_VENTE': output_results[acc_idx, scn_idx, ts_idx, 9],
-                        'PRIMES_VARIABLES': output_results[acc_idx, scn_idx, ts_idx, 10],
-                        'FRAIS_FIXES': output_results[acc_idx, scn_idx, ts_idx, 11],
-                        'HON_GEST': output_results[acc_idx, scn_idx, ts_idx, 12],
-                        'COMM_MAINTIEN': output_results[acc_idx, scn_idx, ts_idx, 13],
-                        'VALEUR_MARCHANDE': output_results[acc_idx, scn_idx, ts_idx, 14],
-                        'PASSIF_REDRESSE': output_results[acc_idx, scn_idx, ts_idx, 15],
-                        'COUSSIN_CREDIT': output_results[acc_idx, scn_idx, ts_idx, 16],
-                        'COUSSIN_MARCHE': output_results[acc_idx, scn_idx, ts_idx, 17],
-                        'COUSSIN_DEPENSE': output_results[acc_idx, scn_idx, ts_idx, 18],
-                        'COUSSIN_DECHEANCE': output_results[acc_idx, scn_idx, ts_idx, 19],
-                        'COUSSIN_MORTALITE': output_results[acc_idx, scn_idx, ts_idx, 20],
-                        'COUSSIN_DEPOT': output_results[acc_idx, scn_idx, ts_idx, 21],
-                        'VP_FRAIS_ACQUIS': output_results[acc_idx, scn_idx, ts_idx, 22],
-                        'VP_COMM_VENTE': output_results[acc_idx, scn_idx, ts_idx, 23],
-                        'VP_PRIMES_GARANTIES': output_results[acc_idx, scn_idx, ts_idx, 24],
-                        'VP_PRIMES_VARIABLES': output_results[acc_idx, scn_idx, ts_idx, 25],
-                        'VP_FRAIS_FIXES': output_results[acc_idx, scn_idx, ts_idx, 26],
-                        'VP_HON_GEST': output_results[acc_idx, scn_idx, ts_idx, 27],
-                        'VP_COMM_MAINTIEN': output_results[acc_idx, scn_idx, ts_idx, 28],
-                        'VP_PREST_ECH': output_results[acc_idx, scn_idx, ts_idx, 29],
-                        'VP_PREST_MRV': output_results[acc_idx, scn_idx, ts_idx, 30],
-                        'VP_PREST_DECES': output_results[acc_idx, scn_idx, ts_idx, 31],
-                        'VP_VALEUR_MARCHANDE': output_results[acc_idx, scn_idx, ts_idx, 32],
-                        'VP_PASSIF_REDRESSE': output_results[acc_idx, scn_idx, ts_idx, 33],
-                        'VP_COUSSIN_CREDIT': output_results[acc_idx, scn_idx, ts_idx, 34],
-                        'VP_COUSSIN_MARCHE': output_results[acc_idx, scn_idx, ts_idx, 35],
-                        'VP_COUSSIN_DEPENSE': output_results[acc_idx, scn_idx, ts_idx, 36],
-                        'VP_COUSSIN_DECHEANCE': output_results[acc_idx, scn_idx, ts_idx, 37],
-                        'VP_COUSSIN_MORTALITE': output_results[acc_idx, scn_idx, ts_idx, 38],
-                        'VP_COUSSIN_DEPOT': output_results[acc_idx, scn_idx, ts_idx, 39],
-                    }
-                    results_list.append(row)
+        old_memory = batch_n_accounts * nb_scenarios * max_timesteps * n_output_fields * 4 / 1024 ** 3
+        new_memory = batch_output_results.nbytes / 1024 ** 3
+        print(
+            f"  Compact output array: {batch_output_results.shape} (max {estimated_rows_per_account_scenario} rows/scenario)")
+        print(
+            f"  Memory saved: {old_memory:.2f} GB → {new_memory:.2f} GB ({(1 - new_memory / old_memory) * 100:.1f}% reduction)")
 
-    all_results = pd.DataFrame(results_list)
-    print(f"Total projection rows: {len(all_results):,}")
+        # Copy batch data to GPU
+        print(f"  Copying batch data to GPU...")
+        d_account_data = cuda.to_device(batch_account_data)
+        d_account_ids = cuda.to_device(batch_account_ids)
+        d_output = cuda.to_device(batch_output_results)
+        d_output_counter = cuda.to_device(batch_output_counter)
 
-    # Aggregate and save results (same as CPU version)
+        # Calculate grid dimensions
+        blocks_x = (batch_n_accounts + threads_per_block[0] - 1) // threads_per_block[0]
+        blocks_y = (nb_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
+        blocks_per_grid = (blocks_x, blocks_y)
+
+        print(f"  Launching kernel: Grid={blocks_per_grid}, Block={threads_per_block}")
+
+        # Launch kernel
+        batch_kernel_start = datetime.now()
+        projection_kernel[blocks_per_grid, threads_per_block](
+            d_account_data, d_account_ids, nb_scenarios, nb_an_projection, CONFIG['FREQ_EVAL'],
+            d_mortality,
+            d_forward_rate, d_ajust_forward, d_rend_dex, d_rend_mm, d_rend_tsx, d_rend_sp500, d_rend_eafe,
+            d_min_ferr,
+            d_lapse_part_min, d_lapse_part_max,
+            d_lapse_tot_min, d_lapse_tot_max, d_lapse_tot_fact,
+            d_deposits_pc, d_deposits_var, d_deposits_age_max, d_deposits_i_even,
+            d_fees,
+            d_acq_vente_rf, d_acq_vente_ac, d_acq_maintien_rf, d_acq_maintien_ac,
+            d_acq_frais_ac, d_acq_frais_rf,
+            d_cous_base_passif, d_cous_tx_passif, d_cous_base_credit, d_cous_tx_credit,
+            d_cous_base_marche, d_cous_tx_marche, d_cous_base_depense, d_cous_tx_depense,
+            d_cous_base_decheance, d_cous_tx_decheance, d_cous_base_mortalite, d_cous_tx_mortalite,
+            d_cous_base_depot, d_cous_tx_depot, d_cous_facteur_80, d_cous_facteur_90,
+            d_output,
+            d_output_counter
+        )
+
+        cuda.synchronize()
+        batch_kernel_end = datetime.now()
+        batch_kernel_time = (batch_kernel_end - batch_kernel_start).total_seconds()
+        total_kernel_time += batch_kernel_time
+
+        print(f"  Kernel time: {batch_kernel_time:.2f}s")
+
+        # Copy results back
+        print(f"  Copying results from GPU...", end='', flush=True)
+        copy_start = datetime.now()
+        batch_output_results = d_output.copy_to_host()
+        batch_output_counter_host = d_output_counter.copy_to_host()
+        actual_rows = batch_output_counter_host[0]
+        copy_time = (datetime.now() - copy_start).total_seconds()
+        print(f" {copy_time:.2f}s ({actual_rows:,} rows)")
+
+        # Process batch results into DataFrame (SUPER FAST - NO FILTERING NEEDED)
+        print(f"  Processing batch results...", end='', flush=True)
+        process_start = datetime.now()
+
+        # Take only the actual rows written (no zeros, no filtering!)
+        valid_rows = batch_output_results[:actual_rows]
+
+        # Create DataFrame directly from compact numpy array
+        batch_df = pd.DataFrame(valid_rows, columns=[
+            'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
+            'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
+            'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
+            'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE',
+            'PASSIF_REDRESSE', 'COUSSIN_CREDIT', 'COUSSIN_MARCHE',
+            'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
+            'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES',
+            'VP_PRIMES_VARIABLES', 'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN',
+            'VP_PREST_ECH', 'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE',
+            'VP_PASSIF_REDRESSE', 'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE',
+            'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE', 'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
+        ])
+
+        # Convert ID columns to int
+        batch_df['ID_COMPTE'] = batch_df['ID_COMPTE'].astype(int)
+        batch_df['SCN_EVAL'] = batch_df['SCN_EVAL'].astype(int)
+        batch_df['AN_EVAL'] = batch_df['AN_EVAL'].astype(int)
+        batch_df['MOIS_EVAL'] = batch_df['MOIS_EVAL'].astype(int)
+
+        process_time = (datetime.now() - process_start).total_seconds()
+        print(f" {process_time:.2f}s")
+
+        all_results.append(batch_df)
+
+        print(f"  ✓ Batch complete: {len(batch_df):,} rows (copy: {copy_time:.1f}s, process: {process_time:.1f}s)")
+        print(f"    Buffer utilization: {actual_rows}/{max_total_rows} ({actual_rows / max_total_rows * 100:.1f}%)")
+
+        # Clear GPU memory for this batch
+        del d_account_data, d_account_ids, d_output, d_output_counter, batch_output_results
+        cuda.current_context().deallocations.clear()
+
+    # Combine all batches
+    print(f"\n{'=' * 60}")
+    print("Combining all batches...")
+    all_results_df = pd.concat(all_results, ignore_index=True)
+    print(f"Total projection rows: {len(all_results_df):,}")
+
+    # Aggregate results
     print("Aggregating results...")
-    from algo2.cpu import (aggregate_by_scenario, aggregate_flux_projetes,
-                                      aggregate_vp_flux_compte, aggregate_vp_flux_total)
-
-    calculs_sommaire = aggregate_by_scenario(all_results)
+    calculs_sommaire = aggregate_by_scenario(all_results_df)
     vp_flux_compte = aggregate_vp_flux_compte(calculs_sommaire)
     vp_flux_total = aggregate_vp_flux_total(vp_flux_compte)
     flux_projetes = aggregate_flux_projetes(calculs_sommaire)
@@ -1348,14 +1512,16 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     total_duration = (end_time - start_time).total_seconds()
 
     print("\n" + "=" * 60)
-    print("GPU PROJECTION COMPLETE")
+    print("BATCHED GPU PROJECTION COMPLETE")
     print("=" * 60)
     print(f"Total processing time: {total_duration:.2f} seconds ({total_duration / 60:.2f} minutes)")
-    print(f"Kernel execution time: {kernel_duration:.2f} seconds")
-    print(f"Accounts processed: {n_accounts}")
+    print(f"Total kernel time: {total_kernel_time:.2f} seconds")
+    print(f"Overhead time: {total_duration - total_kernel_time:.2f} seconds")
+    print(f"Accounts processed: {n_accounts_total:,}")
     print(f"Scenarios per account: {nb_scenarios}")
-    print(f"Total rows generated: {len(all_results):,}")
-    print(f"Speedup potential vs sequential: ~{n_accounts * nb_scenarios:.0f}x")
+    print(f"Number of batches: {n_batches}")
+    print(f"Average batch time: {total_duration / n_batches:.2f} seconds")
+    print(f"Total rows generated: {len(all_results_df):,}")
     print(f"Total PV of flows: ${vp_flux_total['VP_FLUX_TOT'].iloc[0]:,.2f}")
     print("=" * 60)
 
@@ -1363,13 +1529,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         'flux_projetes': flux_projetes,
         'vp_flux_compte': vp_flux_compte,
         'vp_flux_total': vp_flux_total,
-        'all_results': all_results,
+        'all_results': all_results_df,
+        'n_batches': n_batches,
+        'batch_size': batch_size,
+        'total_kernel_time': total_kernel_time,
+        'total_time': total_duration
     }
 
-
-# =============================================================================
-# SCRIPT ENTRY POINT
-# =============================================================================
 
 if __name__ == "__main__":
     # Check CUDA availability
@@ -1380,29 +1546,27 @@ if __name__ == "__main__":
     print(f"CUDA Device: {cuda.get_current_device().name}")
 
     # Set paths
-    DATA_PATH = HERE.joinpath("algo2/data_in")
-    OUTPUT_PATH = HERE.joinpath("algo2/data_out_gpu")
+    DATA_PATH = Path("algo2/data_in")
+    OUTPUT_PATH = Path("algo2/data_out_gpu")
 
-    # Run GPU projection
-    results = run_projection_gpu(
+    # Run batched GPU projection
+    results = run_projection_gpu_batched(
         data_path=DATA_PATH,
         output_path=OUTPUT_PATH,
         nb_an_projection=100,
         nb_scenarios=100,
-        max_accounts=None,  # Start with a small number for testing
-        threads_per_block=(16, 8)  # Tune based on your GPU
+        max_accounts=None,  # None = all accounts (200,000)
+        threads_per_block=(16, 8),
+        batch_size=None,  # None = auto-calculate based on GPU memory
+        memory_margin=0.85  # Use 85% of free GPU memory
     )
 
     if results:
         print("\n" + "=" * 60)
-        print("SAMPLE RESULTS")
+        print("SUMMARY")
         print("=" * 60)
-
+        print(f"Processed {results['n_batches']} batches")
+        print(f"Average accounts per batch: {results['batch_size']}")
+        print(f"Kernel efficiency: {results['total_kernel_time'] / results['total_time']:.1%}")
         print("\nVP_FLUX_TOTAL:")
         print(results['vp_flux_total'])
-
-        print("\nVP_FLUX_COMPTE (first 5 accounts):")
-        print(results['vp_flux_compte'].head())
-
-        print("\nFLUX_PROJETES (first 10 periods):")
-        print(results['flux_projetes'].head(10))
