@@ -411,6 +411,29 @@
             </div>
         </div>
 
+        <div class="card" style="border: 2px solid #e74c3c;">
+            <h2>⚠️ Admin Actions</h2>
+            <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin-bottom: 15px;">
+                <strong>⚠️ Warning:</strong> These actions are irreversible!
+            </div>
+            <form id="clear-db-form" style="max-width: 400px;">
+                <div class="form-group">
+                    <label for="admin-password">Admin Password:</label>
+                    <input type="password" id="admin-password" name="admin-password" placeholder="Enter admin password" required>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="delete-files">
+                        Also delete all uploaded files and results
+                    </label>
+                </div>
+                <button type="submit" class="btn" style="background-color: #e74c3c; color: white;">
+                    🗑️ Clear Database
+                </button>
+            </form>
+            <div id="clear-db-message" style="margin-top: 15px;"></div>
+        </div>
+
         <div class="card" id="job-details-card" style="display: none;">
             <h2>📊 Job Details</h2>
             <div id="job-details-content"></div>
@@ -438,6 +461,64 @@
         // Use current origin to support both localhost and proxy URLs (e.g., RunPod)
         const API_BASE = window.location.origin;
         let selectedJobId = null;
+
+        // Clear database (admin action)
+        document.getElementById('clear-db-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const messageDiv = document.getElementById('clear-db-message');
+            const password = document.getElementById('admin-password').value;
+            const deleteFiles = document.getElementById('delete-files').checked;
+            
+            // Double confirmation
+            const confirmMsg = deleteFiles 
+                ? 'Are you sure you want to clear the database AND delete all files? This cannot be undone!'
+                : 'Are you sure you want to clear the database? This cannot be undone!';
+            
+            if (!confirm(confirmMsg)) {
+                return;
+            }
+            
+            messageDiv.innerHTML = '<div class="loading">Clearing database...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/admin/clear-database`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        password: password,
+                        delete_files: deleteFiles
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    messageDiv.innerHTML = `<div class="success" style="background: #d1e7dd; color: #0f5132; padding: 10px; border-radius: 5px;">
+                        ✅ ${data.message}<br>
+                        Jobs deleted: ${data.jobs_deleted}<br>
+                        Files deleted: ${data.files_deleted ? 'Yes' : 'No'}
+                    </div>`;
+                    
+                    // Clear form
+                    document.getElementById('admin-password').value = '';
+                    document.getElementById('delete-files').checked = false;
+                    
+                    // Refresh jobs list
+                    await loadJobs();
+                    
+                    // Clear job details if visible
+                    document.getElementById('job-details-card').style.display = 'none';
+                    selectedJobId = null;
+                } else {
+                    messageDiv.innerHTML = `<div class="error">❌ ${data.message || data.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+            }
+        });
 
         // Check API health on load
         async function checkHealth() {

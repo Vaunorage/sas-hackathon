@@ -45,6 +45,7 @@ Path(__file__).parent.joinpath('static').mkdir(exist_ok=True)
 # Application metadata
 APP_VERSION = "1.0.0"
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')  # Change in production!
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'csv'}
@@ -330,7 +331,8 @@ def welcome():
             'cancel_job': 'DELETE /jobs/<job_id>',
             'get_results': '/jobs/<job_id>/results',
             'get_files': '/jobs/<job_id>/files',
-            'download_file': '/jobs/<job_id>/files/<file_name>'
+            'download_file': '/jobs/<job_id>/files/<file_name>',
+            'clear_database': 'POST /admin/clear-database (requires password)'
         },
         'job_parameters': {
             'required': ['use_custom_paths=true (default mode)'],
@@ -737,6 +739,69 @@ def internal_error(e):
     }), 500
 
 # =============================================================================
+# API ROUTES - ADMIN
+# =============================================================================
+
+@app.route('/admin/clear-database', methods=['POST'])
+def clear_database():
+    """Clear all jobs from database (requires password)"""
+    try:
+        # Get password from request
+        password = request.json.get('password') if request.is_json else request.form.get('password')
+        
+        if not password:
+            return jsonify({
+                'error': 'Password required',
+                'message': 'Please provide the admin password'
+            }), 401
+        
+        # Verify password
+        if password != ADMIN_PASSWORD:
+            return jsonify({
+                'error': 'Invalid password',
+                'message': 'The provided password is incorrect'
+            }), 403
+        
+        # Get options
+        delete_files = request.json.get('delete_files', False) if request.is_json else request.form.get('delete_files') == 'true'
+        
+        # Clear database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM jobs")
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        # Optionally delete uploaded and result files
+        if delete_files:
+            import shutil
+            for folder in [app.config['UPLOAD_FOLDER'], app.config['RESULTS_FOLDER']]:
+                if folder.exists():
+                    for item in folder.iterdir():
+                        if item.is_dir():
+                            shutil.rmtree(item)
+                        else:
+                            item.unlink()
+        
+        # Clear job tracking
+        job_threads.clear()
+        job_cancellation_flags.clear()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Database cleared successfully',
+            'jobs_deleted': deleted_count,
+            'files_deleted': delete_files
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to clear database',
+            'message': str(e)
+        }), 500
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -750,7 +815,12 @@ if __name__ == '__main__':
     print(f"Database: {app.config['DATABASE']}")
     print(f"Upload Folder: {app.config['UPLOAD_FOLDER']}")
     print(f"Results Folder: {app.config['RESULTS_FOLDER']}")
+    print(f"Admin Password: {'***' if ENVIRONMENT == 'production' else ADMIN_PASSWORD}")
     print("=" * 60)
+    if ENVIRONMENT != 'production':
+        print("⚠️  WARNING: Using default admin password!")
+        print("⚠️  Set ADMIN_PASSWORD environment variable for production")
+        print("=" * 60)
     
     # Run the app
     app.run(
