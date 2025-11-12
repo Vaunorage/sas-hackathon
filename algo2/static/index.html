@@ -156,6 +156,146 @@
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
         }
 
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 2% auto;
+            padding: 0;
+            border-radius: 10px;
+            width: 90%;
+            max-width: 1200px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .modal-header {
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 10px 10px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 20px;
+        }
+
+        .close-modal {
+            font-size: 32px;
+            font-weight: bold;
+            cursor: pointer;
+            color: white;
+            transition: color 0.3s;
+        }
+
+        .close-modal:hover {
+            color: #ddd;
+        }
+
+        .modal-body {
+            padding: 20px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .modal-footer {
+            padding: 15px 20px;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        /* Table Styles */
+        .preview-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .preview-table th {
+            background-color: #667eea;
+            color: white;
+            padding: 10px;
+            text-align: left;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .preview-table td {
+            padding: 8px 10px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .preview-table tr:hover {
+            background-color: #f5f5f5;
+        }
+
+        /* Job Tabs */
+        .job-tabs-container {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            border-bottom: 2px solid #e0e0e0;
+            margin-bottom: 20px;
+        }
+
+        .job-tab {
+            padding: 12px 20px;
+            border: none;
+            background: #f0f0f0;
+            color: #666;
+            cursor: pointer;
+            border-radius: 5px 5px 0 0;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .job-tab:hover {
+            background: #e0e0e0;
+        }
+
+        .job-tab.active {
+            background: #667eea;
+            color: white;
+            font-weight: 500;
+        }
+
+        .job-tab-content {
+            min-height: 300px;
+        }
+
+        .file-preview-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.3s;
+        }
+
+        .file-preview-btn:hover {
+            background: #5568d3;
+            transform: translateY(-1px);
+        }
+
         .jobs-list {
             max-height: 500px;
             overflow-y: auto;
@@ -434,25 +574,27 @@
             <div id="clear-db-message" style="margin-top: 15px;"></div>
         </div>
 
-        <div class="card" id="job-details-card" style="display: none;">
-            <h2>📊 Job Details</h2>
-            <div id="job-details-content"></div>
-            
-            <div class="results-section">
-                <h3>Results</h3>
-                <div class="result-tabs">
-                    <button class="tab active" onclick="loadResults('summary')">Summary</button>
-                    <button class="tab" onclick="loadResults('detailed')">Detailed</button>
-                    <button class="tab" onclick="loadResults('internal')">Internal</button>
-                </div>
-                <div id="results-content" class="result-content">
-                    <div class="loading">Select a result type to view</div>
-                </div>
-            </div>
+        <div class="card" id="job-tabs-card" style="display: none;">
+            <h2>📊 Job Tabs</h2>
+            <div id="job-tabs" class="job-tabs-container"></div>
+            <div id="job-tab-content" class="job-tab-content"></div>
+        </div>
+    </div>
 
-            <div class="results-section">
-                <h3>Files</h3>
-                <div id="files-list"></div>
+    <!-- File Preview Modal -->
+    <div id="file-preview-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-file-name">File Preview</h2>
+                <span class="close-modal" onclick="closePreviewModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="modal-file-info"></div>
+                <div id="modal-table-container" style="overflow-x: auto; max-height: 500px; overflow-y: auto;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closePreviewModal()">Close</button>
+                <button class="btn btn-primary" id="modal-download-btn">Download Full File</button>
             </div>
         </div>
     </div>
@@ -550,66 +692,138 @@
                     return;
                 }
                 
-                jobsList.innerHTML = data.jobs.map(job => `
-                    <div class="job-item ${job.job_id === selectedJobId ? 'selected' : ''}" onclick="selectJob('${job.job_id}')">
-                        <div class="job-header">
-                            <span class="job-id">${job.job_id}</span>
-                            <span class="job-status ${job.status}">${job.status}</span>
+                jobsList.innerHTML = data.jobs.map(job => {
+                    // Count files by type
+                    let fileInfo = '';
+                    if (job.result_files && job.result_files.length > 0) {
+                        const hasMetadata = typeof job.result_files[0] === 'object' && job.result_files[0].type;
+                        if (hasMetadata) {
+                            const counts = {
+                                summary: job.result_files.filter(f => f.type === 'summary').length,
+                                detailed: job.result_files.filter(f => f.type === 'detailed').length,
+                                internal: job.result_files.filter(f => f.type === 'internal').length,
+                                debug: job.result_files.filter(f => f.type === 'debug').length
+                            };
+                            const parts = [];
+                            if (counts.summary) parts.push(`${counts.summary} summary`);
+                            if (counts.detailed) parts.push(`${counts.detailed} detailed`);
+                            if (counts.internal) parts.push(`${counts.internal} internal`);
+                            if (counts.debug) parts.push(`${counts.debug} debug`);
+                            fileInfo = `Results: ${parts.join(', ')}`;
+                        } else {
+                            fileInfo = `Results: ${job.result_files.length} files`;
+                        }
+                    } else {
+                        fileInfo = 'Results: No files yet';
+                    }
+                    
+                    return `
+                        <div class="job-item ${job.job_id === selectedJobId ? 'selected' : ''}" onclick="selectJob('${job.job_id}')">
+                            <div class="job-header">
+                                <span class="job-id">${job.job_id}</span>
+                                <span class="job-status ${job.status}">${job.status}</span>
+                            </div>
+                            <div class="job-details">
+                                Created: ${new Date(job.created_at).toLocaleString()}<br>
+                                ${fileInfo}
+                            </div>
                         </div>
-                        <div class="job-details">
-                            Created: ${new Date(job.created_at).toLocaleString()}<br>
-                            Results: ${job.result_files.length} files generated
-                        </div>
-                    </div>
-                `).join('');
+                    `;
+                }).join('');
             } catch (error) {
                 document.getElementById('jobs-list').innerHTML = '<div class="error">Failed to load jobs</div>';
             }
         }
 
-        // Select a job
+        // Select a job - opens as a tab
         async function selectJob(jobId) {
             selectedJobId = jobId;
-            loadJobs(); // Refresh to show selection
-            
+            await openJobTab(jobId);
+        }
+
+        // Open job as a tab
+        async function openJobTab(jobId) {
             try {
                 const response = await fetch(`${API_BASE}/jobs/${jobId}`);
                 const job = await response.json();
                 
-                const detailsCard = document.getElementById('job-details-card');
-                detailsCard.style.display = 'block';
+                // Show tabs card
+                document.getElementById('job-tabs-card').style.display = 'block';
                 
-                const detailsContent = document.getElementById('job-details-content');
-                
-                // Check if custom paths were specified
-                const customPathsUsed = job.parameters && Object.keys(job.parameters).some(key => 
-                    key.endsWith('_path') && job.parameters[key]
-                );
-                
-                let fileSourceHTML = '';
-                if (customPathsUsed) {
-                    fileSourceHTML = '<p><strong>Custom paths specified:</strong></p><ul style="font-size: 13px; color: #666;">';
-                    const pathKeys = ['population_path', 'mortalite_path', 'rendements_path', 'depots_futurs_path',
-                                      'frais_admin_path', 'min_ferr_path', 'tx_lapse_part_path', 'tx_lapse_tot_path',
-                                      'acquisition_path', 'coussins_escap_path'];
-                    pathKeys.forEach(key => {
-                        if (job.parameters[key]) {
-                            fileSourceHTML += `<li><strong>${key.replace('_path', '')}:</strong> ${job.parameters[key]}</li>`;
-                        }
-                    });
-                    fileSourceHTML += '</ul>';
-                    fileSourceHTML += '<p style="font-size: 13px; color: #666; font-style: italic; margin-top: 5px;">Unspecified files use defaults from data_in folder</p>';
-                } else {
-                    fileSourceHTML = '<p style="font-size: 13px; color: #666; font-style: italic;">All files use defaults from data_in folder</p>';
+                // Add tab if not exists
+                const tabsContainer = document.getElementById('job-tabs');
+                if (!document.getElementById(`tab-${jobId}`)) {
+                    const tab = document.createElement('button');
+                    tab.id = `tab-${jobId}`;
+                    tab.className = 'job-tab';
+                    tab.textContent = `${jobId} (${job.status})`;
+                    tab.onclick = () => switchTab(jobId);
+                    tabsContainer.appendChild(tab);
                 }
                 
-                // Add cancel button for running/pending jobs
-                let cancelButton = '';
-                if (job.status === 'pending' || job.status === 'running') {
-                    cancelButton = `<button class="cancel-btn" onclick="cancelJob('${job.job_id}')">❌ Cancel Job</button>`;
-                }
+                // Switch to this tab
+                switchTab(jobId);
                 
-                detailsContent.innerHTML = `
+                // Load tab content
+                await loadTabContent(jobId, job);
+                
+            } catch (error) {
+                alert('Failed to load job');
+            }
+        }
+
+        // Switch active tab
+        function switchTab(jobId) {
+            // Update tab styles
+            document.querySelectorAll('.job-tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.getElementById(`tab-${jobId}`).classList.add('active');
+            
+            // Show tab content
+            selectedJobId = jobId;
+            loadTabContent(jobId);
+        }
+
+        // Load tab content
+        async function loadTabContent(jobId, job = null) {
+            if (!job) {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
+                job = await response.json();
+            }
+            
+            const contentDiv = document.getElementById('job-tab-content');
+            
+            // Build file source info
+            const customPathsUsed = job.parameters && Object.keys(job.parameters).some(key => 
+                key.endsWith('_path') && job.parameters[key]
+            );
+            
+            let fileSourceHTML = '';
+            if (customPathsUsed) {
+                fileSourceHTML = '<p><strong>Custom paths specified:</strong></p><ul style="font-size: 13px; color: #666;">';
+                const pathKeys = ['population_path', 'mortalite_path', 'rendements_path', 'depots_futurs_path',
+                                  'frais_admin_path', 'min_ferr_path', 'tx_lapse_part_path', 'tx_lapse_tot_path',
+                                  'acquisition_path', 'coussins_escap_path'];
+                pathKeys.forEach(key => {
+                    if (job.parameters[key]) {
+                        fileSourceHTML += `<li><strong>${key.replace('_path', '')}:</strong> ${job.parameters[key]}</li>`;
+                    }
+                });
+                fileSourceHTML += '</ul>';
+                fileSourceHTML += '<p style="font-size: 13px; color: #666; font-style: italic; margin-top: 5px;">Unspecified files use defaults from data_in folder</p>';
+            } else {
+                fileSourceHTML = '<p style="font-size: 13px; color: #666; font-style: italic;">All files use defaults from data_in folder</p>';
+            }
+            
+            // Cancel button
+            let cancelButton = '';
+            if (job.status === 'pending' || job.status === 'running') {
+                cancelButton = `<button class="cancel-btn" onclick="cancelJob('${job.job_id}')">❌ Cancel Job</button>`;
+            }
+            
+            contentDiv.innerHTML = `
+                <div style="margin-bottom: 20px;">
                     <p><strong>Job ID:</strong> ${job.job_id}</p>
                     <p><strong>Status:</strong> <span class="job-status ${job.status}">${job.status}</span></p>
                     ${cancelButton}
@@ -618,19 +832,143 @@
                     <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'N/A'}</p>
                     ${job.error_message ? `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>` : ''}
                     ${fileSourceHTML}
-                    <p><strong>Parameters:</strong></p>
-                    <pre>${JSON.stringify(job.parameters, null, 2)}</pre>
+                </div>
+                
+                <h3>Output Files</h3>
+                <div id="files-display-${jobId}"></div>
+            `;
+            
+            // Load and display files
+            await displayJobFiles(jobId);
+        }
+
+        // Display job files with preview buttons
+        async function displayJobFiles(jobId) {
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
+                const data = await response.json();
+                
+                const filesDiv = document.getElementById(`files-display-${jobId}`);
+                
+                if (!data.result_files || data.result_files.length === 0) {
+                    filesDiv.innerHTML = '<p>No result files available yet</p>';
+                    return;
+                }
+                
+                // Group files by type
+                const filesByType = {
+                    summary: [],
+                    detailed: [],
+                    internal: [],
+                    debug: [],
+                    other: []
+                };
+                
+                data.result_files.forEach(file => {
+                    const fileType = file.type || 'other';
+                    if (!filesByType[fileType]) filesByType[fileType] = [];
+                    filesByType[fileType].push(file);
+                });
+                
+                const typeLabels = {
+                    summary: '📊 Summary',
+                    detailed: '📋 Detailed',
+                    internal: '🔧 Internal',
+                    debug: '🐛 Debug',
+                    other: '📄 Other'
+                };
+                
+                let html = '<div style="display: grid; gap: 15px;">';
+                
+                Object.entries(filesByType).forEach(([type, files]) => {
+                    if (files.length > 0) {
+                        html += `<div style="border: 1px solid #e0e0e0; border-radius: 5px; padding: 15px;">`;
+                        html += `<h4 style="margin-bottom: 10px;">${typeLabels[type]}</h4>`;
+                        files.forEach(file => {
+                            const fileName = file.name;
+                            const fileSize = file.size ? `(${(file.size / 1024).toFixed(2)} KB)` : '';
+                            const description = file.description ? `<div style="font-size: 12px; color: #666; margin-top: 3px;">${file.description}</div>` : '';
+                            html += `
+                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #f9f9f9; border-radius: 5px; margin-bottom: 8px;">
+                                    <div>
+                                        <strong>${fileName}</strong> ${fileSize}
+                                        ${description}
+                                    </div>
+                                    <div style="display: flex; gap: 8px;">
+                                        <button class="file-preview-btn" onclick="previewFile('${jobId}', '${fileName}')">👁️ Preview</button>
+                                        <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${fileName}')">⬇️ Download</button>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        html += '</div>';
+                    }
+                });
+                
+                html += '</div>';
+                filesDiv.innerHTML = html;
+                
+            } catch (error) {
+                console.error('Failed to load files:', error);
+            }
+        }
+
+        // Preview file in modal
+        async function previewFile(jobId, fileName) {
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}/preview?limit=100`);
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    alert(`Error: ${data.message || data.error}`);
+                    return;
+                }
+                
+                // Update modal
+                document.getElementById('modal-file-name').textContent = fileName;
+                document.getElementById('modal-file-info').innerHTML = `
+                    <p><strong>Showing ${data.rows_shown} of ${data.total_rows} rows</strong> ${data.truncated ? '(truncated)' : ''}</p>
                 `;
                 
-                // Load files
-                loadFiles(jobId);
+                // Build table
+                let tableHTML = '<table class="preview-table"><thead><tr>';
+                data.columns.forEach(col => {
+                    tableHTML += `<th>${col}</th>`;
+                });
+                tableHTML += '</tr></thead><tbody>';
                 
-                // Auto-load summary if completed
-                if (job.status === 'completed') {
-                    loadResults('summary');
-                }
+                data.data.forEach(row => {
+                    tableHTML += '<tr>';
+                    data.columns.forEach(col => {
+                        tableHTML += `<td>${row[col] !== null && row[col] !== undefined ? row[col] : ''}</td>`;
+                    });
+                    tableHTML += '</tr>';
+                });
+                tableHTML += '</tbody></table>';
+                
+                document.getElementById('modal-table-container').innerHTML = tableHTML;
+                
+                // Set download button
+                document.getElementById('modal-download-btn').onclick = () => downloadFile(jobId, fileName);
+                
+                // Show modal
+                document.getElementById('file-preview-modal').style.display = 'block';
+                
             } catch (error) {
-                alert('Failed to load job details');
+                alert(`Failed to preview file: ${error.message}`);
+            }
+        }
+
+        // Close preview modal
+        function closePreviewModal() {
+            document.getElementById('file-preview-modal').style.display = 'none';
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('file-preview-modal');
+            if (event.target == modal) {
+                closePreviewModal();
             }
         }
 
@@ -658,84 +996,6 @@
                 }
             } catch (error) {
                 alert(`Error cancelling job: ${error.message}`);
-            }
-        }
-
-        // Load results
-        async function loadResults(type) {
-            if (!selectedJobId) return;
-            
-            // Update tab styling
-            document.querySelectorAll('.tab').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            event.target.classList.add('active');
-            
-            const resultsContent = document.getElementById('results-content');
-            resultsContent.innerHTML = '<div class="loading">Loading results...</div>';
-            
-            try {
-                const response = await fetch(`${API_BASE}/jobs/${selectedJobId}/results?type=${type}`);
-                const data = await response.json();
-                
-                if (response.ok) {
-                    resultsContent.innerHTML = `
-                        <p><strong>Result Type:</strong> ${data.result_type}</p>
-                        <p><strong>Record Count:</strong> ${data.count}</p>
-                        <pre>${JSON.stringify(data.data.slice(0, 10), null, 2)}</pre>
-                        ${data.count > 10 ? '<p><em>Showing first 10 records</em></p>' : ''}
-                    `;
-                } else {
-                    resultsContent.innerHTML = `<div class="error">${data.message || 'Failed to load results'}</div>`;
-                }
-            } catch (error) {
-                resultsContent.innerHTML = '<div class="error">Failed to load results</div>';
-            }
-        }
-
-        // Load files
-        async function loadFiles(jobId) {
-            try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
-                const data = await response.json();
-                
-                const filesList = document.getElementById('files-list');
-                
-                let html = '';
-                
-                if (data.uploaded_files.length > 0) {
-                    html += '<h4>Uploaded Files</h4><ul class="file-list">';
-                    data.uploaded_files.forEach(file => {
-                        html += `
-                            <li>
-                                <span>${file.name} (${(file.size / 1024).toFixed(2)} KB)</span>
-                                <button class="btn btn-secondary download-btn" onclick="downloadFile('${jobId}', '${file.name}')">Download</button>
-                            </li>
-                        `;
-                    });
-                    html += '</ul>';
-                }
-                
-                if (data.result_files.length > 0) {
-                    html += '<h4>Result Files</h4><ul class="file-list">';
-                    data.result_files.forEach(file => {
-                        html += `
-                            <li>
-                                <span>${file.name} (${(file.size / 1024).toFixed(2)} KB)</span>
-                                <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${file.name}')">Download</button>
-                            </li>
-                        `;
-                    });
-                    html += '</ul>';
-                }
-                
-                if (html === '') {
-                    html = '<p>No files available</p>';
-                }
-                
-                filesList.innerHTML = html;
-            } catch (error) {
-                document.getElementById('files-list').innerHTML = '<div class="error">Failed to load files</div>';
             }
         }
 

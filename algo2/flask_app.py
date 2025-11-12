@@ -138,7 +138,13 @@ def update_job_status(job_id: str, status: str, error_message: Optional[str] = N
     conn.close()
 
 def update_job_results(job_id: str, result_files: list) -> None:
-    """Update job with result files"""
+    """
+    Update job with result files
+    
+    Args:
+        job_id: Job identifier
+        result_files: List of file dictionaries with keys: name, type, description, size
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -287,17 +293,53 @@ def process_job(job_id: str):
             **custom_paths
         )
         
-        # List result files
+        # List result files with metadata
         result_files = []
         if output_path.exists():
+            # Define expected output files with their metadata
+            output_file_metadata = {
+                'FLUX_PROJETES_GPU.csv': {
+                    'type': 'internal',
+                    'description': 'Projected cash flows by time period (year/month)'
+                },
+                'VP_FLUX_COMPTE_GPU.csv': {
+                    'type': 'detailed',
+                    'description': 'Present values by account'
+                },
+                'VP_FLUX_TOTAL_GPU.csv': {
+                    'type': 'summary',
+                    'description': 'Total present value across all accounts'
+                }
+            }
+            
             for file in output_path.glob('*.csv'):
-                result_files.append(file.name)
+                file_info = {
+                    'name': file.name,
+                    'size': file.stat().st_size
+                }
+                
+                # Check if it's a known output file
+                if file.name in output_file_metadata:
+                    file_info.update(output_file_metadata[file.name])
+                # Check if it's a debug file
+                elif file.name.startswith('DEBUG_account_'):
+                    file_info['type'] = 'debug'
+                    file_info['description'] = 'Debug trace for specific account/scenario'
+                else:
+                    file_info['type'] = 'other'
+                    file_info['description'] = 'Additional output file'
+                
+                result_files.append(file_info)
         
         # Update job with results
         update_job_results(job_id, result_files)
         update_job_status(job_id, 'completed')
         
-        print(f"Job {job_id} completed successfully")
+        # Log saved files
+        print(f"\n✓ Job {job_id} completed successfully")
+        print(f"  Saved {len(result_files)} output files:")
+        for file_info in result_files:
+            print(f"    - {file_info['name']} ({file_info['type']}) - {file_info['description']}")
         
     except Exception as e:
         error_msg = f"{str(e)}\n{traceback.format_exc()}"
@@ -660,15 +702,19 @@ def list_job_files(job_id: str):
                         'type': 'input'
                     })
         
-        # Get result files
-        results_folder = get_job_results_folder(job_id)
-        result_files = []
-        if results_folder.exists():
-            for file in results_folder.glob('*.csv'):
-                if file.is_file():
+        # Get result files from database (with metadata)
+        result_files = job.get('result_files', [])
+        
+        # If result_files are stored as strings (old format), convert to new format
+        if result_files and isinstance(result_files[0], str):
+            results_folder = get_job_results_folder(job_id)
+            result_files = []
+            for filename in job.get('result_files', []):
+                file_path = results_folder / filename
+                if file_path.exists():
                     result_files.append({
-                        'name': file.name,
-                        'size': file.stat().st_size,
+                        'name': filename,
+                        'size': file_path.stat().st_size,
                         'type': 'output'
                     })
         
@@ -682,6 +728,64 @@ def list_job_files(job_id: str):
     except Exception as e:
         return jsonify({
             'error': 'Failed to list files',
+            'message': str(e)
+        }), 500
+
+@app.route('/jobs/<job_id>/files/<file_name>/preview', methods=['GET'])
+def preview_file(job_id: str, file_name: str):
+    """Preview a file with limited rows"""
+    try:
+        job = get_job(job_id)
+        if not job:
+            return jsonify({
+                'error': 'Job not found',
+                'job_id': job_id
+            }), 404
+        
+        # Get row limit from query params (default 100)
+        limit = int(request.args.get('limit', 100))
+        
+        # Secure the filename
+        file_name = secure_filename(file_name)
+        
+        # Try to find file in results folder first
+        results_folder = get_job_results_folder(job_id)
+        file_path = results_folder / file_name
+        
+        if not file_path.exists():
+            # Try upload folder
+            upload_folder = get_job_upload_folder(job_id)
+            file_path = upload_folder / file_name
+        
+        if not file_path.exists():
+            return jsonify({
+                'error': 'File not found',
+                'file_name': file_name
+            }), 404
+        
+        # Read CSV with limit
+        df = pd.read_csv(file_path, sep=';', nrows=limit)
+        
+        # Get total row count
+        total_rows = sum(1 for _ in open(file_path)) - 1  # Subtract header
+        
+        # Convert to JSON
+        data = df.to_dict(orient='records')
+        columns = df.columns.tolist()
+        
+        return jsonify({
+            'job_id': job_id,
+            'file_name': file_name,
+            'columns': columns,
+            'data': data,
+            'rows_shown': len(data),
+            'total_rows': total_rows,
+            'truncated': total_rows > limit
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to preview file',
             'message': str(e)
         }), 500
 
