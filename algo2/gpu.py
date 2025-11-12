@@ -1,5 +1,8 @@
 import pandas as pd
 import numpy as np
+import gc
+import tempfile
+import os
 from pathlib import Path
 from typing import Dict, Tuple, Any
 from datetime import datetime
@@ -1114,7 +1117,7 @@ def prepare_account_data(population_df):
 # =============================================================================
 
 def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int, nb_scenarios: int,
-                       max_accounts: int = None, threads_per_block=(16, 16)):
+                       max_accounts: int = None, threads_per_block=(16, 16), use_pinned_memory=True):
     """
     Main function to run GPU-accelerated projection in batches to manage memory.
 
@@ -1125,6 +1128,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         nb_scenarios: Number of economic scenarios
         max_accounts: Maximum number of accounts (for testing)
         threads_per_block: CUDA block dimensions (accounts, scenarios)
+        use_pinned_memory: Use pinned memory for faster transfers (default: True)
     """
     start_time = datetime.now()
     print(f"Starting GPU projection at {start_time}")
@@ -1134,6 +1138,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     CONFIG['NB_AN_PROJECTION'] = nb_an_projection
     CONFIG['NB_SC'] = nb_scenarios
     print(f"Configuration: {nb_an_projection} years, {nb_scenarios} scenarios")
+    print(f"Optimization: Pinned memory = {use_pinned_memory}")
 
     # Load data
     data = load_all_data(data_path)
@@ -1206,11 +1211,22 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             f"Available: {available_mem_for_dynamic_data / 1024 ** 2:.2f} MB"
         )
 
-    batch_size = int(available_mem_for_dynamic_data // total_mem_per_account)
+    # Calculate memory-based batch size
+    batch_size_memory = int(available_mem_for_dynamic_data // total_mem_per_account)
+    
+    # Cap batch size to prevent excessive transfer times
+    # Target: keep output array under ~1.5 GB for efficient PCIe transfers
+    max_output_size_gb = 1.5
+    max_batch_size_transfer = int((max_output_size_gb * 1024**3) / mem_per_account_output)
+    
+    # Use the minimum of memory-based and transfer-based limits
+    batch_size = min(batch_size_memory, max_batch_size_transfer)
     batch_size = max(1, min(batch_size, n_accounts))
     num_batches = (n_accounts + batch_size - 1) // batch_size
 
-    print(f"  ==> Optimal batch size: {batch_size} accounts")
+    print(f"  Memory-based max batch size: {batch_size_memory} accounts")
+    print(f"  Transfer-optimized max batch size: {max_batch_size_transfer} accounts")
+    print(f"  ==> Selected batch size: {batch_size} accounts ({batch_size * mem_per_account_output / 1024**3:.2f} GB per batch)")
     print(f"  ==> Total batches: {num_batches}")
 
     # --- BATCHED EXECUTION ---
@@ -1224,8 +1240,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         d_cous_base_decheance, d_cous_tx_decheance, d_cous_base_mortalite, d_cous_tx_mortalite, d_cous_base_depot, \
         d_cous_tx_depot, d_cous_facteur_80, d_cous_facteur_90 = [cuda.to_device(table) for table in lookup_tables]
 
-    all_results_list = []
+    # Create CUDA stream for async operations
+    stream = cuda.stream()
+    
+    # Use temporary files to avoid memory accumulation
+    temp_files = []
+    row_counts = []
     total_kernel_duration = 0
+    total_transfer_duration = 0
 
     for i in range(num_batches):
         batch_start_time = datetime.now()
@@ -1236,17 +1258,31 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"\n--- Processing Batch {i + 1}/{num_batches} (Accounts {start_idx} to {end_idx - 1}) ---")
 
         # 1. Prepare batch-specific data
-        # FIX IS HERE: Ensure the slice is in a contiguous memory block
         batch_account_data = np.ascontiguousarray(all_account_data[start_idx:end_idx])
 
-        # 2. Allocate batch-specific output array on CPU and GPU
-        h_batch_output = np.zeros((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
+        # 2. Allocate batch-specific output array on CPU (use pinned memory if enabled)
+        if use_pinned_memory:
+            h_batch_output = cuda.pinned_array((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
+            h_batch_output[:] = 0  # Initialize to zero
+        else:
+            h_batch_output = np.zeros((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
         print(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB")
 
-        # 3. Copy batch data to GPU
+        # 3. Copy batch data to GPU (async with stream)
+        transfer_start = datetime.now()
         print("  Copying batch data to GPU...")
-        d_batch_account_data = cuda.to_device(batch_account_data)
-        d_batch_output = cuda.to_device(h_batch_output)
+        if use_pinned_memory:
+            # Use pinned memory for input too
+            h_batch_input_pinned = cuda.pinned_array(batch_account_data.shape, dtype=batch_account_data.dtype)
+            h_batch_input_pinned[:] = batch_account_data
+            d_batch_account_data = cuda.to_device(h_batch_input_pinned, stream=stream)
+        else:
+            d_batch_account_data = cuda.to_device(batch_account_data, stream=stream)
+        d_batch_output = cuda.to_device(h_batch_output, stream=stream)
+        stream.synchronize()
+        transfer_end = datetime.now()
+        transfer_to_gpu = (transfer_end - transfer_start).total_seconds()
+        print(f"  Transfer to GPU: {transfer_to_gpu:.2f} seconds")
 
         # 4. Calculate grid dimensions for the current batch
         blocks_x = (current_batch_size + threads_per_block[0] - 1) // threads_per_block[0]
@@ -1256,9 +1292,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"  Launching kernel for batch:")
         print(f"    Grid: {blocks_per_grid}, Block: {threads_per_block}")
 
-        # 5. Launch kernel for the batch
+        # 5. Launch kernel for the batch (using stream)
         kernel_start = datetime.now()
-        projection_kernel[blocks_per_grid, threads_per_block](
+        projection_kernel[blocks_per_grid, threads_per_block, stream](
             # Batch-specific data
             d_batch_account_data,
             # Scenario parameters
@@ -1276,86 +1312,191 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             # Batch-specific output
             d_batch_output
         )
-        cuda.synchronize()
+        stream.synchronize()
         kernel_end = datetime.now()
         kernel_duration = (kernel_end - kernel_start).total_seconds()
         total_kernel_duration += kernel_duration
         print(f"  Kernel execution for batch finished in: {kernel_duration:.2f} seconds")
 
-        # 6. Copy results back from GPU
+        # 6. Copy results back from GPU (async with stream)
+        transfer_back_start = datetime.now()
         print("  Copying batch results from GPU...")
-        h_batch_output = d_batch_output.copy_to_host()
+        d_batch_output.copy_to_host(h_batch_output, stream=stream)
+        stream.synchronize()
+        transfer_back_end = datetime.now()
+        transfer_from_gpu = (transfer_back_end - transfer_back_start).total_seconds()
+        total_transfer_duration += transfer_to_gpu + transfer_from_gpu
+        print(f"  Transfer from GPU: {transfer_from_gpu:.2f} seconds")
 
-        # 7. Process results and append to list
-        print("  Processing batch results on CPU...")
-        for acc_idx in range(current_batch_size):
-            for scn_idx in range(nb_scenarios):
-                for ts_idx in range(max_timesteps):
-                    if h_batch_output[acc_idx, scn_idx, ts_idx, 0] > 0:
-                        row = {
-                            'ID_COMPTE': int(h_batch_output[acc_idx, scn_idx, ts_idx, 0]),
-                            'SCN_EVAL': int(h_batch_output[acc_idx, scn_idx, ts_idx, 1]),
-                            'AN_EVAL': int(h_batch_output[acc_idx, scn_idx, ts_idx, 2]),
-                            'MOIS_EVAL': int(h_batch_output[acc_idx, scn_idx, ts_idx, 3]),
-                            'PRIMES_GARANTIES': h_batch_output[acc_idx, scn_idx, ts_idx, 4],
-                            'PREST_DECES': h_batch_output[acc_idx, scn_idx, ts_idx, 5],
-                            'PREST_ECH': h_batch_output[acc_idx, scn_idx, ts_idx, 6],
-                            'PREST_MRV': h_batch_output[acc_idx, scn_idx, ts_idx, 7],
-                            'FRAIS_ACQUIS': h_batch_output[acc_idx, scn_idx, ts_idx, 8],
-                            'COMM_VENTE': h_batch_output[acc_idx, scn_idx, ts_idx, 9],
-                            'PRIMES_VARIABLES': h_batch_output[acc_idx, scn_idx, ts_idx, 10],
-                            'FRAIS_FIXES': h_batch_output[acc_idx, scn_idx, ts_idx, 11],
-                            'HON_GEST': h_batch_output[acc_idx, scn_idx, ts_idx, 12],
-                            'COMM_MAINTIEN': h_batch_output[acc_idx, scn_idx, ts_idx, 13],
-                            'VALEUR_MARCHANDE': h_batch_output[acc_idx, scn_idx, ts_idx, 14],
-                            'PASSIF_REDRESSE': h_batch_output[acc_idx, scn_idx, ts_idx, 15],
-                            'COUSSIN_CREDIT': h_batch_output[acc_idx, scn_idx, ts_idx, 16],
-                            'COUSSIN_MARCHE': h_batch_output[acc_idx, scn_idx, ts_idx, 17],
-                            'COUSSIN_DEPENSE': h_batch_output[acc_idx, scn_idx, ts_idx, 18],
-                            'COUSSIN_DECHEANCE': h_batch_output[acc_idx, scn_idx, ts_idx, 19],
-                            'COUSSIN_MORTALITE': h_batch_output[acc_idx, scn_idx, ts_idx, 20],
-                            'COUSSIN_DEPOT': h_batch_output[acc_idx, scn_idx, ts_idx, 21],
-                            'VP_FRAIS_ACQUIS': h_batch_output[acc_idx, scn_idx, ts_idx, 22],
-                            'VP_COMM_VENTE': h_batch_output[acc_idx, scn_idx, ts_idx, 23],
-                            'VP_PRIMES_GARANTIES': h_batch_output[acc_idx, scn_idx, ts_idx, 24],
-                            'VP_PRIMES_VARIABLES': h_batch_output[acc_idx, scn_idx, ts_idx, 25],
-                            'VP_FRAIS_FIXES': h_batch_output[acc_idx, scn_idx, ts_idx, 26],
-                            'VP_HON_GEST': h_batch_output[acc_idx, scn_idx, ts_idx, 27],
-                            'VP_COMM_MAINTIEN': h_batch_output[acc_idx, scn_idx, ts_idx, 28],
-                            'VP_PREST_ECH': h_batch_output[acc_idx, scn_idx, ts_idx, 29],
-                            'VP_PREST_MRV': h_batch_output[acc_idx, scn_idx, ts_idx, 30],
-                            'VP_PREST_DECES': h_batch_output[acc_idx, scn_idx, ts_idx, 31],
-                            'VP_VALEUR_MARCHANDE': h_batch_output[acc_idx, scn_idx, ts_idx, 32],
-                            'VP_PASSIF_REDRESSE': h_batch_output[acc_idx, scn_idx, ts_idx, 33],
-                            'VP_COUSSIN_CREDIT': h_batch_output[acc_idx, scn_idx, ts_idx, 34],
-                            'VP_COUSSIN_MARCHE': h_batch_output[acc_idx, scn_idx, ts_idx, 35],
-                            'VP_COUSSIN_DEPENSE': h_batch_output[acc_idx, scn_idx, ts_idx, 36],
-                            'VP_COUSSIN_DECHEANCE': h_batch_output[acc_idx, scn_idx, ts_idx, 37],
-                            'VP_COUSSIN_MORTALITE': h_batch_output[acc_idx, scn_idx, ts_idx, 38],
-                            'VP_COUSSIN_DEPOT': h_batch_output[acc_idx, scn_idx, ts_idx, 39],
-                        }
-                        all_results_list.append(row)
+        # 7. Extract valid results (OPTIMIZED - reshape + boolean mask)
+        cpu_proc_start = datetime.now()
+        print("  Extracting valid results...")
+        
+        # Reshape to 2D for faster boolean indexing on contiguous memory
+        reshape_start = datetime.now()
+        total_rows = current_batch_size * nb_scenarios * max_timesteps
+        reshaped = h_batch_output.reshape(total_rows, n_output_fields)
+        reshape_time = (datetime.now() - reshape_start).total_seconds()
+        print(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s")
+        
+        # Boolean mask on contiguous memory (much faster than fancy indexing!)
+        mask_start = datetime.now()
+        valid_mask_1d = reshaped[:, 0] > 0
+        n_valid = np.sum(valid_mask_1d)
+        mask_time = (datetime.now() - mask_start).total_seconds()
+        print(f"    Create boolean mask: {mask_time:.3f}s")
+        print(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
+        
+        if n_valid > 0:
+            # Boolean indexing on contiguous 2D array (10-20x faster than fancy indexing!)
+            extract_start = datetime.now()
+            valid_data = reshaped[valid_mask_1d]  # Don't copy yet - save directly
+            extract_time = (datetime.now() - extract_start).total_seconds()
+            print(f"    Extract valid data: {extract_time:.3f}s ({valid_data.nbytes / 1024**2:.1f} MB)")
+            
+            # Write to temporary file instead of keeping in memory!
+            write_start = datetime.now()
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.npy')
+            np.save(temp_file, valid_data)
+            temp_file.close()
+            temp_files.append(temp_file.name)
+            row_counts.append(n_valid)
+            write_time = (datetime.now() - write_start).total_seconds()
+            print(f"    Wrote to disk: {write_time:.3f}s")
+        
+        cpu_proc_end = datetime.now()
+        cpu_proc_time = (cpu_proc_end - cpu_proc_start).total_seconds()
+        print(f"    Total CPU processing: {cpu_proc_time:.2f}s")
 
+        # Cleanup ALL memory to prevent fragmentation
         del d_batch_account_data
         del d_batch_output
+        del h_batch_output  # Free the large 1.5 GB array!
+        del reshaped  # Free the reshaped view
+        del valid_mask_1d  # Free the boolean mask
+        if 'valid_data' in locals():
+            del valid_data  # Already in list, free reference
+        if use_pinned_memory and 'h_batch_input_pinned' in locals():
+            del h_batch_input_pinned
+        
+        # Force garbage collection every 5 batches to prevent fragmentation
+        if (i + 1) % 5 == 0:
+            gc.collect()
+            print(f"  [Memory cleanup: GC triggered]")
 
         batch_end_time = datetime.now()
-        print(f"  Batch {i + 1} finished in {(batch_end_time - batch_start_time).total_seconds():.2f} seconds.")
+        batch_duration = (batch_end_time - batch_start_time).total_seconds()
+        cpu_processing_time = batch_duration - kernel_duration - transfer_to_gpu - transfer_from_gpu
+        print(f"  Batch {i + 1} total time: {batch_duration:.2f}s (Kernel: {kernel_duration:.2f}s, Transfer: {transfer_to_gpu + transfer_from_gpu:.2f}s, CPU: {cpu_processing_time:.2f}s)")
 
     # --- FINAL AGGREGATION ---
-    print("\nAll batches complete. Converting results to DataFrame...")
-    all_results = pd.DataFrame(all_results_list)
-    print(f"Total projection rows: {len(all_results):,}")
+    print("\n" + "="*60)
+    print("FINAL DATA ASSEMBLY")
+    print("="*60)
+    
+    if len(temp_files) > 0:
+        # Load and concatenate from disk in chunks to avoid memory spike
+        concat_start = datetime.now()
+        print(f"Loading and concatenating {len(temp_files)} batch files...")
+        print(f"Total expected rows: {sum(row_counts):,}")
+        
+        # Load in chunks of 2 files and concatenate incrementally (reduces memory pressure)
+        chunk_size = 2
+        all_data = None
+        
+        for chunk_idx in range(0, len(temp_files), chunk_size):
+            chunk_end = min(chunk_idx + chunk_size, len(temp_files))
+            print(f"\nProcessing files {chunk_idx+1}-{chunk_end}...")
+            
+            chunk_arrays = []
+            for idx in range(chunk_idx, chunk_end):
+                temp_file = temp_files[idx]
+                print(f"  Loading batch {idx+1}: {row_counts[idx]:,} rows")
+                chunk_arrays.append(np.load(temp_file))
+                os.unlink(temp_file)  # Delete immediately
+            
+            # Concatenate this chunk
+            print(f"  Concatenating chunk...")
+            chunk_data = np.vstack(chunk_arrays)
+            del chunk_arrays
+            gc.collect()
+            
+            # Merge with accumulator (incremental to avoid memory spike)
+            if all_data is None:
+                all_data = chunk_data
+            else:
+                print(f"  Merging with previous data...")
+                all_data = np.vstack([all_data, chunk_data])
+                del chunk_data
+                gc.collect()
+        
+        concat_time = (datetime.now() - concat_start).total_seconds()
+        print(f"  Concatenation complete: {concat_time:.2f}s")
+        print(f"  Total rows: {len(all_data):,}")
+        print(f"  Total size: {all_data.nbytes / 1024**3:.2f} GB")
+        
+        # Create DataFrame once from concatenated data
+        df_start = datetime.now()
+        print("\nCreating DataFrame from NumPy array...")
+        all_results = pd.DataFrame(
+            all_data,
+            columns=[
+                'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
+                'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
+                'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
+                'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
+                'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
+                'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
+                'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+                'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
+                'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
+                'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
+                'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
+            ]
+        )
+        df_time = (datetime.now() - df_start).total_seconds()
+        print(f"  DataFrame created: {df_time:.2f}s")
+        
+        # Convert integer columns (faster on contiguous data)
+        dtype_start = datetime.now()
+        print("\nConverting integer columns to int32...")
+        all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
+            all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
+        dtype_time = (datetime.now() - dtype_start).total_seconds()
+        print(f"  Data type conversion: {dtype_time:.2f}s")
+        
+        # Clean up memory
+        del all_data
+    else:
+        print("Warning: No results generated!")
+        all_results = pd.DataFrame()
 
     # Aggregate and save results
-    print("Aggregating results...")
+    print("\n" + "="*60)
+    print("AGGREGATING RESULTS")
+    print("="*60)
+    
     from algo2.cpu import (aggregate_by_scenario, aggregate_flux_projetes,
                            aggregate_vp_flux_compte, aggregate_vp_flux_total)
 
+    agg_start = datetime.now()
+    print("Averaging across scenarios...")
     calculs_sommaire = aggregate_by_scenario(all_results)
+    print(f"  → {len(calculs_sommaire):,} rows")
+    
+    print("Creating VP_FLUX_COMPTE...")
     vp_flux_compte = aggregate_vp_flux_compte(calculs_sommaire)
+    print(f"  → {len(vp_flux_compte):,} accounts")
+    
+    print("Creating VP_FLUX_TOTAL...")
     vp_flux_total = aggregate_vp_flux_total(vp_flux_compte)
+    
+    print("Creating FLUX_PROJETES...")
     flux_projetes = aggregate_flux_projetes(calculs_sommaire)
+    print(f"  → {len(flux_projetes):,} time periods")
+    
+    agg_time = (datetime.now() - agg_start).total_seconds()
+    print(f"\nTotal aggregation time: {agg_time:.2f}s")
 
     # Save outputs
     print("\nSaving outputs...")
@@ -1370,16 +1511,28 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     # Print summary
     end_time = datetime.now()
     total_duration = (end_time - start_time).total_seconds()
-
+    
+    # Calculate time breakdowns
+    cpu_extraction_time = total_duration - total_kernel_duration - total_transfer_duration - agg_time
+    
     print("\n" + "=" * 60)
     print("GPU PROJECTION COMPLETE")
     print("=" * 60)
     print(f"Total processing time: {total_duration:.2f} seconds ({total_duration / 60:.2f} minutes)")
-    print(f"Total kernel execution time: {total_kernel_duration:.2f} seconds")
-    print(f"Accounts processed: {n_accounts} in {num_batches} batches of up to {batch_size}")
-    print(f"Scenarios per account: {nb_scenarios}")
-    print(f"Total rows generated: {len(all_results):,}")
-    print(f"Total PV of flows: ${vp_flux_total['VP_FLUX_TOT'].iloc[0]:,.2f}")
+    print(f"\nTime Breakdown:")
+    print(f"  GPU Kernel execution:  {total_kernel_duration:8.2f}s ({100*total_kernel_duration/total_duration:5.1f}%)")
+    print(f"  GPU↔CPU Transfers:     {total_transfer_duration:8.2f}s ({100*total_transfer_duration/total_duration:5.1f}%)")
+    print(f"  CPU Data Extraction:   {cpu_extraction_time:8.2f}s ({100*cpu_extraction_time/total_duration:5.1f}%)")
+    print(f"  Aggregation:           {agg_time:8.2f}s ({100*agg_time/total_duration:5.1f}%)")
+    print(f"\nProcessing Statistics:")
+    print(f"  Accounts processed: {n_accounts}")
+    print(f"  Batch size: {batch_size} accounts")
+    print(f"  Total batches: {num_batches}")
+    print(f"  Scenarios per account: {nb_scenarios}")
+    print(f"  Average time per batch: {total_duration/num_batches:.2f}s")
+    print(f"  Total rows generated: {len(all_results):,}")
+    print(f"\nResults:")
+    print(f"  Total PV of flows: ${vp_flux_total['VP_FLUX_TOT'].iloc[0]:,.2f}")
     print("=" * 60)
 
     return {
