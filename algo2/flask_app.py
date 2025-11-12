@@ -239,6 +239,20 @@ def process_job(job_id: str):
         data_path = get_job_upload_folder(job_id)
         output_path = get_job_results_folder(job_id)
         
+        # Get custom file paths (if provided)
+        custom_paths = {
+            'population_path': Path(params['population_path']) if params.get('population_path') else None,
+            'mortalite_path': Path(params['mortalite_path']) if params.get('mortalite_path') else None,
+            'rendements_path': Path(params['rendements_path']) if params.get('rendements_path') else None,
+            'depots_futurs_path': Path(params['depots_futurs_path']) if params.get('depots_futurs_path') else None,
+            'frais_admin_path': Path(params['frais_admin_path']) if params.get('frais_admin_path') else None,
+            'min_ferr_path': Path(params['min_ferr_path']) if params.get('min_ferr_path') else None,
+            'tx_lapse_part_path': Path(params['tx_lapse_part_path']) if params.get('tx_lapse_part_path') else None,
+            'tx_lapse_tot_path': Path(params['tx_lapse_tot_path']) if params.get('tx_lapse_tot_path') else None,
+            'acquisition_path': Path(params['acquisition_path']) if params.get('acquisition_path') else None,
+            'coussins_escap_path': Path(params['coussins_escap_path']) if params.get('coussins_escap_path') else None
+        }
+        
         # Run GPU projection
         print(f"Starting GPU projection for job {job_id}")
         results = run_projection_gpu(
@@ -247,7 +261,8 @@ def process_job(job_id: str):
             nb_an_projection=nb_years,
             nb_scenarios=nb_scenarios,
             max_accounts=max_accounts,
-            debug_account=debug_account
+            debug_account=debug_account,
+            **custom_paths
         )
         
         # List result files
@@ -288,6 +303,27 @@ def welcome():
             'get_results': '/jobs/<job_id>/results',
             'get_files': '/jobs/<job_id>/files',
             'download_file': '/jobs/<job_id>/files/<file_name>'
+        },
+        'job_parameters': {
+            'required': ['files (multipart/form-data)'],
+            'optional': {
+                'nb_an_projection': 'Number of years to project (default: 100)',
+                'nb_scenarios': 'Number of scenarios (default: 100)',
+                'max_accounts': 'Maximum number of accounts to process',
+                'debug_account': 'Account ID for debugging'
+            },
+            'custom_file_paths': {
+                'population_path': 'Custom path for POPULATION.csv',
+                'mortalite_path': 'Custom path for MORTALITE.csv',
+                'rendements_path': 'Custom path for RENDEMENTS.csv',
+                'depots_futurs_path': 'Custom path for DEPOTS_FUTURS.csv',
+                'frais_admin_path': 'Custom path for FRAIS_ADMIN.csv',
+                'min_ferr_path': 'Custom path for MIN_FERR.csv',
+                'tx_lapse_part_path': 'Custom path for TX_LAPSE_PART.csv',
+                'tx_lapse_tot_path': 'Custom path for TX_LAPSE_TOT.csv',
+                'acquisition_path': 'Custom path for ACQUISITION.csv',
+                'coussins_escap_path': 'Custom path for COUSSINS_ESCAP.csv'
+            }
         }
     })
 
@@ -328,6 +364,24 @@ def create_job_endpoint():
     """
     Create and start a new job
     Accepts file uploads and form parameters
+    
+    Form parameters:
+    - nb_an_projection: Number of years to project (default: 100)
+    - nb_scenarios: Number of scenarios (default: 100)
+    - max_accounts: Maximum number of accounts to process (optional)
+    - debug_account: Account ID for debugging (optional)
+    
+    Optional custom file paths:
+    - population_path: Custom path for POPULATION.csv
+    - mortalite_path: Custom path for MORTALITE.csv
+    - rendements_path: Custom path for RENDEMENTS.csv
+    - depots_futurs_path: Custom path for DEPOTS_FUTURS.csv
+    - frais_admin_path: Custom path for FRAIS_ADMIN.csv
+    - min_ferr_path: Custom path for MIN_FERR.csv
+    - tx_lapse_part_path: Custom path for TX_LAPSE_PART.csv
+    - tx_lapse_tot_path: Custom path for TX_LAPSE_TOT.csv
+    - acquisition_path: Custom path for ACQUISITION.csv
+    - coussins_escap_path: Custom path for COUSSINS_ESCAP.csv
     """
     try:
         # Generate job ID
@@ -338,7 +392,18 @@ def create_job_endpoint():
             'nb_an_projection': int(request.form.get('nb_an_projection', 100)),
             'nb_scenarios': int(request.form.get('nb_scenarios', 100)),
             'max_accounts': int(request.form.get('max_accounts')) if request.form.get('max_accounts') else None,
-            'debug_account': int(request.form.get('debug_account')) if request.form.get('debug_account') else None
+            'debug_account': int(request.form.get('debug_account')) if request.form.get('debug_account') else None,
+            # Custom file paths (optional)
+            'population_path': request.form.get('population_path'),
+            'mortalite_path': request.form.get('mortalite_path'),
+            'rendements_path': request.form.get('rendements_path'),
+            'depots_futurs_path': request.form.get('depots_futurs_path'),
+            'frais_admin_path': request.form.get('frais_admin_path'),
+            'min_ferr_path': request.form.get('min_ferr_path'),
+            'tx_lapse_part_path': request.form.get('tx_lapse_part_path'),
+            'tx_lapse_tot_path': request.form.get('tx_lapse_tot_path'),
+            'acquisition_path': request.form.get('acquisition_path'),
+            'coussins_escap_path': request.form.get('coussins_escap_path')
         }
         
         # Handle file uploads
@@ -354,11 +419,24 @@ def create_job_endpoint():
                     file.save(filepath)
                     uploaded_files.append(filename)
         
-        # Check if we have required files
-        if not uploaded_files:
+        # Check if we have either uploaded files or custom paths
+        has_custom_paths = any([
+            parameters.get('population_path'),
+            parameters.get('mortalite_path'),
+            parameters.get('rendements_path'),
+            parameters.get('depots_futurs_path'),
+            parameters.get('frais_admin_path'),
+            parameters.get('min_ferr_path'),
+            parameters.get('tx_lapse_part_path'),
+            parameters.get('tx_lapse_tot_path'),
+            parameters.get('acquisition_path'),
+            parameters.get('coussins_escap_path')
+        ])
+        
+        if not uploaded_files and not has_custom_paths:
             return jsonify({
-                'error': 'No valid CSV files uploaded',
-                'message': 'Please upload at least one CSV file'
+                'error': 'No valid CSV files uploaded or custom paths provided',
+                'message': 'Please upload at least one CSV file or provide custom file paths'
             }), 400
         
         # Create job in database

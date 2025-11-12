@@ -67,23 +67,57 @@ def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
 # DATA LOADING FUNCTIONS
 # =============================================================================
 
-def load_all_data(data_path: Path) -> Dict[str, pd.DataFrame]:
-    """Load all CSV files into memory with semicolon delimiter."""
+def load_all_data(data_path: Path,
+                  population_path: Optional[Path] = None,
+                  mortalite_path: Optional[Path] = None,
+                  rendements_path: Optional[Path] = None,
+                  depots_futurs_path: Optional[Path] = None,
+                  frais_admin_path: Optional[Path] = None,
+                  min_ferr_path: Optional[Path] = None,
+                  tx_lapse_part_path: Optional[Path] = None,
+                  tx_lapse_tot_path: Optional[Path] = None,
+                  acquisition_path: Optional[Path] = None,
+                  coussins_escap_path: Optional[Path] = None) -> Dict[str, pd.DataFrame]:
+    """Load all CSV files into memory with semicolon delimiter.
+    
+    Args:
+        data_path: Default path for CSV files
+        population_path: Optional custom path for POPULATION.csv
+        mortalite_path: Optional custom path for MORTALITE.csv
+        rendements_path: Optional custom path for RENDEMENTS.csv
+        depots_futurs_path: Optional custom path for DEPOTS_FUTURS.csv
+        frais_admin_path: Optional custom path for FRAIS_ADMIN.csv
+        min_ferr_path: Optional custom path for MIN_FERR.csv
+        tx_lapse_part_path: Optional custom path for TX_LAPSE_PART.csv
+        tx_lapse_tot_path: Optional custom path for TX_LAPSE_TOT.csv
+        acquisition_path: Optional custom path for ACQUISITION.csv
+        coussins_escap_path: Optional custom path for COUSSINS_ESCAP.csv
+    """
     print("Loading data files...")
 
     data = {}
 
-    # Load all required tables
-    data['population'] = pd.read_csv(data_path.joinpath("POPULATION.csv"), sep=';', encoding='utf-8')
-    data['mortalite'] = pd.read_csv(data_path.joinpath("MORTALITE.csv"), sep=';', encoding='utf-8')
-    data['rendements'] = pd.read_csv(data_path.joinpath("RENDEMENTS.csv"), sep=';', encoding='utf-8')
-    data['depots_futurs'] = pd.read_csv(data_path.joinpath("DEPOTS_FUTURS.csv"), sep=';', encoding='utf-8')
-    data['frais_admin'] = pd.read_csv(data_path.joinpath("FRAIS_ADMIN.csv"), sep=';', encoding='utf-8')
-    data['min_ferr'] = pd.read_csv(data_path.joinpath("MIN_FERR.csv"), sep=';', encoding='utf-8')
-    data['tx_lapse_part'] = pd.read_csv(data_path.joinpath("TX_LAPSE_PART.csv"), sep=';', encoding='utf-8')
-    data['tx_lapse_tot'] = pd.read_csv(data_path.joinpath("TX_LAPSE_TOT.csv"), sep=';', encoding='utf-8')
-    data['acquisition'] = pd.read_csv(data_path.joinpath("ACQUISITION.csv"), sep=';', encoding='utf-8')
-    data['coussins_escap'] = pd.read_csv(data_path.joinpath("COUSSINS_ESCAP.csv"), sep=';', encoding='utf-8')
+    # Load all required tables with optional custom paths
+    data['population'] = pd.read_csv(
+        population_path or data_path.joinpath("POPULATION.csv"), sep=';', encoding='utf-8')
+    data['mortalite'] = pd.read_csv(
+        mortalite_path or data_path.joinpath("MORTALITE.csv"), sep=';', encoding='utf-8')
+    data['rendements'] = pd.read_csv(
+        rendements_path or data_path.joinpath("RENDEMENTS.csv"), sep=';', encoding='utf-8')
+    data['depots_futurs'] = pd.read_csv(
+        depots_futurs_path or data_path.joinpath("DEPOTS_FUTURS.csv"), sep=';', encoding='utf-8')
+    data['frais_admin'] = pd.read_csv(
+        frais_admin_path or data_path.joinpath("FRAIS_ADMIN.csv"), sep=';', encoding='utf-8')
+    data['min_ferr'] = pd.read_csv(
+        min_ferr_path or data_path.joinpath("MIN_FERR.csv"), sep=';', encoding='utf-8')
+    data['tx_lapse_part'] = pd.read_csv(
+        tx_lapse_part_path or data_path.joinpath("TX_LAPSE_PART.csv"), sep=';', encoding='utf-8')
+    data['tx_lapse_tot'] = pd.read_csv(
+        tx_lapse_tot_path or data_path.joinpath("TX_LAPSE_TOT.csv"), sep=';', encoding='utf-8')
+    data['acquisition'] = pd.read_csv(
+        acquisition_path or data_path.joinpath("ACQUISITION.csv"), sep=';', encoding='utf-8')
+    data['coussins_escap'] = pd.read_csv(
+        coussins_escap_path or data_path.joinpath("COUSSINS_ESCAP.csv"), sep=';', encoding='utf-8')
 
     # Normalize all column names
     print("  Normalizing column names...")
@@ -1117,18 +1151,40 @@ def prepare_account_data(population_df):
 
 def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int, nb_scenarios: int,
                        max_accounts: int = None, threads_per_block=(16, 16), use_pinned_memory=True,
-                       debug_account: Optional[int] = None, debug_scenario: Optional[int] = None):
+                       debug_account: Optional[int] = None, debug_scenario: Optional[int] = None,
+                       population_path: Optional[Path] = None,
+                       mortalite_path: Optional[Path] = None,
+                       rendements_path: Optional[Path] = None,
+                       depots_futurs_path: Optional[Path] = None,
+                       frais_admin_path: Optional[Path] = None,
+                       min_ferr_path: Optional[Path] = None,
+                       tx_lapse_part_path: Optional[Path] = None,
+                       tx_lapse_tot_path: Optional[Path] = None,
+                       acquisition_path: Optional[Path] = None,
+                       coussins_escap_path: Optional[Path] = None):
     """
     Main function to run GPU-accelerated projection in batches to manage memory.
 
     Args:
-        data_path: Path to input CSV files
+        data_path: Path to input CSV files (default location)
         output_path: Path for output files
         nb_an_projection: Number of years to project
         nb_scenarios: Number of economic scenarios
         max_accounts: Maximum number of accounts (for testing)
         threads_per_block: CUDA block dimensions (accounts, scenarios)
         use_pinned_memory: Use pinned memory for faster transfers (default: True)
+        debug_account: Optional account ID for debugging
+        debug_scenario: Optional scenario ID for debugging
+        population_path: Optional custom path for POPULATION.csv
+        mortalite_path: Optional custom path for MORTALITE.csv
+        rendements_path: Optional custom path for RENDEMENTS.csv
+        depots_futurs_path: Optional custom path for DEPOTS_FUTURS.csv
+        frais_admin_path: Optional custom path for FRAIS_ADMIN.csv
+        min_ferr_path: Optional custom path for MIN_FERR.csv
+        tx_lapse_part_path: Optional custom path for TX_LAPSE_PART.csv
+        tx_lapse_tot_path: Optional custom path for TX_LAPSE_TOT.csv
+        acquisition_path: Optional custom path for ACQUISITION.csv
+        coussins_escap_path: Optional custom path for COUSSINS_ESCAP.csv
     """
     start_time = datetime.now()
     print(f"Starting GPU projection at {start_time}")
@@ -1141,7 +1197,17 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print(f"Optimization: Pinned memory = {use_pinned_memory}")
 
     # Load data
-    data = load_all_data(data_path)
+    data = load_all_data(data_path,
+                         population_path=population_path,
+                         mortalite_path=mortalite_path,
+                         rendements_path=rendements_path,
+                         depots_futurs_path=depots_futurs_path,
+                         frais_admin_path=frais_admin_path,
+                         min_ferr_path=min_ferr_path,
+                         tx_lapse_part_path=tx_lapse_part_path,
+                         tx_lapse_tot_path=tx_lapse_tot_path,
+                         acquisition_path=acquisition_path,
+                         coussins_escap_path=coussins_escap_path)
 
     if max_accounts:
         data['population'] = data['population'].head(max_accounts)

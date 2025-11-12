@@ -85,7 +85,8 @@
         }
 
         .form-group input[type="number"],
-        .form-group input[type="file"] {
+        .form-group input[type="file"],
+        .form-group input[type="text"] {
             width: 100%;
             padding: 10px;
             border: 2px solid #e0e0e0;
@@ -96,6 +97,11 @@
         .form-group input:focus {
             outline: none;
             border-color: #667eea;
+        }
+        
+        .form-group input[type="checkbox"] {
+            width: auto;
+            margin-right: 8px;
         }
 
         .btn {
@@ -297,12 +303,65 @@
             <form id="job-form">
                 <div class="form-group">
                     <label for="files">Upload CSV Files (select all required files):</label>
-                    <input type="file" id="files" name="files" accept=".csv" multiple required>
+                    <input type="file" id="files" name="files" accept=".csv" multiple>
                     <small style="color: #666; display: block; margin-top: 5px;">
                         Required: POPULATION.csv, MORTALITE.csv, RENDEMENTS.csv, DEPOTS_FUTURS.csv, 
                         FRAIS_ADMIN.csv, MIN_FERR.csv, TX_LAPSE_PART.csv, TX_LAPSE_TOT.csv, 
                         ACQUISITION.csv, COUSSINS_ESCAP.csv
                     </small>
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="use-custom-paths" onchange="toggleCustomPaths()">
+                        Use custom file paths (instead of uploading)
+                    </label>
+                </div>
+
+                <div id="custom-paths-section" style="display: none; border: 2px solid #e0e0e0; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                    <h3 style="margin-bottom: 15px; font-size: 16px; color: #555;">Custom File Paths</h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="population_path" style="font-size: 13px;">POPULATION.csv:</label>
+                            <input type="text" id="population_path" name="population_path" placeholder="/path/to/POPULATION.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="mortalite_path" style="font-size: 13px;">MORTALITE.csv:</label>
+                            <input type="text" id="mortalite_path" name="mortalite_path" placeholder="/path/to/MORTALITE.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="rendements_path" style="font-size: 13px;">RENDEMENTS.csv:</label>
+                            <input type="text" id="rendements_path" name="rendements_path" placeholder="/path/to/RENDEMENTS.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="depots_futurs_path" style="font-size: 13px;">DEPOTS_FUTURS.csv:</label>
+                            <input type="text" id="depots_futurs_path" name="depots_futurs_path" placeholder="/path/to/DEPOTS_FUTURS.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="frais_admin_path" style="font-size: 13px;">FRAIS_ADMIN.csv:</label>
+                            <input type="text" id="frais_admin_path" name="frais_admin_path" placeholder="/path/to/FRAIS_ADMIN.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="min_ferr_path" style="font-size: 13px;">MIN_FERR.csv:</label>
+                            <input type="text" id="min_ferr_path" name="min_ferr_path" placeholder="/path/to/MIN_FERR.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="tx_lapse_part_path" style="font-size: 13px;">TX_LAPSE_PART.csv:</label>
+                            <input type="text" id="tx_lapse_part_path" name="tx_lapse_part_path" placeholder="/path/to/TX_LAPSE_PART.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="tx_lapse_tot_path" style="font-size: 13px;">TX_LAPSE_TOT.csv:</label>
+                            <input type="text" id="tx_lapse_tot_path" name="tx_lapse_tot_path" placeholder="/path/to/TX_LAPSE_TOT.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="acquisition_path" style="font-size: 13px;">ACQUISITION.csv:</label>
+                            <input type="text" id="acquisition_path" name="acquisition_path" placeholder="/path/to/ACQUISITION.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="coussins_escap_path" style="font-size: 13px;">COUSSINS_ESCAP.csv:</label>
+                            <input type="text" id="coussins_escap_path" name="coussins_escap_path" placeholder="/path/to/COUSSINS_ESCAP.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
+                    </div>
                 </div>
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
@@ -369,6 +428,23 @@
         const API_BASE = 'http://localhost:5000';
         let selectedJobId = null;
 
+        // Toggle custom paths section
+        function toggleCustomPaths() {
+            const checkbox = document.getElementById('use-custom-paths');
+            const section = document.getElementById('custom-paths-section');
+            const filesInput = document.getElementById('files');
+            
+            if (checkbox.checked) {
+                section.style.display = 'block';
+                filesInput.required = false;
+                filesInput.disabled = true;
+            } else {
+                section.style.display = 'none';
+                filesInput.required = false;
+                filesInput.disabled = false;
+            }
+        }
+
         // Check API health on load
         async function checkHealth() {
             try {
@@ -429,6 +505,26 @@
                 detailsCard.style.display = 'block';
                 
                 const detailsContent = document.getElementById('job-details-content');
+                
+                // Check if custom paths were used
+                const customPathsUsed = job.parameters && Object.keys(job.parameters).some(key => 
+                    key.endsWith('_path') && job.parameters[key]
+                );
+                
+                let customPathsHTML = '';
+                if (customPathsUsed) {
+                    customPathsHTML = '<p><strong>Custom File Paths Used:</strong></p><ul style="font-size: 13px; color: #666;">';
+                    const pathKeys = ['population_path', 'mortalite_path', 'rendements_path', 'depots_futurs_path',
+                                      'frais_admin_path', 'min_ferr_path', 'tx_lapse_part_path', 'tx_lapse_tot_path',
+                                      'acquisition_path', 'coussins_escap_path'];
+                    pathKeys.forEach(key => {
+                        if (job.parameters[key]) {
+                            customPathsHTML += `<li><strong>${key.replace('_path', '')}:</strong> ${job.parameters[key]}</li>`;
+                        }
+                    });
+                    customPathsHTML += '</ul>';
+                }
+                
                 detailsContent.innerHTML = `
                     <p><strong>Job ID:</strong> ${job.job_id}</p>
                     <p><strong>Status:</strong> <span class="job-status ${job.status}">${job.status}</span></p>
@@ -436,6 +532,7 @@
                     <p><strong>Started:</strong> ${job.started_at ? new Date(job.started_at).toLocaleString() : 'N/A'}</p>
                     <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'N/A'}</p>
                     ${job.error_message ? `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>` : ''}
+                    ${customPathsHTML}
                     <p><strong>Parameters:</strong></p>
                     <pre>${JSON.stringify(job.parameters, null, 2)}</pre>
                 `;
@@ -548,11 +645,44 @@
             
             try {
                 const formData = new FormData();
+                const useCustomPaths = document.getElementById('use-custom-paths').checked;
                 
-                // Add files
+                // Add files (if not using custom paths)
                 const files = document.getElementById('files').files;
-                for (let file of files) {
-                    formData.append('files', file);
+                if (!useCustomPaths) {
+                    if (files.length === 0) {
+                        messageDiv.innerHTML = '<div class="error">Please upload files or use custom paths</div>';
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = 'Create Job';
+                        return;
+                    }
+                    for (let file of files) {
+                        formData.append('files', file);
+                    }
+                } else {
+                    // Add custom paths
+                    const customPathIds = [
+                        'population_path', 'mortalite_path', 'rendements_path', 
+                        'depots_futurs_path', 'frais_admin_path', 'min_ferr_path',
+                        'tx_lapse_part_path', 'tx_lapse_tot_path', 'acquisition_path', 
+                        'coussins_escap_path'
+                    ];
+                    
+                    let hasAnyPath = false;
+                    customPathIds.forEach(pathId => {
+                        const value = document.getElementById(pathId).value;
+                        if (value) {
+                            formData.append(pathId, value);
+                            hasAnyPath = true;
+                        }
+                    });
+                    
+                    if (!hasAnyPath) {
+                        messageDiv.innerHTML = '<div class="error">Please specify at least one custom path</div>';
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = 'Create Job';
+                        return;
+                    }
                 }
                 
                 // Add parameters
