@@ -411,7 +411,8 @@
     </div>
 
     <script>
-        const API_BASE = 'http://localhost:8000';
+        // Use current origin to support both localhost and proxy URLs (e.g., RunPod)
+        const API_BASE = window.location.origin;
         let selectedJobId = null;
 
         // Check API health on load
