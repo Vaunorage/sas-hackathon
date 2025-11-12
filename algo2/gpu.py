@@ -1,8 +1,6 @@
 import pandas as pd
 import numpy as np
 import gc
-import tempfile
-import os
 from pathlib import Path
 from typing import Dict, Tuple, Any
 from datetime import datetime
@@ -1243,9 +1241,28 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     # Create CUDA stream for async operations
     stream = cuda.stream()
     
-    # Use temporary files to avoid memory accumulation
-    temp_files = []
-    row_counts = []
+    # Hybrid approach: accumulate in memory, write to disk periodically
+    max_possible_rows = n_accounts * nb_scenarios * max_timesteps
+    estimated_rows = int(max_possible_rows * 0.6)
+    
+    # Determine if we can pre-allocate or need disk-backed approach
+    estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
+    memory_threshold_gb = 30  # Max memory to use for accumulation
+    
+    if estimated_memory_gb <= memory_threshold_gb:
+        print(f"\nUsing pre-allocation: {estimated_rows:,} rows (~{estimated_memory_gb:.2f} GB)")
+        use_disk_backed = False
+        all_data = np.zeros((estimated_rows, n_output_fields), dtype=np.float32)
+        current_row = 0
+    else:
+        print(f"\nUsing disk-backed approach (data too large: {estimated_memory_gb:.2f} GB > {memory_threshold_gb} GB)")
+        print(f"Will accumulate up to 50 batches in memory, then write to disk")
+        use_disk_backed = True
+        accumulated_arrays = []
+        temp_files = []
+        batches_since_write = 0
+        max_batches_in_memory = 50
+    
     total_kernel_duration = 0
     total_transfer_duration = 0
 
@@ -1350,19 +1367,49 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         if n_valid > 0:
             # Boolean indexing on contiguous 2D array (10-20x faster than fancy indexing!)
             extract_start = datetime.now()
-            valid_data = reshaped[valid_mask_1d]  # Don't copy yet - save directly
+            valid_data = reshaped[valid_mask_1d].copy()  # Copy to own memory
             extract_time = (datetime.now() - extract_start).total_seconds()
             print(f"    Extract valid data: {extract_time:.3f}s ({valid_data.nbytes / 1024**2:.1f} MB)")
             
-            # Write to temporary file instead of keeping in memory!
-            write_start = datetime.now()
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.npy')
-            np.save(temp_file, valid_data)
-            temp_file.close()
-            temp_files.append(temp_file.name)
-            row_counts.append(n_valid)
-            write_time = (datetime.now() - write_start).total_seconds()
-            print(f"    Wrote to disk: {write_time:.3f}s")
+            if not use_disk_backed:
+                # Pre-allocation approach
+                fill_start = datetime.now()
+                if current_row + n_valid > len(all_data):
+                    print(f"    Resizing array (occupancy higher than estimated)...")
+                    new_size = max(len(all_data) * 2, current_row + n_valid)
+                    new_array = np.zeros((new_size, n_output_fields), dtype=np.float32)
+                    new_array[:current_row] = all_data[:current_row]
+                    all_data = new_array
+                    del new_array
+                
+                all_data[current_row:current_row + n_valid] = valid_data
+                current_row += n_valid
+                fill_time = (datetime.now() - fill_start).total_seconds()
+                print(f"    Filled array: {fill_time:.3f}s (total rows: {current_row:,})")
+            else:
+                # Disk-backed approach
+                store_start = datetime.now()
+                accumulated_arrays.append(valid_data)
+                batches_since_write += 1
+                
+                # Write to disk when we hit memory limit
+                if batches_since_write >= max_batches_in_memory:
+                    print(f"    Writing {batches_since_write} batches to disk...")
+                    import tempfile
+                    chunk_data = np.vstack(accumulated_arrays)
+                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.npy')
+                    np.save(temp_file, chunk_data)
+                    temp_file.close()
+                    temp_files.append(temp_file.name)
+                    del accumulated_arrays[:]
+                    del chunk_data
+                    batches_since_write = 0
+                    gc.collect()
+                    store_time = (datetime.now() - store_start).total_seconds()
+                    print(f"    Wrote to disk: {store_time:.2f}s")
+                else:
+                    store_time = (datetime.now() - store_start).total_seconds()
+                    print(f"    Accumulated in memory ({batches_since_write}/{max_batches_in_memory}): {store_time:.3f}s")
         
         cpu_proc_end = datetime.now()
         cpu_proc_time = (cpu_proc_end - cpu_proc_start).total_seconds()
@@ -1394,82 +1441,91 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print("FINAL DATA ASSEMBLY")
     print("="*60)
     
-    if len(temp_files) > 0:
-        # Load and concatenate from disk in chunks to avoid memory spike
-        concat_start = datetime.now()
-        print(f"Loading and concatenating {len(temp_files)} batch files...")
-        print(f"Total expected rows: {sum(row_counts):,}")
+    if not use_disk_backed:
+        # Pre-allocation: just trim
+        print(f"\nTrimming pre-allocated array...")
+        print(f"  Allocated: {len(all_data):,} rows")
+        print(f"  Used: {current_row:,} rows")
+        print(f"  Occupancy: {current_row / max_possible_rows * 100:.2f}%")
+        print(f"  Wasted: {(len(all_data) - current_row) / len(all_data) * 100:.1f}%")
+        all_data = all_data[:current_row]
+        print(f"  Final size: {all_data.nbytes / 1024**3:.2f} GB")
+    else:
+        # Disk-backed: write remaining + load all
+        import os
+        import tempfile
         
-        # Load in chunks of 2 files and concatenate incrementally (reduces memory pressure)
-        chunk_size = 2
+        # Write any remaining accumulated data
+        if len(accumulated_arrays) > 0:
+            print(f"\nWriting final {len(accumulated_arrays)} batches to disk...")
+            chunk_data = np.vstack(accumulated_arrays)
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.npy')
+            np.save(temp_file, chunk_data)
+            temp_file.close()
+            temp_files.append(temp_file.name)
+            del accumulated_arrays
+            del chunk_data
+            gc.collect()
+        
+        # Load and concatenate in chunks
+        print(f"\nLoading {len(temp_files)} files from disk...")
+        chunk_size = 2  # Load 2 files at a time
         all_data = None
         
         for chunk_idx in range(0, len(temp_files), chunk_size):
             chunk_end = min(chunk_idx + chunk_size, len(temp_files))
-            print(f"\nProcessing files {chunk_idx+1}-{chunk_end}...")
+            print(f"  Loading files {chunk_idx+1}-{chunk_end}...")
             
             chunk_arrays = []
             for idx in range(chunk_idx, chunk_end):
-                temp_file = temp_files[idx]
-                print(f"  Loading batch {idx+1}: {row_counts[idx]:,} rows")
-                chunk_arrays.append(np.load(temp_file))
-                os.unlink(temp_file)  # Delete immediately
+                chunk_arrays.append(np.load(temp_files[idx]))
+                os.unlink(temp_files[idx])
             
-            # Concatenate this chunk
-            print(f"  Concatenating chunk...")
             chunk_data = np.vstack(chunk_arrays)
             del chunk_arrays
             gc.collect()
             
-            # Merge with accumulator (incremental to avoid memory spike)
             if all_data is None:
                 all_data = chunk_data
             else:
-                print(f"  Merging with previous data...")
                 all_data = np.vstack([all_data, chunk_data])
                 del chunk_data
                 gc.collect()
         
-        concat_time = (datetime.now() - concat_start).total_seconds()
-        print(f"  Concatenation complete: {concat_time:.2f}s")
-        print(f"  Total rows: {len(all_data):,}")
-        print(f"  Total size: {all_data.nbytes / 1024**3:.2f} GB")
-        
-        # Create DataFrame once from concatenated data
-        df_start = datetime.now()
-        print("\nCreating DataFrame from NumPy array...")
-        all_results = pd.DataFrame(
-            all_data,
-            columns=[
-                'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
-                'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
-                'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
-                'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
-                'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
-                'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
-                'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
-                'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
-                'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
-                'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
-                'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
-            ]
-        )
-        df_time = (datetime.now() - df_start).total_seconds()
-        print(f"  DataFrame created: {df_time:.2f}s")
-        
-        # Convert integer columns (faster on contiguous data)
-        dtype_start = datetime.now()
-        print("\nConverting integer columns to int32...")
-        all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
-            all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
-        dtype_time = (datetime.now() - dtype_start).total_seconds()
-        print(f"  Data type conversion: {dtype_time:.2f}s")
-        
-        # Clean up memory
-        del all_data
-    else:
-        print("Warning: No results generated!")
-        all_results = pd.DataFrame()
+        print(f"  Final size: {all_data.nbytes / 1024**3:.2f} GB")
+    
+    # Create DataFrame once from pre-allocated data
+    df_start = datetime.now()
+    print("\nCreating DataFrame from NumPy array...")
+    all_results = pd.DataFrame(
+        all_data,
+        columns=[
+            'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
+            'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
+            'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
+            'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
+            'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
+            'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
+            'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+            'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
+            'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
+            'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
+            'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
+        ]
+    )
+    df_time = (datetime.now() - df_start).total_seconds()
+    print(f"  DataFrame created: {df_time:.2f}s")
+    
+    # Convert integer columns (faster on contiguous data)
+    dtype_start = datetime.now()
+    print("\nConverting integer columns to int32...")
+    all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
+        all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
+    dtype_time = (datetime.now() - dtype_start).total_seconds()
+    print(f"  Data type conversion: {dtype_time:.2f}s")
+    
+    # Clean up memory
+    del all_data
 
     # Aggregate and save results
     print("\n" + "="*60)
