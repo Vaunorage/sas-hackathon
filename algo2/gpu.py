@@ -1238,30 +1238,41 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         d_cous_base_decheance, d_cous_tx_decheance, d_cous_base_mortalite, d_cous_tx_mortalite, d_cous_base_depot, \
         d_cous_tx_depot, d_cous_facteur_80, d_cous_facteur_90 = [cuda.to_device(table) for table in lookup_tables]
 
-    # Create CUDA stream for async operations
-    stream = cuda.stream()
+    # Create CUDA streams for async pipelined operations
+    stream_compute = cuda.stream()  # For GPU compute
+    stream_transfer = cuda.stream()  # For data transfers (if needed)
     
-    # Hybrid approach: accumulate in memory, write to disk periodically
+    # Adaptive strategy based on dataset size
     max_possible_rows = n_accounts * nb_scenarios * max_timesteps
     estimated_rows = int(max_possible_rows * 0.6)
-    
-    # Determine if we can pre-allocate or need disk-backed approach
     estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
-    memory_threshold_gb = 30  # Max memory to use for accumulation
     
-    if estimated_memory_gb <= memory_threshold_gb:
-        print(f"\nUsing pre-allocation: {estimated_rows:,} rows (~{estimated_memory_gb:.2f} GB)")
-        use_disk_backed = False
+    # Thresholds
+    incremental_threshold_accounts = 10000  # Use incremental aggregation above this
+    memory_threshold_gb = 30
+    
+    # Choose strategy
+    if n_accounts >= incremental_threshold_accounts:
+        print(f"\nUsing INCREMENTAL AGGREGATION (dataset large: {n_accounts:,} accounts)")
+        print(f"Will aggregate each batch immediately, keeping only scenario averages")
+        print(f"Expected memory: ~2-3 GB (constant) vs {estimated_memory_gb:.1f} GB for raw data")
+        print(f"Optimization: Periodic merging every 50 batches to prevent dictionary bloat")
+        use_incremental = True
+        aggregated_batches = []  # List to accumulate batch DataFrames
+        merge_frequency = 50  # Merge every N batches
+        merged_result = None  # Holds periodically merged data
+    elif estimated_memory_gb <= memory_threshold_gb:
+        print(f"\nUsing PRE-ALLOCATION (dataset small: {estimated_rows:,} rows, ~{estimated_memory_gb:.2f} GB)")
+        use_incremental = False
         all_data = np.zeros((estimated_rows, n_output_fields), dtype=np.float32)
         current_row = 0
     else:
-        print(f"\nUsing disk-backed approach (data too large: {estimated_memory_gb:.2f} GB > {memory_threshold_gb} GB)")
-        print(f"Will accumulate up to 50 batches in memory, then write to disk")
-        use_disk_backed = True
-        accumulated_arrays = []
-        temp_files = []
-        batches_since_write = 0
-        max_batches_in_memory = 50
+        print(f"\nWARNING: Dataset too large for pre-allocation but below incremental threshold")
+        print(f"Forcing incremental aggregation to avoid memory issues")
+        use_incremental = True
+        aggregated_batches = []
+        merge_frequency = 50
+        merged_result = None
     
     total_kernel_duration = 0
     total_transfer_duration = 0
@@ -1292,11 +1303,11 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             # Use pinned memory for input too
             h_batch_input_pinned = cuda.pinned_array(batch_account_data.shape, dtype=batch_account_data.dtype)
             h_batch_input_pinned[:] = batch_account_data
-            d_batch_account_data = cuda.to_device(h_batch_input_pinned, stream=stream)
+            d_batch_account_data = cuda.to_device(h_batch_input_pinned, stream=stream_compute)
         else:
-            d_batch_account_data = cuda.to_device(batch_account_data, stream=stream)
-        d_batch_output = cuda.to_device(h_batch_output, stream=stream)
-        stream.synchronize()
+            d_batch_account_data = cuda.to_device(batch_account_data, stream=stream_compute)
+        d_batch_output = cuda.to_device(h_batch_output, stream=stream_compute)
+        stream_compute.synchronize()
         transfer_end = datetime.now()
         transfer_to_gpu = (transfer_end - transfer_start).total_seconds()
         print(f"  Transfer to GPU: {transfer_to_gpu:.2f} seconds")
@@ -1311,7 +1322,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
 
         # 5. Launch kernel for the batch (using stream)
         kernel_start = datetime.now()
-        projection_kernel[blocks_per_grid, threads_per_block, stream](
+        projection_kernel[blocks_per_grid, threads_per_block, stream_compute](
             # Batch-specific data
             d_batch_account_data,
             # Scenario parameters
@@ -1329,7 +1340,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             # Batch-specific output
             d_batch_output
         )
-        stream.synchronize()
+        stream_compute.synchronize()
         kernel_end = datetime.now()
         kernel_duration = (kernel_end - kernel_start).total_seconds()
         total_kernel_duration += kernel_duration
@@ -1338,8 +1349,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         # 6. Copy results back from GPU (async with stream)
         transfer_back_start = datetime.now()
         print("  Copying batch results from GPU...")
-        d_batch_output.copy_to_host(h_batch_output, stream=stream)
-        stream.synchronize()
+        d_batch_output.copy_to_host(h_batch_output, stream=stream_compute)
+        stream_compute.synchronize()
         transfer_back_end = datetime.now()
         transfer_from_gpu = (transfer_back_end - transfer_back_start).total_seconds()
         total_transfer_duration += transfer_to_gpu + transfer_from_gpu
@@ -1371,7 +1382,70 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             extract_time = (datetime.now() - extract_start).total_seconds()
             print(f"    Extract valid data: {extract_time:.3f}s ({valid_data.nbytes / 1024**2:.1f} MB)")
             
-            if not use_disk_backed:
+            if use_incremental:
+                # Incremental aggregation: aggregate this batch immediately
+                agg_start = datetime.now()
+                
+                # Convert to DataFrame for groupby
+                batch_df = pd.DataFrame(
+                    valid_data,
+                    columns=[
+                        'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
+                        'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
+                        'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
+                        'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
+                        'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
+                        'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
+                        'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+                        'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
+                        'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
+                        'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
+                        'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
+                    ]
+                )
+                
+                # Convert ID columns to int
+                batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
+                    batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
+                
+                # Group by account, scenario, time and average (same as final aggregation)
+                group_cols = ['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']
+                value_cols = [col for col in batch_df.columns if col not in group_cols]
+                batch_agg = batch_df.groupby(group_cols, as_index=False)[value_cols].mean()
+                
+                # Store in list (will merge periodically)
+                aggregated_batches.append(batch_agg)
+                
+                agg_time = (datetime.now() - agg_start).total_seconds()
+                print(f"    Aggregated to {len(batch_agg):,} rows: {agg_time:.3f}s")
+                
+                # Periodic merge to prevent dictionary/list bloat
+                if len(aggregated_batches) >= merge_frequency:
+                    merge_start = datetime.now()
+                    print(f"    [PERIODIC MERGE] Merging {len(aggregated_batches)} batches...")
+                    
+                    # Concatenate accumulated batches
+                    temp_merged = pd.concat(aggregated_batches, ignore_index=True)
+                    
+                    # If we have previous merged data, combine with it
+                    if merged_result is not None:
+                        temp_merged = pd.concat([merged_result, temp_merged], ignore_index=True)
+                    
+                    # Group by to consolidate (handles overlapping keys)
+                    merged_result = temp_merged.groupby(group_cols, as_index=False)[value_cols].mean()
+                    
+                    # Clear accumulated batches
+                    aggregated_batches.clear()
+                    del temp_merged
+                    gc.collect()
+                    
+                    merge_time = (datetime.now() - merge_start).total_seconds()
+                    print(f"    [PERIODIC MERGE] Completed in {merge_time:.2f}s, now {len(merged_result):,} rows")
+                
+                # Free raw data immediately
+                del valid_data
+                del batch_df
+            else:
                 # Pre-allocation approach
                 fill_start = datetime.now()
                 if current_row + n_valid > len(all_data):
@@ -1386,30 +1460,6 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 current_row += n_valid
                 fill_time = (datetime.now() - fill_start).total_seconds()
                 print(f"    Filled array: {fill_time:.3f}s (total rows: {current_row:,})")
-            else:
-                # Disk-backed approach
-                store_start = datetime.now()
-                accumulated_arrays.append(valid_data)
-                batches_since_write += 1
-                
-                # Write to disk when we hit memory limit
-                if batches_since_write >= max_batches_in_memory:
-                    print(f"    Writing {batches_since_write} batches to disk...")
-                    import tempfile
-                    chunk_data = np.vstack(accumulated_arrays)
-                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.npy')
-                    np.save(temp_file, chunk_data)
-                    temp_file.close()
-                    temp_files.append(temp_file.name)
-                    del accumulated_arrays[:]
-                    del chunk_data
-                    batches_since_write = 0
-                    gc.collect()
-                    store_time = (datetime.now() - store_start).total_seconds()
-                    print(f"    Wrote to disk: {store_time:.2f}s")
-                else:
-                    store_time = (datetime.now() - store_start).total_seconds()
-                    print(f"    Accumulated in memory ({batches_since_write}/{max_batches_in_memory}): {store_time:.3f}s")
         
         cpu_proc_end = datetime.now()
         cpu_proc_time = (cpu_proc_end - cpu_proc_start).total_seconds()
@@ -1441,8 +1491,42 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print("FINAL DATA ASSEMBLY")
     print("="*60)
     
-    if not use_disk_backed:
-        # Pre-allocation: just trim
+    if use_incremental:
+        # Final merge of any remaining batches
+        print(f"\nFinal merge: {len(aggregated_batches)} remaining batches")
+        merge_start = datetime.now()
+        
+        if len(aggregated_batches) > 0:
+            # Concatenate remaining batches
+            temp_merged = pd.concat(aggregated_batches, ignore_index=True)
+            
+            # Combine with periodically merged data if it exists
+            if merged_result is not None:
+                print(f"  Combining with {len(merged_result):,} previously merged rows...")
+                temp_merged = pd.concat([merged_result, temp_merged], ignore_index=True)
+            
+            # Final groupby to consolidate
+            group_cols = ['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']
+            value_cols = [col for col in temp_merged.columns if col not in group_cols]
+            calculs_sommaire = temp_merged.groupby(group_cols, as_index=False)[value_cols].mean()
+            
+            del aggregated_batches
+            del temp_merged
+            del merged_result
+            gc.collect()
+        else:
+            # No remaining batches, just use the merged result
+            calculs_sommaire = merged_result
+            del merged_result
+        
+        merge_time = (datetime.now() - merge_start).total_seconds()
+        print(f"  Final merged to {len(calculs_sommaire):,} rows: {merge_time:.2f}s")
+        print(f"  Size: {calculs_sommaire.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
+        
+        # Note: calculs_sommaire is already scenario-averaged, skip that aggregation step
+        all_results = calculs_sommaire
+    else:
+        # Pre-allocation: trim and create DataFrame
         print(f"\nTrimming pre-allocated array...")
         print(f"  Allocated: {len(all_data):,} rows")
         print(f"  Used: {current_row:,} rows")
@@ -1450,82 +1534,39 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"  Wasted: {(len(all_data) - current_row) / len(all_data) * 100:.1f}%")
         all_data = all_data[:current_row]
         print(f"  Final size: {all_data.nbytes / 1024**3:.2f} GB")
-    else:
-        # Disk-backed: write remaining + load all
-        import os
-        import tempfile
         
-        # Write any remaining accumulated data
-        if len(accumulated_arrays) > 0:
-            print(f"\nWriting final {len(accumulated_arrays)} batches to disk...")
-            chunk_data = np.vstack(accumulated_arrays)
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.npy')
-            np.save(temp_file, chunk_data)
-            temp_file.close()
-            temp_files.append(temp_file.name)
-            del accumulated_arrays
-            del chunk_data
-            gc.collect()
+        # Create DataFrame
+        df_start = datetime.now()
+        print("\nCreating DataFrame from NumPy array...")
+        all_results = pd.DataFrame(
+            all_data,
+            columns=[
+                'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
+                'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
+                'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
+                'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
+                'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
+                'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
+                'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+                'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
+                'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
+                'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
+                'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
+            ]
+        )
+        df_time = (datetime.now() - df_start).total_seconds()
+        print(f"  DataFrame created: {df_time:.2f}s")
         
-        # Load and concatenate in chunks
-        print(f"\nLoading {len(temp_files)} files from disk...")
-        chunk_size = 2  # Load 2 files at a time
-        all_data = None
+        # Convert integer columns
+        dtype_start = datetime.now()
+        print("\nConverting integer columns to int32...")
+        all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
+            all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
+        dtype_time = (datetime.now() - dtype_start).total_seconds()
+        print(f"  Data type conversion: {dtype_time:.2f}s")
         
-        for chunk_idx in range(0, len(temp_files), chunk_size):
-            chunk_end = min(chunk_idx + chunk_size, len(temp_files))
-            print(f"  Loading files {chunk_idx+1}-{chunk_end}...")
-            
-            chunk_arrays = []
-            for idx in range(chunk_idx, chunk_end):
-                chunk_arrays.append(np.load(temp_files[idx]))
-                os.unlink(temp_files[idx])
-            
-            chunk_data = np.vstack(chunk_arrays)
-            del chunk_arrays
-            gc.collect()
-            
-            if all_data is None:
-                all_data = chunk_data
-            else:
-                all_data = np.vstack([all_data, chunk_data])
-                del chunk_data
-                gc.collect()
-        
-        print(f"  Final size: {all_data.nbytes / 1024**3:.2f} GB")
-    
-    # Create DataFrame once from pre-allocated data
-    df_start = datetime.now()
-    print("\nCreating DataFrame from NumPy array...")
-    all_results = pd.DataFrame(
-        all_data,
-        columns=[
-            'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
-            'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
-            'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
-            'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
-            'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
-            'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
-            'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
-            'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
-            'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
-            'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
-            'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
-        ]
-    )
-    df_time = (datetime.now() - df_start).total_seconds()
-    print(f"  DataFrame created: {df_time:.2f}s")
-    
-    # Convert integer columns (faster on contiguous data)
-    dtype_start = datetime.now()
-    print("\nConverting integer columns to int32...")
-    all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
-        all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
-    dtype_time = (datetime.now() - dtype_start).total_seconds()
-    print(f"  Data type conversion: {dtype_time:.2f}s")
-    
-    # Clean up memory
-    del all_data
+        # Clean up memory
+        del all_data
 
     # Aggregate and save results
     print("\n" + "="*60)
@@ -1536,8 +1577,15 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                            aggregate_vp_flux_compte, aggregate_vp_flux_total)
 
     agg_start = datetime.now()
-    print("Averaging across scenarios...")
-    calculs_sommaire = aggregate_by_scenario(all_results)
+    
+    if use_incremental:
+        # Already averaged across scenarios during batch processing
+        print("Skipping scenario averaging (already done incrementally)")
+        calculs_sommaire = all_results
+    else:
+        # Need to average across scenarios
+        print("Averaging across scenarios...")
+        calculs_sommaire = aggregate_by_scenario(all_results)
     print(f"  → {len(calculs_sommaire):,} rows")
     
     print("Creating VP_FLUX_COMPTE...")
