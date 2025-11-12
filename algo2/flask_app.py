@@ -35,6 +35,7 @@ app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max upload
 app.config['UPLOAD_FOLDER'] = Path(__file__).parent / 'uploads'
 app.config['RESULTS_FOLDER'] = Path(__file__).parent / 'results'
 app.config['DATABASE'] = Path(__file__).parent / 'jobs.db'
+app.config['DEFAULT_DATA_FOLDER'] = Path(__file__).parent / 'data_in'
 
 # Create directories if they don't exist
 app.config['UPLOAD_FOLDER'].mkdir(exist_ok=True)
@@ -236,21 +237,27 @@ def process_job(job_id: str):
         debug_account = params.get('debug_account', None)
         
         # Set up paths
-        data_path = get_job_upload_folder(job_id)
+        # Use default data folder if specified, otherwise use job upload folder
+        if params.get('use_default_files', False):
+            data_path = app.config['DEFAULT_DATA_FOLDER']
+        else:
+            data_path = get_job_upload_folder(job_id)
         output_path = get_job_results_folder(job_id)
         
-        # Get custom file paths (if provided)
+        # Get custom file paths (if provided), fall back to default files for unspecified ones
+        default_data_path = app.config['DEFAULT_DATA_FOLDER']
+        
         custom_paths = {
-            'population_path': Path(params['population_path']) if params.get('population_path') else None,
-            'mortalite_path': Path(params['mortalite_path']) if params.get('mortalite_path') else None,
-            'rendements_path': Path(params['rendements_path']) if params.get('rendements_path') else None,
-            'depots_futurs_path': Path(params['depots_futurs_path']) if params.get('depots_futurs_path') else None,
-            'frais_admin_path': Path(params['frais_admin_path']) if params.get('frais_admin_path') else None,
-            'min_ferr_path': Path(params['min_ferr_path']) if params.get('min_ferr_path') else None,
-            'tx_lapse_part_path': Path(params['tx_lapse_part_path']) if params.get('tx_lapse_part_path') else None,
-            'tx_lapse_tot_path': Path(params['tx_lapse_tot_path']) if params.get('tx_lapse_tot_path') else None,
-            'acquisition_path': Path(params['acquisition_path']) if params.get('acquisition_path') else None,
-            'coussins_escap_path': Path(params['coussins_escap_path']) if params.get('coussins_escap_path') else None
+            'population_path': Path(params['population_path']) if params.get('population_path') else (default_data_path / 'POPULATION.csv' if params.get('use_custom_paths') else None),
+            'mortalite_path': Path(params['mortalite_path']) if params.get('mortalite_path') else (default_data_path / 'MORTALITE.csv' if params.get('use_custom_paths') else None),
+            'rendements_path': Path(params['rendements_path']) if params.get('rendements_path') else (default_data_path / 'RENDEMENTS.csv' if params.get('use_custom_paths') else None),
+            'depots_futurs_path': Path(params['depots_futurs_path']) if params.get('depots_futurs_path') else (default_data_path / 'DEPOTS_FUTURS.csv' if params.get('use_custom_paths') else None),
+            'frais_admin_path': Path(params['frais_admin_path']) if params.get('frais_admin_path') else (default_data_path / 'FRAIS_ADMIN.csv' if params.get('use_custom_paths') else None),
+            'min_ferr_path': Path(params['min_ferr_path']) if params.get('min_ferr_path') else (default_data_path / 'MIN_FERR.csv' if params.get('use_custom_paths') else None),
+            'tx_lapse_part_path': Path(params['tx_lapse_part_path']) if params.get('tx_lapse_part_path') else (default_data_path / 'TX_LAPSE_PART.csv' if params.get('use_custom_paths') else None),
+            'tx_lapse_tot_path': Path(params['tx_lapse_tot_path']) if params.get('tx_lapse_tot_path') else (default_data_path / 'TX_LAPSE_TOT.csv' if params.get('use_custom_paths') else None),
+            'acquisition_path': Path(params['acquisition_path']) if params.get('acquisition_path') else (default_data_path / 'ACQUISITION.csv' if params.get('use_custom_paths') else None),
+            'coussins_escap_path': Path(params['coussins_escap_path']) if params.get('coussins_escap_path') else (default_data_path / 'COUSSINS_ESCAP.csv' if params.get('use_custom_paths') else None)
         }
         
         # Run GPU projection
@@ -305,14 +312,16 @@ def welcome():
             'download_file': '/jobs/<job_id>/files/<file_name>'
         },
         'job_parameters': {
-            'required': ['files (multipart/form-data)'],
+            'required': ['files (multipart/form-data) OR use_default_files OR custom paths'],
             'optional': {
                 'nb_an_projection': 'Number of years to project (default: 100)',
                 'nb_scenarios': 'Number of scenarios (default: 100)',
                 'max_accounts': 'Maximum number of accounts to process',
-                'debug_account': 'Account ID for debugging'
+                'debug_account': 'Account ID for debugging',
+                'use_default_files': 'Use files from data_in folder (true/false)'
             },
             'custom_file_paths': {
+                'use_custom_paths': 'Enable custom paths mode (true/false) - unspecified paths use defaults',
                 'population_path': 'Custom path for POPULATION.csv',
                 'mortalite_path': 'Custom path for MORTALITE.csv',
                 'rendements_path': 'Custom path for RENDEMENTS.csv',
@@ -370,8 +379,9 @@ def create_job_endpoint():
     - nb_scenarios: Number of scenarios (default: 100)
     - max_accounts: Maximum number of accounts to process (optional)
     - debug_account: Account ID for debugging (optional)
+    - use_default_files: Use files from data_in folder instead of uploads (optional, true/false)
     
-    Optional custom file paths:
+    Optional custom file paths (when use_custom_paths=true):
     - population_path: Custom path for POPULATION.csv
     - mortalite_path: Custom path for MORTALITE.csv
     - rendements_path: Custom path for RENDEMENTS.csv
@@ -382,6 +392,9 @@ def create_job_endpoint():
     - tx_lapse_tot_path: Custom path for TX_LAPSE_TOT.csv
     - acquisition_path: Custom path for ACQUISITION.csv
     - coussins_escap_path: Custom path for COUSSINS_ESCAP.csv
+    
+    Note: When use_custom_paths is enabled, any unspecified paths will automatically
+    fall back to using the default files from the data_in folder.
     """
     try:
         # Generate job ID
@@ -393,6 +406,8 @@ def create_job_endpoint():
             'nb_scenarios': int(request.form.get('nb_scenarios', 100)),
             'max_accounts': int(request.form.get('max_accounts')) if request.form.get('max_accounts') else None,
             'debug_account': int(request.form.get('debug_account')) if request.form.get('debug_account') else None,
+            'use_default_files': request.form.get('use_default_files') == 'true',
+            'use_custom_paths': request.form.get('use_custom_paths') == 'true',
             # Custom file paths (optional)
             'population_path': request.form.get('population_path'),
             'mortalite_path': request.form.get('mortalite_path'),
@@ -419,24 +434,17 @@ def create_job_endpoint():
                     file.save(filepath)
                     uploaded_files.append(filename)
         
-        # Check if we have either uploaded files or custom paths
-        has_custom_paths = any([
-            parameters.get('population_path'),
-            parameters.get('mortalite_path'),
-            parameters.get('rendements_path'),
-            parameters.get('depots_futurs_path'),
-            parameters.get('frais_admin_path'),
-            parameters.get('min_ferr_path'),
-            parameters.get('tx_lapse_part_path'),
-            parameters.get('tx_lapse_tot_path'),
-            parameters.get('acquisition_path'),
-            parameters.get('coussins_escap_path')
-        ])
+        # Check if we have either uploaded files, custom paths mode, or use default files
+        use_custom_paths = parameters.get('use_custom_paths', False)
+        use_default_files = parameters.get('use_default_files', False)
         
-        if not uploaded_files and not has_custom_paths:
+        # If using custom paths mode, that's valid (even without specifying paths, defaults will be used)
+        # If using default files, that's valid
+        # Otherwise, uploaded files are required
+        if not uploaded_files and not use_custom_paths and not use_default_files:
             return jsonify({
-                'error': 'No valid CSV files uploaded or custom paths provided',
-                'message': 'Please upload at least one CSV file or provide custom file paths'
+                'error': 'No valid CSV files uploaded, custom paths mode, or default files selected',
+                'message': 'Please upload files, enable custom paths mode, or select "Use default files"'
             }), 400
         
         # Create job in database
