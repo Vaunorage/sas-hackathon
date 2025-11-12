@@ -137,6 +137,25 @@
             cursor: not-allowed;
         }
 
+        .cancel-btn {
+            background-color: #e74c3c;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 10px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .cancel-btn:hover {
+            background-color: #c0392b;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
         .jobs-list {
             max-height: 500px;
             overflow-y: auto;
@@ -198,6 +217,11 @@
         .job-status.failed {
             background: #f8d7da;
             color: #842029;
+        }
+
+        .job-status.cancelled {
+            background: #e2e3e5;
+            color: #41464b;
         }
 
         .job-details {
@@ -498,9 +522,16 @@
                     fileSourceHTML = '<p style="font-size: 13px; color: #666; font-style: italic;">All files use defaults from data_in folder</p>';
                 }
                 
+                // Add cancel button for running/pending jobs
+                let cancelButton = '';
+                if (job.status === 'pending' || job.status === 'running') {
+                    cancelButton = `<button class="cancel-btn" onclick="cancelJob('${job.job_id}')">❌ Cancel Job</button>`;
+                }
+                
                 detailsContent.innerHTML = `
                     <p><strong>Job ID:</strong> ${job.job_id}</p>
                     <p><strong>Status:</strong> <span class="job-status ${job.status}">${job.status}</span></p>
+                    ${cancelButton}
                     <p><strong>Created:</strong> ${new Date(job.created_at).toLocaleString()}</p>
                     <p><strong>Started:</strong> ${job.started_at ? new Date(job.started_at).toLocaleString() : 'N/A'}</p>
                     <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'N/A'}</p>
@@ -519,6 +550,33 @@
                 }
             } catch (error) {
                 alert('Failed to load job details');
+            }
+        }
+
+        // Cancel a job
+        async function cancelJob(jobId) {
+            if (!confirm(`Are you sure you want to cancel job ${jobId}?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert(`Job ${jobId} cancelled successfully`);
+                    // Refresh job details
+                    await selectJob(jobId);
+                    // Refresh job list
+                    await loadJobs();
+                } else {
+                    alert(`Failed to cancel job: ${data.message || data.error}`);
+                }
+            } catch (error) {
+                alert(`Error cancelling job: ${error.message}`);
             }
         }
 

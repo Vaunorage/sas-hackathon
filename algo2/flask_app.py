@@ -81,6 +81,10 @@ init_db()
 # Track if database is ready
 db_initialized = True
 
+# Track running jobs and their threads
+job_threads = {}
+job_cancellation_flags = {}
+
 # =============================================================================
 # DATABASE HELPERS
 # =============================================================================
@@ -221,6 +225,11 @@ def process_job(job_id: str):
     This runs the GPU projection with the uploaded data
     """
     try:
+        # Check if job was cancelled before starting
+        if job_cancellation_flags.get(job_id, False):
+            update_job_status(job_id, 'cancelled')
+            return
+        
         # Update status to running
         update_job_status(job_id, 'running')
         
@@ -228,6 +237,11 @@ def process_job(job_id: str):
         job = get_job(job_id)
         if not job:
             raise Exception(f"Job {job_id} not found")
+        
+        # Check again after getting job details
+        if job_cancellation_flags.get(job_id, False):
+            update_job_status(job_id, 'cancelled')
+            return
         
         # Get parameters
         params = job['parameters']
@@ -288,6 +302,12 @@ def process_job(job_id: str):
         error_msg = f"{str(e)}\n{traceback.format_exc()}"
         print(f"Job {job_id} failed: {error_msg}")
         update_job_status(job_id, 'failed', error_message=error_msg)
+    finally:
+        # Clean up thread tracking
+        if job_id in job_threads:
+            del job_threads[job_id]
+        if job_id in job_cancellation_flags:
+            del job_cancellation_flags[job_id]
 
 # =============================================================================
 # API ROUTES - HEALTH & STATUS
@@ -307,6 +327,7 @@ def welcome():
             'jobs': '/jobs',
             'create_job': 'POST /jobs',
             'get_job': '/jobs/<job_id>',
+            'cancel_job': 'DELETE /jobs/<job_id>',
             'get_results': '/jobs/<job_id>/results',
             'get_files': '/jobs/<job_id>/files',
             'download_file': '/jobs/<job_id>/files/<file_name>'
@@ -447,10 +468,16 @@ def create_job_endpoint():
         # Create job in database
         create_job(job_id, parameters, uploaded_files)
         
+        # Initialize cancellation flag
+        job_cancellation_flags[job_id] = False
+        
         # Start processing in background thread
         thread = threading.Thread(target=process_job, args=(job_id,))
         thread.daemon = True
         thread.start()
+        
+        # Track the thread
+        job_threads[job_id] = thread
         
         return jsonify({
             'job_id': job_id,
@@ -497,6 +524,43 @@ def get_job_details(job_id: str):
     except Exception as e:
         return jsonify({
             'error': 'Failed to get job details',
+            'message': str(e)
+        }), 500
+
+@app.route('/jobs/<job_id>', methods=['DELETE'])
+def cancel_job(job_id: str):
+    """Cancel a running or pending job"""
+    try:
+        job = get_job(job_id)
+        if not job:
+            return jsonify({
+                'error': 'Job not found',
+                'job_id': job_id
+            }), 404
+        
+        # Check if job can be cancelled
+        if job['status'] in ['completed', 'failed', 'cancelled']:
+            return jsonify({
+                'error': 'Job cannot be cancelled',
+                'status': job['status'],
+                'message': f'Job is already {job["status"]}'
+            }), 400
+        
+        # Set cancellation flag
+        job_cancellation_flags[job_id] = True
+        
+        # Update status to cancelled
+        update_job_status(job_id, 'cancelled')
+        
+        return jsonify({
+            'job_id': job_id,
+            'status': 'cancelled',
+            'message': 'Job cancellation requested'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to cancel job',
             'message': str(e)
         }), 500
 
