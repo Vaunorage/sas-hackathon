@@ -301,32 +301,8 @@
         <div class="card">
             <h2>📤 Create New Job</h2>
             <form id="job-form">
-                <div class="form-group">
-                    <label for="files">Upload CSV Files (optional):</label>
-                    <input type="file" id="files" name="files" accept=".csv" multiple>
-                    <small style="color: #666; display: block; margin-top: 5px;">
-                        Required files: POPULATION.csv, MORTALITE.csv, RENDEMENTS.csv, DEPOTS_FUTURS.csv, 
-                        FRAIS_ADMIN.csv, MIN_FERR.csv, TX_LAPSE_PART.csv, TX_LAPSE_TOT.csv, 
-                        ACQUISITION.csv, COUSSINS_ESCAP.csv
-                    </small>
-                </div>
-
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="use-default-files" onchange="toggleFileOptions()">
-                        Use default files from data_in folder
-                    </label>
-                </div>
-
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="use-custom-paths" onchange="toggleFileOptions()">
-                        Use custom file paths (unspecified files use defaults)
-                    </label>
-                </div>
-
-                <div id="custom-paths-section" style="display: none; border: 2px solid #e0e0e0; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                    <h3 style="margin-bottom: 10px; font-size: 16px; color: #555;">Custom File Paths</h3>
+                <div id="custom-paths-section" style="border: 2px solid #e0e0e0; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                    <h3 style="margin-bottom: 10px; font-size: 16px; color: #555;">File Paths (Optional)</h3>
                     <p style="margin-bottom: 15px; font-size: 13px; color: #666; font-style: italic;">
                         Specify custom paths for files you want to override. Unspecified files will use defaults from data_in folder.
                     </p>
@@ -438,38 +414,6 @@
         const API_BASE = 'http://localhost:8000';
         let selectedJobId = null;
 
-        // Toggle file options (default files, custom paths, or upload)
-        function toggleFileOptions() {
-            const useDefaultFiles = document.getElementById('use-default-files');
-            const useCustomPaths = document.getElementById('use-custom-paths');
-            const customPathsSection = document.getElementById('custom-paths-section');
-            const filesInput = document.getElementById('files');
-            
-            // Ensure only one option is checked at a time
-            if (useDefaultFiles.checked && useCustomPaths.checked) {
-                if (event.target.id === 'use-default-files') {
-                    useCustomPaths.checked = false;
-                } else {
-                    useDefaultFiles.checked = false;
-                }
-            }
-            
-            // Handle display logic
-            if (useCustomPaths.checked) {
-                customPathsSection.style.display = 'block';
-                filesInput.disabled = true;
-            } else {
-                customPathsSection.style.display = 'none';
-                filesInput.disabled = false;
-            }
-            
-            if (useDefaultFiles.checked) {
-                filesInput.disabled = true;
-            } else if (!useCustomPaths.checked) {
-                filesInput.disabled = false;
-            }
-        }
-
         // Check API health on load
         async function checkHealth() {
             try {
@@ -508,7 +452,7 @@
                         </div>
                         <div class="job-details">
                             Created: ${new Date(job.created_at).toLocaleString()}<br>
-                            Files: ${job.uploaded_files.length} uploaded, ${job.result_files.length} results
+                            Results: ${job.result_files.length} files generated
                         </div>
                     </div>
                 `).join('');
@@ -531,37 +475,26 @@
                 
                 const detailsContent = document.getElementById('job-details-content');
                 
-                // Check if default files were used
-                const useDefaultFiles = job.parameters && job.parameters.use_default_files;
-                const useCustomPaths = job.parameters && job.parameters.use_custom_paths;
-                
                 // Check if custom paths were specified
                 const customPathsUsed = job.parameters && Object.keys(job.parameters).some(key => 
                     key.endsWith('_path') && job.parameters[key]
                 );
                 
                 let fileSourceHTML = '';
-                if (useDefaultFiles) {
-                    fileSourceHTML = '<p><strong>Data Source:</strong> <span style="color: #667eea;">Default files from data_in folder</span></p>';
-                } else if (useCustomPaths) {
-                    fileSourceHTML = '<p><strong>Data Source:</strong> Custom paths with defaults</p>';
-                    if (customPathsUsed) {
-                        fileSourceHTML += '<p style="font-size: 13px; color: #666; margin-top: 5px;"><strong>Custom paths specified:</strong></p><ul style="font-size: 13px; color: #666;">';
-                        const pathKeys = ['population_path', 'mortalite_path', 'rendements_path', 'depots_futurs_path',
-                                          'frais_admin_path', 'min_ferr_path', 'tx_lapse_part_path', 'tx_lapse_tot_path',
-                                          'acquisition_path', 'coussins_escap_path'];
-                        pathKeys.forEach(key => {
-                            if (job.parameters[key]) {
-                                fileSourceHTML += `<li><strong>${key.replace('_path', '')}:</strong> ${job.parameters[key]}</li>`;
-                            }
-                        });
-                        fileSourceHTML += '</ul>';
-                        fileSourceHTML += '<p style="font-size: 13px; color: #666; font-style: italic; margin-top: 5px;">Other files use defaults from data_in folder</p>';
-                    } else {
-                        fileSourceHTML += '<p style="font-size: 13px; color: #666; font-style: italic; margin-top: 5px;">All files use defaults from data_in folder</p>';
-                    }
+                if (customPathsUsed) {
+                    fileSourceHTML = '<p><strong>Custom paths specified:</strong></p><ul style="font-size: 13px; color: #666;">';
+                    const pathKeys = ['population_path', 'mortalite_path', 'rendements_path', 'depots_futurs_path',
+                                      'frais_admin_path', 'min_ferr_path', 'tx_lapse_part_path', 'tx_lapse_tot_path',
+                                      'acquisition_path', 'coussins_escap_path'];
+                    pathKeys.forEach(key => {
+                        if (job.parameters[key]) {
+                            fileSourceHTML += `<li><strong>${key.replace('_path', '')}:</strong> ${job.parameters[key]}</li>`;
+                        }
+                    });
+                    fileSourceHTML += '</ul>';
+                    fileSourceHTML += '<p style="font-size: 13px; color: #666; font-style: italic; margin-top: 5px;">Unspecified files use defaults from data_in folder</p>';
                 } else {
-                    fileSourceHTML = '<p><strong>Data Source:</strong> Uploaded files</p>';
+                    fileSourceHTML = '<p style="font-size: 13px; color: #666; font-style: italic;">All files use defaults from data_in folder</p>';
                 }
                 
                 detailsContent.innerHTML = `
@@ -684,47 +617,25 @@
             
             try {
                 const formData = new FormData();
-                const useCustomPaths = document.getElementById('use-custom-paths').checked;
-                const useDefaultFiles = document.getElementById('use-default-files').checked;
                 
-                // Add files (if not using custom paths or default files)
-                const files = document.getElementById('files').files;
-                if (!useCustomPaths && !useDefaultFiles) {
-                    if (files.length === 0) {
-                        messageDiv.innerHTML = '<div class="error">Please upload files, use default files, or specify custom paths</div>';
-                        submitBtn.disabled = false;
-                        submitBtn.textContent = 'Create Job';
-                        return;
+                // Always use custom paths mode
+                // Add custom paths (any unspecified paths will use defaults from data_in)
+                const customPathIds = [
+                    'population_path', 'mortalite_path', 'rendements_path', 
+                    'depots_futurs_path', 'frais_admin_path', 'min_ferr_path',
+                    'tx_lapse_part_path', 'tx_lapse_tot_path', 'acquisition_path', 
+                    'coussins_escap_path'
+                ];
+                
+                customPathIds.forEach(pathId => {
+                    const value = document.getElementById(pathId).value;
+                    if (value) {
+                        formData.append(pathId, value);
                     }
-                    for (let file of files) {
-                        formData.append('files', file);
-                    }
-                } else if (useCustomPaths) {
-                    // Add custom paths (any unspecified paths will use defaults from data_in)
-                    const customPathIds = [
-                        'population_path', 'mortalite_path', 'rendements_path', 
-                        'depots_futurs_path', 'frais_admin_path', 'min_ferr_path',
-                        'tx_lapse_part_path', 'tx_lapse_tot_path', 'acquisition_path', 
-                        'coussins_escap_path'
-                    ];
-                    
-                    customPathIds.forEach(pathId => {
-                        const value = document.getElementById(pathId).value;
-                        if (value) {
-                            formData.append(pathId, value);
-                        }
-                    });
-                }
+                });
                 
-                // Add use_default_files parameter
-                if (useDefaultFiles) {
-                    formData.append('use_default_files', 'true');
-                }
-                
-                // Add use_custom_paths parameter
-                if (useCustomPaths) {
-                    formData.append('use_custom_paths', 'true');
-                }
+                // Always enable custom paths mode
+                formData.append('use_custom_paths', 'true');
                 
                 // Add parameters
                 const nbAnProjection = document.getElementById('nb_an_projection').value;

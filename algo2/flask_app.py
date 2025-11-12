@@ -312,16 +312,15 @@ def welcome():
             'download_file': '/jobs/<job_id>/files/<file_name>'
         },
         'job_parameters': {
-            'required': ['files (multipart/form-data) OR use_default_files OR custom paths'],
+            'required': ['use_custom_paths=true (default mode)'],
             'optional': {
                 'nb_an_projection': 'Number of years to project (default: 100)',
                 'nb_scenarios': 'Number of scenarios (default: 100)',
                 'max_accounts': 'Maximum number of accounts to process',
-                'debug_account': 'Account ID for debugging',
-                'use_default_files': 'Use files from data_in folder (true/false)'
+                'debug_account': 'Account ID for debugging'
             },
-            'custom_file_paths': {
-                'use_custom_paths': 'Enable custom paths mode (true/false) - unspecified paths use defaults',
+            'file_paths': {
+                'note': 'Specify custom paths for files to override. Unspecified paths use defaults from data_in folder',
                 'population_path': 'Custom path for POPULATION.csv',
                 'mortalite_path': 'Custom path for MORTALITE.csv',
                 'rendements_path': 'Custom path for RENDEMENTS.csv',
@@ -372,16 +371,15 @@ def ready():
 def create_job_endpoint():
     """
     Create and start a new job
-    Accepts file uploads and form parameters
     
     Form parameters:
     - nb_an_projection: Number of years to project (default: 100)
     - nb_scenarios: Number of scenarios (default: 100)
     - max_accounts: Maximum number of accounts to process (optional)
     - debug_account: Account ID for debugging (optional)
-    - use_default_files: Use files from data_in folder instead of uploads (optional, true/false)
+    - use_custom_paths: Must be 'true' (default mode)
     
-    Optional custom file paths (when use_custom_paths=true):
+    Optional file paths (specify to override defaults):
     - population_path: Custom path for POPULATION.csv
     - mortalite_path: Custom path for MORTALITE.csv
     - rendements_path: Custom path for RENDEMENTS.csv
@@ -393,8 +391,7 @@ def create_job_endpoint():
     - acquisition_path: Custom path for ACQUISITION.csv
     - coussins_escap_path: Custom path for COUSSINS_ESCAP.csv
     
-    Note: When use_custom_paths is enabled, any unspecified paths will automatically
-    fall back to using the default files from the data_in folder.
+    Note: Any unspecified paths will automatically use default files from data_in folder.
     """
     try:
         # Generate job ID
