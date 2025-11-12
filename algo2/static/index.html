@@ -137,6 +137,20 @@
             cursor: not-allowed;
         }
 
+        .admin-btn {
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+            color: white;
+            font-size: 16px;
+            padding: 15px 40px;
+            box-shadow: 0 4px 8px rgba(231, 76, 60, 0.3);
+        }
+
+        .admin-btn:hover {
+            background: linear-gradient(135deg, #c0392b 0%, #a93226 100%);
+            box-shadow: 0 6px 12px rgba(231, 76, 60, 0.4);
+            transform: translateY(-2px);
+        }
+
         .cancel-btn {
             background-color: #e74c3c;
             color: white;
@@ -246,40 +260,7 @@
             background-color: #f5f5f5;
         }
 
-        /* Job Tabs */
-        .job-tabs-container {
-            display: flex;
-            gap: 5px;
-            flex-wrap: wrap;
-            border-bottom: 2px solid #e0e0e0;
-            margin-bottom: 20px;
-        }
-
-        .job-tab {
-            padding: 12px 20px;
-            border: none;
-            background: #f0f0f0;
-            color: #666;
-            cursor: pointer;
-            border-radius: 5px 5px 0 0;
-            font-size: 14px;
-            transition: all 0.3s;
-        }
-
-        .job-tab:hover {
-            background: #e0e0e0;
-        }
-
-        .job-tab.active {
-            background: #667eea;
-            color: white;
-            font-weight: 500;
-        }
-
-        .job-tab-content {
-            min-height: 300px;
-        }
-
+        /* File Preview Button */
         .file-preview-btn {
             background: #667eea;
             color: white;
@@ -297,27 +278,46 @@
         }
 
         .jobs-list {
-            max-height: 500px;
+            max-height: 800px;
             overflow-y: auto;
         }
 
         .job-item {
-            padding: 15px;
             border: 2px solid #e0e0e0;
             border-radius: 5px;
             margin-bottom: 10px;
-            cursor: pointer;
             transition: all 0.3s;
+            overflow: hidden;
         }
 
-        .job-item:hover {
-            border-color: #667eea;
-            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.2);
+        .job-item-header {
+            padding: 15px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .job-item-header:hover {
+            background: #f8f9ff;
         }
 
         .job-item.selected {
             border-color: #667eea;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.2);
+        }
+
+        .job-item.selected .job-item-header {
             background: #f0f4ff;
+        }
+
+        .job-item-details {
+            display: none;
+            padding: 15px;
+            border-top: 1px solid #e0e0e0;
+            background: white;
+        }
+
+        .job-item.selected .job-item-details {
+            display: block;
         }
 
         .job-header {
@@ -551,33 +551,42 @@
             </div>
         </div>
 
-        <div class="card" style="border: 2px solid #e74c3c;">
-            <h2>⚠️ Admin Actions</h2>
-            <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin-bottom: 15px;">
-                <strong>⚠️ Warning:</strong> These actions are irreversible!
-            </div>
-            <form id="clear-db-form" style="max-width: 400px;">
-                <div class="form-group">
-                    <label for="admin-password">Admin Password:</label>
-                    <input type="password" id="admin-password" name="admin-password" placeholder="Enter admin password" required>
-                </div>
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="delete-files">
-                        Also delete all uploaded files and results
-                    </label>
-                </div>
-                <button type="submit" class="btn" style="background-color: #e74c3c; color: white;">
-                    🗑️ Clear Database
-                </button>
-            </form>
-            <div id="clear-db-message" style="margin-top: 15px;"></div>
+        <div class="card" style="text-align: center; padding: 30px;">
+            <button class="btn admin-btn" onclick="openAdminModal()">
+                ⚙️ Admin Actions
+            </button>
         </div>
 
-        <div class="card" id="job-tabs-card" style="display: none;">
-            <h2>📊 Job Tabs</h2>
-            <div id="job-tabs" class="job-tabs-container"></div>
-            <div id="job-tab-content" class="job-tab-content"></div>
+    </div>
+
+    <!-- Admin Actions Modal -->
+    <div id="admin-modal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header" style="background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);">
+                <h2>⚠️ Admin Actions</h2>
+                <span class="close-modal" onclick="closeAdminModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #f39c12;">
+                    <strong>⚠️ Warning:</strong> These actions are irreversible!
+                </div>
+                <form id="clear-db-form">
+                    <div class="form-group">
+                        <label for="admin-password">Admin Password:</label>
+                        <input type="password" id="admin-password" name="admin-password" placeholder="Enter admin password" required>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="delete-files">
+                            Also delete all uploaded files and results
+                        </label>
+                    </div>
+                    <button type="submit" class="btn" style="background-color: #e74c3c; color: white; width: 100%;">
+                        🗑️ Clear Database
+                    </button>
+                </form>
+                <div id="clear-db-message" style="margin-top: 15px;"></div>
+            </div>
         </div>
     </div>
 
@@ -638,21 +647,21 @@
                 const data = await response.json();
                 
                 if (response.ok) {
-                    messageDiv.innerHTML = `<div class="success" style="background: #d1e7dd; color: #0f5132; padding: 10px; border-radius: 5px;">
-                        ✅ ${data.message}<br>
-                        Jobs deleted: ${data.jobs_deleted}<br>
-                        Files deleted: ${data.files_deleted ? 'Yes' : 'No'}
-                    </div>`;
+                    // Show success message
+                    alert(`✅ Database cleared successfully!\nJobs deleted: ${data.jobs_deleted}\nFiles deleted: ${data.files_deleted ? 'Yes' : 'No'}`);
                     
                     // Clear form
                     document.getElementById('admin-password').value = '';
                     document.getElementById('delete-files').checked = false;
+                    messageDiv.innerHTML = '';
+                    
+                    // Close modal
+                    closeAdminModal();
                     
                     // Refresh jobs list
                     await loadJobs();
                     
-                    // Clear job details if visible
-                    document.getElementById('job-details-card').style.display = 'none';
+                    // Clear selected job
                     selectedJobId = null;
                 } else {
                     messageDiv.innerHTML = `<div class="error">❌ ${data.message || data.error}</div>`;
@@ -718,128 +727,108 @@
                     }
                     
                     return `
-                        <div class="job-item ${job.job_id === selectedJobId ? 'selected' : ''}" onclick="selectJob('${job.job_id}')">
-                            <div class="job-header">
-                                <span class="job-id">${job.job_id}</span>
-                                <span class="job-status ${job.status}">${job.status}</span>
+                        <div class="job-item ${job.job_id === selectedJobId ? 'selected' : ''}" id="job-${job.job_id}">
+                            <div class="job-item-header" onclick="toggleJob('${job.job_id}')">
+                                <div class="job-header">
+                                    <span class="job-id">${job.job_id}</span>
+                                    <span class="job-status ${job.status}">${job.status}</span>
+                                </div>
+                                <div class="job-details">
+                                    Created: ${new Date(job.created_at).toLocaleString()}<br>
+                                    ${fileInfo}
+                                </div>
                             </div>
-                            <div class="job-details">
-                                Created: ${new Date(job.created_at).toLocaleString()}<br>
-                                ${fileInfo}
+                            <div class="job-item-details" id="job-details-${job.job_id}">
+                                <div class="loading">Loading details...</div>
                             </div>
                         </div>
                     `;
                 }).join('');
+                
+                // Reload details for currently selected job
+                if (selectedJobId) {
+                    loadJobDetails(selectedJobId);
+                }
             } catch (error) {
                 document.getElementById('jobs-list').innerHTML = '<div class="error">Failed to load jobs</div>';
             }
         }
 
-        // Select a job - opens as a tab
-        async function selectJob(jobId) {
-            selectedJobId = jobId;
-            await openJobTab(jobId);
+        // Toggle job expansion
+        async function toggleJob(jobId) {
+            const jobItem = document.getElementById(`job-${jobId}`);
+            const wasSelected = jobItem.classList.contains('selected');
+            
+            // Close all other jobs
+            document.querySelectorAll('.job-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            // Toggle this job
+            if (!wasSelected) {
+                jobItem.classList.add('selected');
+                selectedJobId = jobId;
+                await loadJobDetails(jobId);
+            } else {
+                selectedJobId = null;
+            }
         }
 
-        // Open job as a tab
-        async function openJobTab(jobId) {
+        // Load job details inline
+        async function loadJobDetails(jobId) {
+            const detailsDiv = document.getElementById(`job-details-${jobId}`);
+            
             try {
                 const response = await fetch(`${API_BASE}/jobs/${jobId}`);
                 const job = await response.json();
                 
-                // Show tabs card
-                document.getElementById('job-tabs-card').style.display = 'block';
+                // Build file source info
+                const customPathsUsed = job.parameters && Object.keys(job.parameters).some(key => 
+                    key.endsWith('_path') && job.parameters[key]
+                );
                 
-                // Add tab if not exists
-                const tabsContainer = document.getElementById('job-tabs');
-                if (!document.getElementById(`tab-${jobId}`)) {
-                    const tab = document.createElement('button');
-                    tab.id = `tab-${jobId}`;
-                    tab.className = 'job-tab';
-                    tab.textContent = `${jobId} (${job.status})`;
-                    tab.onclick = () => switchTab(jobId);
-                    tabsContainer.appendChild(tab);
+                let fileSourceHTML = '';
+                if (customPathsUsed) {
+                    fileSourceHTML = '<p><strong>Custom paths specified:</strong></p><ul style="font-size: 13px; color: #666;">';
+                    const pathKeys = ['population_path', 'mortalite_path', 'rendements_path', 'depots_futurs_path',
+                                      'frais_admin_path', 'min_ferr_path', 'tx_lapse_part_path', 'tx_lapse_tot_path',
+                                      'acquisition_path', 'coussins_escap_path'];
+                    pathKeys.forEach(key => {
+                        if (job.parameters[key]) {
+                            fileSourceHTML += `<li><strong>${key.replace('_path', '')}:</strong> ${job.parameters[key]}</li>`;
+                        }
+                    });
+                    fileSourceHTML += '</ul>';
+                    fileSourceHTML += '<p style="font-size: 13px; color: #666; font-style: italic; margin-top: 5px;">Unspecified files use defaults from data_in folder</p>';
+                } else {
+                    fileSourceHTML = '<p style="font-size: 13px; color: #666; font-style: italic;">All files use defaults from data_in folder</p>';
                 }
                 
-                // Switch to this tab
-                switchTab(jobId);
+                // Cancel button
+                let cancelButton = '';
+                if (job.status === 'pending' || job.status === 'running') {
+                    cancelButton = `<button class="cancel-btn" onclick="cancelJob('${job.job_id}')">❌ Cancel Job</button>`;
+                }
                 
-                // Load tab content
-                await loadTabContent(jobId, job);
+                detailsDiv.innerHTML = `
+                    <div style="margin-bottom: 20px;">
+                        <p><strong>Started:</strong> ${job.started_at ? new Date(job.started_at).toLocaleString() : 'Not started yet'}</p>
+                        <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'Not completed yet'}</p>
+                        ${cancelButton}
+                        ${job.error_message ? `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>` : ''}
+                        ${fileSourceHTML}
+                    </div>
+                    
+                    <h3>Output Files</h3>
+                    <div id="files-display-${jobId}"></div>
+                `;
+                
+                // Load and display files
+                await displayJobFiles(jobId);
                 
             } catch (error) {
-                alert('Failed to load job');
+                detailsDiv.innerHTML = '<div class="error">Failed to load job details</div>';
             }
-        }
-
-        // Switch active tab
-        function switchTab(jobId) {
-            // Update tab styles
-            document.querySelectorAll('.job-tab').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            document.getElementById(`tab-${jobId}`).classList.add('active');
-            
-            // Show tab content
-            selectedJobId = jobId;
-            loadTabContent(jobId);
-        }
-
-        // Load tab content
-        async function loadTabContent(jobId, job = null) {
-            if (!job) {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
-                job = await response.json();
-            }
-            
-            const contentDiv = document.getElementById('job-tab-content');
-            
-            // Build file source info
-            const customPathsUsed = job.parameters && Object.keys(job.parameters).some(key => 
-                key.endsWith('_path') && job.parameters[key]
-            );
-            
-            let fileSourceHTML = '';
-            if (customPathsUsed) {
-                fileSourceHTML = '<p><strong>Custom paths specified:</strong></p><ul style="font-size: 13px; color: #666;">';
-                const pathKeys = ['population_path', 'mortalite_path', 'rendements_path', 'depots_futurs_path',
-                                  'frais_admin_path', 'min_ferr_path', 'tx_lapse_part_path', 'tx_lapse_tot_path',
-                                  'acquisition_path', 'coussins_escap_path'];
-                pathKeys.forEach(key => {
-                    if (job.parameters[key]) {
-                        fileSourceHTML += `<li><strong>${key.replace('_path', '')}:</strong> ${job.parameters[key]}</li>`;
-                    }
-                });
-                fileSourceHTML += '</ul>';
-                fileSourceHTML += '<p style="font-size: 13px; color: #666; font-style: italic; margin-top: 5px;">Unspecified files use defaults from data_in folder</p>';
-            } else {
-                fileSourceHTML = '<p style="font-size: 13px; color: #666; font-style: italic;">All files use defaults from data_in folder</p>';
-            }
-            
-            // Cancel button
-            let cancelButton = '';
-            if (job.status === 'pending' || job.status === 'running') {
-                cancelButton = `<button class="cancel-btn" onclick="cancelJob('${job.job_id}')">❌ Cancel Job</button>`;
-            }
-            
-            contentDiv.innerHTML = `
-                <div style="margin-bottom: 20px;">
-                    <p><strong>Job ID:</strong> ${job.job_id}</p>
-                    <p><strong>Status:</strong> <span class="job-status ${job.status}">${job.status}</span></p>
-                    ${cancelButton}
-                    <p><strong>Created:</strong> ${new Date(job.created_at).toLocaleString()}</p>
-                    <p><strong>Started:</strong> ${job.started_at ? new Date(job.started_at).toLocaleString() : 'N/A'}</p>
-                    <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'N/A'}</p>
-                    ${job.error_message ? `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>` : ''}
-                    ${fileSourceHTML}
-                </div>
-                
-                <h3>Output Files</h3>
-                <div id="files-display-${jobId}"></div>
-            `;
-            
-            // Load and display files
-            await displayJobFiles(jobId);
         }
 
         // Display job files with preview buttons
@@ -964,13 +953,36 @@
             document.getElementById('file-preview-modal').style.display = 'none';
         }
 
+        // Open admin modal
+        function openAdminModal() {
+            document.getElementById('admin-modal').style.display = 'block';
+        }
+
+        // Close admin modal
+        function closeAdminModal() {
+            document.getElementById('admin-modal').style.display = 'none';
+        }
+
         // Close modal when clicking outside
         window.onclick = function(event) {
-            const modal = document.getElementById('file-preview-modal');
-            if (event.target == modal) {
+            const fileModal = document.getElementById('file-preview-modal');
+            const adminModal = document.getElementById('admin-modal');
+            
+            if (event.target == fileModal) {
                 closePreviewModal();
             }
+            if (event.target == adminModal) {
+                closeAdminModal();
+            }
         }
+
+        // Close modals with Escape key
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closePreviewModal();
+                closeAdminModal();
+            }
+        });
 
         // Cancel a job
         async function cancelJob(jobId) {
@@ -987,10 +999,12 @@
                 
                 if (response.ok) {
                     alert(`Job ${jobId} cancelled successfully`);
-                    // Refresh job details
-                    await selectJob(jobId);
                     // Refresh job list
                     await loadJobs();
+                    // Reload job details if it's expanded
+                    if (selectedJobId === jobId) {
+                        await loadJobDetails(jobId);
+                    }
                 } else {
                     alert(`Failed to cancel job: ${data.message || data.error}`);
                 }
