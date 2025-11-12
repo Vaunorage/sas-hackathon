@@ -1,0 +1,613 @@
+"""
+Flask API for GPU-based Actuarial Projections
+Provides RESTful endpoints for job management and result retrieval
+"""
+
+import os
+import sqlite3
+import json
+import threading
+import traceback
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, Dict, Any
+import pandas as pd
+
+from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask_cors import CORS
+from werkzeug.utils import secure_filename
+
+# Import the GPU projection function
+try:
+    from gpu import run_projection_gpu
+    GPU_AVAILABLE = True
+except Exception as e:
+    print(f"Warning: GPU module not available: {e}")
+    GPU_AVAILABLE = False
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+app = Flask(__name__, static_folder='static')
+CORS(app)  # Enable CORS for all routes
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max upload
+app.config['UPLOAD_FOLDER'] = Path(__file__).parent / 'uploads'
+app.config['RESULTS_FOLDER'] = Path(__file__).parent / 'results'
+app.config['DATABASE'] = Path(__file__).parent / 'jobs.db'
+
+# Create directories if they don't exist
+app.config['UPLOAD_FOLDER'].mkdir(exist_ok=True)
+app.config['RESULTS_FOLDER'].mkdir(exist_ok=True)
+Path(__file__).parent.joinpath('static').mkdir(exist_ok=True)
+
+# Application metadata
+APP_VERSION = "1.0.0"
+ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
+
+# Allowed file extensions
+ALLOWED_EXTENSIONS = {'csv'}
+
+# =============================================================================
+# DATABASE INITIALIZATION
+# =============================================================================
+
+def init_db():
+    """Initialize the SQLite database with jobs table"""
+    conn = sqlite3.connect(app.config['DATABASE'])
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            error_message TEXT,
+            parameters TEXT,
+            uploaded_files TEXT,
+            result_files TEXT
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
+
+# Initialize database on startup
+init_db()
+
+# Track if database is ready
+db_initialized = True
+
+# =============================================================================
+# DATABASE HELPERS
+# =============================================================================
+
+def get_db_connection():
+    """Get a database connection"""
+    conn = sqlite3.connect(app.config['DATABASE'])
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def create_job(job_id: str, parameters: Dict[str, Any], uploaded_files: list) -> None:
+    """Create a new job in the database"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        INSERT INTO jobs (job_id, status, created_at, parameters, uploaded_files)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        job_id,
+        'pending',
+        datetime.utcnow().isoformat(),
+        json.dumps(parameters),
+        json.dumps(uploaded_files)
+    ))
+    
+    conn.commit()
+    conn.close()
+
+def update_job_status(job_id: str, status: str, error_message: Optional[str] = None) -> None:
+    """Update job status"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    updates = {'status': status}
+    
+    if status == 'running' and error_message is None:
+        updates['started_at'] = datetime.utcnow().isoformat()
+    elif status in ['completed', 'failed']:
+        updates['completed_at'] = datetime.utcnow().isoformat()
+    
+    if error_message:
+        updates['error_message'] = error_message
+    
+    set_clause = ', '.join([f"{k} = ?" for k in updates.keys()])
+    values = list(updates.values()) + [job_id]
+    
+    cursor.execute(f"UPDATE jobs SET {set_clause} WHERE job_id = ?", values)
+    conn.commit()
+    conn.close()
+
+def update_job_results(job_id: str, result_files: list) -> None:
+    """Update job with result files"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        UPDATE jobs SET result_files = ? WHERE job_id = ?
+    """, (json.dumps(result_files), job_id))
+    
+    conn.commit()
+    conn.close()
+
+def get_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Get job details by ID"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return {
+            'job_id': row['job_id'],
+            'status': row['status'],
+            'created_at': row['created_at'],
+            'started_at': row['started_at'],
+            'completed_at': row['completed_at'],
+            'error_message': row['error_message'],
+            'parameters': json.loads(row['parameters']) if row['parameters'] else {},
+            'uploaded_files': json.loads(row['uploaded_files']) if row['uploaded_files'] else [],
+            'result_files': json.loads(row['result_files']) if row['result_files'] else []
+        }
+    return None
+
+def get_all_jobs() -> list:
+    """Get all jobs ordered by creation date"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM jobs ORDER BY created_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    jobs = []
+    for row in rows:
+        jobs.append({
+            'job_id': row['job_id'],
+            'status': row['status'],
+            'created_at': row['created_at'],
+            'started_at': row['started_at'],
+            'completed_at': row['completed_at'],
+            'error_message': row['error_message'],
+            'parameters': json.loads(row['parameters']) if row['parameters'] else {},
+            'uploaded_files': json.loads(row['uploaded_files']) if row['uploaded_files'] else [],
+            'result_files': json.loads(row['result_files']) if row['result_files'] else []
+        })
+    return jobs
+
+# =============================================================================
+# FILE HELPERS
+# =============================================================================
+
+def allowed_file(filename: str) -> bool:
+    """Check if file extension is allowed"""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def get_job_upload_folder(job_id: str) -> Path:
+    """Get upload folder for a specific job"""
+    folder = app.config['UPLOAD_FOLDER'] / job_id
+    folder.mkdir(exist_ok=True)
+    return folder
+
+def get_job_results_folder(job_id: str) -> Path:
+    """Get results folder for a specific job"""
+    folder = app.config['RESULTS_FOLDER'] / job_id
+    folder.mkdir(exist_ok=True)
+    return folder
+
+# =============================================================================
+# JOB PROCESSING
+# =============================================================================
+
+def process_job(job_id: str):
+    """
+    Process a job in the background
+    This runs the GPU projection with the uploaded data
+    """
+    try:
+        # Update status to running
+        update_job_status(job_id, 'running')
+        
+        # Get job details
+        job = get_job(job_id)
+        if not job:
+            raise Exception(f"Job {job_id} not found")
+        
+        # Get parameters
+        params = job['parameters']
+        nb_years = params.get('nb_an_projection', 100)
+        nb_scenarios = params.get('nb_scenarios', 100)
+        max_accounts = params.get('max_accounts', None)
+        debug_account = params.get('debug_account', None)
+        
+        # Set up paths
+        data_path = get_job_upload_folder(job_id)
+        output_path = get_job_results_folder(job_id)
+        
+        # Run GPU projection
+        print(f"Starting GPU projection for job {job_id}")
+        results = run_projection_gpu(
+            data_path=data_path,
+            output_path=output_path,
+            nb_an_projection=nb_years,
+            nb_scenarios=nb_scenarios,
+            max_accounts=max_accounts,
+            debug_account=debug_account
+        )
+        
+        # List result files
+        result_files = []
+        if output_path.exists():
+            for file in output_path.glob('*.csv'):
+                result_files.append(file.name)
+        
+        # Update job with results
+        update_job_results(job_id, result_files)
+        update_job_status(job_id, 'completed')
+        
+        print(f"Job {job_id} completed successfully")
+        
+    except Exception as e:
+        error_msg = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"Job {job_id} failed: {error_msg}")
+        update_job_status(job_id, 'failed', error_message=error_msg)
+
+# =============================================================================
+# API ROUTES - HEALTH & STATUS
+# =============================================================================
+
+@app.route('/', methods=['GET'])
+def welcome():
+    """Welcome endpoint with API information"""
+    return jsonify({
+        'message': 'GPU Actuarial Projections API',
+        'version': APP_VERSION,
+        'environment': ENVIRONMENT,
+        'gpu_available': GPU_AVAILABLE,
+        'endpoints': {
+            'health': '/ping',
+            'ready': '/ready',
+            'jobs': '/jobs',
+            'create_job': 'POST /jobs',
+            'get_job': '/jobs/<job_id>',
+            'get_results': '/jobs/<job_id>/results',
+            'get_files': '/jobs/<job_id>/files',
+            'download_file': '/jobs/<job_id>/files/<file_name>'
+        }
+    })
+
+@app.route('/web', methods=['GET'])
+def web_interface():
+    """Serve the web interface"""
+    return send_from_directory('static', 'index.html')
+
+@app.route('/ping', methods=['GET'])
+def ping():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
+@app.route('/ready', methods=['GET'])
+def ready():
+    """Readiness probe - checks if database is initialized"""
+    if db_initialized:
+        return jsonify({
+            'status': 'ready',
+            'database': 'initialized',
+            'gpu_available': GPU_AVAILABLE
+        })
+    else:
+        return jsonify({
+            'status': 'not_ready',
+            'database': 'not_initialized'
+        }), 503
+
+# =============================================================================
+# API ROUTES - JOB MANAGEMENT
+# =============================================================================
+
+@app.route('/jobs', methods=['POST'])
+def create_job_endpoint():
+    """
+    Create and start a new job
+    Accepts file uploads and form parameters
+    """
+    try:
+        # Generate job ID
+        job_id = f"job_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}"
+        
+        # Get parameters from form
+        parameters = {
+            'nb_an_projection': int(request.form.get('nb_an_projection', 100)),
+            'nb_scenarios': int(request.form.get('nb_scenarios', 100)),
+            'max_accounts': int(request.form.get('max_accounts')) if request.form.get('max_accounts') else None,
+            'debug_account': int(request.form.get('debug_account')) if request.form.get('debug_account') else None
+        }
+        
+        # Handle file uploads
+        uploaded_files = []
+        upload_folder = get_job_upload_folder(job_id)
+        
+        if 'files' in request.files:
+            files = request.files.getlist('files')
+            for file in files:
+                if file and file.filename and allowed_file(file.filename):
+                    filename = secure_filename(file.filename)
+                    filepath = upload_folder / filename
+                    file.save(filepath)
+                    uploaded_files.append(filename)
+        
+        # Check if we have required files
+        if not uploaded_files:
+            return jsonify({
+                'error': 'No valid CSV files uploaded',
+                'message': 'Please upload at least one CSV file'
+            }), 400
+        
+        # Create job in database
+        create_job(job_id, parameters, uploaded_files)
+        
+        # Start processing in background thread
+        thread = threading.Thread(target=process_job, args=(job_id,))
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'job_id': job_id,
+            'status': 'pending',
+            'message': 'Job created and started',
+            'parameters': parameters,
+            'uploaded_files': uploaded_files
+        }), 201
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to create job',
+            'message': str(e)
+        }), 500
+
+@app.route('/jobs', methods=['GET'])
+def list_jobs():
+    """List all jobs sorted by creation date (newest first)"""
+    try:
+        jobs = get_all_jobs()
+        return jsonify({
+            'jobs': jobs,
+            'count': len(jobs)
+        })
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to list jobs',
+            'message': str(e)
+        }), 500
+
+@app.route('/jobs/<job_id>', methods=['GET'])
+def get_job_details(job_id: str):
+    """Get specific job details"""
+    try:
+        job = get_job(job_id)
+        if not job:
+            return jsonify({
+                'error': 'Job not found',
+                'job_id': job_id
+            }), 404
+        
+        return jsonify(job)
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to get job details',
+            'message': str(e)
+        }), 500
+
+# =============================================================================
+# API ROUTES - RESULTS & FILES
+# =============================================================================
+
+@app.route('/jobs/<job_id>/results', methods=['GET'])
+def get_job_results(job_id: str):
+    """
+    Get job results
+    Query param type: 'summary' (default), 'detailed', or 'internal'
+    Returns JSON data for the specified result type
+    """
+    try:
+        # Get job
+        job = get_job(job_id)
+        if not job:
+            return jsonify({
+                'error': 'Job not found',
+                'job_id': job_id
+            }), 404
+        
+        # Check if job is completed
+        if job['status'] != 'completed':
+            return jsonify({
+                'error': 'Job not completed',
+                'status': job['status'],
+                'message': 'Results are only available for completed jobs'
+            }), 400
+        
+        # Get result type from query params
+        result_type = request.args.get('type', 'summary').lower()
+        
+        # Map result types to files
+        result_file_map = {
+            'summary': 'VP_FLUX_TOTAL_GPU.csv',
+            'detailed': 'VP_FLUX_COMPTE_GPU.csv',
+            'internal': 'FLUX_PROJETES_GPU.csv'
+        }
+        
+        if result_type not in result_file_map:
+            return jsonify({
+                'error': 'Invalid result type',
+                'message': f'Type must be one of: {", ".join(result_file_map.keys())}'
+            }), 400
+        
+        # Read the result file
+        results_folder = get_job_results_folder(job_id)
+        result_file = results_folder / result_file_map[result_type]
+        
+        if not result_file.exists():
+            return jsonify({
+                'error': 'Result file not found',
+                'expected_file': result_file_map[result_type]
+            }), 404
+        
+        # Read CSV and convert to JSON
+        df = pd.read_csv(result_file, sep=';')
+        data = df.to_dict(orient='records')
+        
+        return jsonify({
+            'job_id': job_id,
+            'result_type': result_type,
+            'count': len(data),
+            'data': data
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to get results',
+            'message': str(e)
+        }), 500
+
+@app.route('/jobs/<job_id>/files', methods=['GET'])
+def list_job_files(job_id: str):
+    """List files uploaded with a job"""
+    try:
+        job = get_job(job_id)
+        if not job:
+            return jsonify({
+                'error': 'Job not found',
+                'job_id': job_id
+            }), 404
+        
+        # Get uploaded files
+        upload_folder = get_job_upload_folder(job_id)
+        uploaded_files = []
+        if upload_folder.exists():
+            for file in upload_folder.glob('*'):
+                if file.is_file():
+                    uploaded_files.append({
+                        'name': file.name,
+                        'size': file.stat().st_size,
+                        'type': 'input'
+                    })
+        
+        # Get result files
+        results_folder = get_job_results_folder(job_id)
+        result_files = []
+        if results_folder.exists():
+            for file in results_folder.glob('*.csv'):
+                if file.is_file():
+                    result_files.append({
+                        'name': file.name,
+                        'size': file.stat().st_size,
+                        'type': 'output'
+                    })
+        
+        return jsonify({
+            'job_id': job_id,
+            'uploaded_files': uploaded_files,
+            'result_files': result_files,
+            'total_files': len(uploaded_files) + len(result_files)
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to list files',
+            'message': str(e)
+        }), 500
+
+@app.route('/jobs/<job_id>/files/<file_name>', methods=['GET'])
+def download_file(job_id: str, file_name: str):
+    """Download specific file content"""
+    try:
+        job = get_job(job_id)
+        if not job:
+            return jsonify({
+                'error': 'Job not found',
+                'job_id': job_id
+            }), 404
+        
+        # Secure the filename
+        file_name = secure_filename(file_name)
+        
+        # Check in upload folder first
+        upload_file = get_job_upload_folder(job_id) / file_name
+        if upload_file.exists():
+            return send_file(upload_file, mimetype='text/plain', as_attachment=True)
+        
+        # Check in results folder
+        result_file = get_job_results_folder(job_id) / file_name
+        if result_file.exists():
+            return send_file(result_file, mimetype='text/plain', as_attachment=True)
+        
+        return jsonify({
+            'error': 'File not found',
+            'file_name': file_name
+        }), 404
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to download file',
+            'message': str(e)
+        }), 500
+
+# =============================================================================
+# ERROR HANDLERS
+# =============================================================================
+
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({
+        'error': 'Not found',
+        'message': 'The requested resource was not found'
+    }), 404
+
+@app.errorhandler(500)
+def internal_error(e):
+    return jsonify({
+        'error': 'Internal server error',
+        'message': 'An unexpected error occurred'
+    }), 500
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+if __name__ == '__main__':
+    print("=" * 60)
+    print("GPU Actuarial Projections API")
+    print("=" * 60)
+    print(f"Version: {APP_VERSION}")
+    print(f"Environment: {ENVIRONMENT}")
+    print(f"GPU Available: {GPU_AVAILABLE}")
+    print(f"Database: {app.config['DATABASE']}")
+    print(f"Upload Folder: {app.config['UPLOAD_FOLDER']}")
+    print(f"Results Folder: {app.config['RESULTS_FOLDER']}")
+    print("=" * 60)
+    
+    # Run the app
+    app.run(
+        host='0.0.0.0',
+        port=5000,
+        debug=(ENVIRONMENT == 'development')
+    )

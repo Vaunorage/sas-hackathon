@@ -2,11 +2,12 @@ import pandas as pd
 import numpy as np
 import gc
 from pathlib import Path
-from typing import Dict, Tuple, Any
+from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
 import math
 from numba import cuda
 from paths import HERE
+import argparse
 
 # =============================================================================
 # CONFIGURATION
@@ -1115,7 +1116,8 @@ def prepare_account_data(population_df):
 # =============================================================================
 
 def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int, nb_scenarios: int,
-                       max_accounts: int = None, threads_per_block=(16, 16), use_pinned_memory=True):
+                       max_accounts: int = None, threads_per_block=(16, 16), use_pinned_memory=True,
+                       debug_account: Optional[int] = None, debug_scenario: Optional[int] = None):
     """
     Main function to run GPU-accelerated projection in batches to manage memory.
 
@@ -1212,9 +1214,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     # Calculate memory-based batch size
     batch_size_memory = int(available_mem_for_dynamic_data // total_mem_per_account)
     
-    # Cap batch size to prevent excessive transfer times
-    # Target: keep output array under ~1.5 GB for efficient PCIe transfers
-    max_output_size_gb = 1.5
+    # Cap batch size to prevent CPU memory allocation bottlenecks
+    # Large batches (>4GB) cause memory fragmentation and 100x slower extraction
+    # This limits NumPy boolean indexing copy operations to manageable sizes
+    max_output_size_gb = 4.0
     max_batch_size_transfer = int((max_output_size_gb * 1024**3) / mem_per_account_output)
     
     # Use the minimum of memory-based and transfer-based limits
@@ -1254,9 +1257,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     # Choose strategy
     if n_accounts >= incremental_threshold_accounts:
         print(f"\nUsing INCREMENTAL AGGREGATION (dataset large: {n_accounts:,} accounts)")
-        print(f"Will aggregate each batch immediately, keeping only scenario averages")
-        print(f"Expected memory: ~2-3 GB (constant) vs {estimated_memory_gb:.1f} GB for raw data")
-        print(f"Optimization: Periodic merging every 50 batches to prevent dictionary bloat")
+        print(f"Will aggregate each batch immediately, averaging across all {nb_scenarios} scenarios")
+        print(f"Expected memory: ~0.5 GB (constant) vs {estimated_memory_gb:.1f} GB for raw data")
+        print(f"Data reduction: {nb_scenarios}x fewer rows (scenario-averaged)")
         use_incremental = True
         aggregated_batches = []  # List to accumulate batch DataFrames
         merge_frequency = 50  # Merge every N batches
@@ -1408,9 +1411,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
                     batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
                 
-                # Group by account, scenario, time and average (same as final aggregation)
-                group_cols = ['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']
-                value_cols = [col for col in batch_df.columns if col not in group_cols]
+                # Group by account and time, AVERAGE ACROSS SCENARIOS (100x reduction!)
+                group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
+                value_cols = [col for col in batch_df.columns if col not in group_cols + ['SCN_EVAL']]
                 batch_agg = batch_df.groupby(group_cols, as_index=False)[value_cols].mean()
                 
                 # Store in list (will merge periodically)
@@ -1505,9 +1508,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 print(f"  Combining with {len(merged_result):,} previously merged rows...")
                 temp_merged = pd.concat([merged_result, temp_merged], ignore_index=True)
             
-            # Final groupby to consolidate
-            group_cols = ['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']
-            value_cols = [col for col in temp_merged.columns if col not in group_cols]
+            # Final groupby to consolidate (scenarios already averaged in batches)
+            group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
+            value_cols = [col for col in temp_merged.columns if col not in group_cols + ['SCN_EVAL']]
             calculs_sommaire = temp_merged.groupby(group_cols, as_index=False)[value_cols].mean()
             
             del aggregated_batches
@@ -1568,6 +1571,79 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         # Clean up memory
         del all_data
 
+    # Debug logging for specific account
+    # Note: With scenario averaging, we show the averaged results (not individual scenarios)
+    if debug_account is not None:
+        print("\n" + "="*60)
+        print(f"DEBUG: DETAILED RESULTS FOR ACCOUNT {debug_account}")
+        print(f"(Showing scenario-averaged results across all {nb_scenarios} scenarios)")
+        print("="*60)
+        
+        # Filter for the specific account (scenarios are already averaged)
+        debug_mask = all_results['ID_COMPTE'] == debug_account
+        debug_data = all_results[debug_mask].copy()
+        
+        if len(debug_data) > 0:
+            # Sort by year and month
+            debug_data = debug_data.sort_values(['AN_EVAL', 'MOIS_EVAL'])
+            
+            print(f"\nFound {len(debug_data):,} timesteps for this account (scenario-averaged)")
+            print("\nYear-by-year summary:")
+            print("-" * 120)
+            
+            # Group by year and show key metrics
+            for year in sorted(debug_data['AN_EVAL'].unique()):
+                year_data = debug_data[debug_data['AN_EVAL'] == year]
+                
+                # Sum over all months in the year
+                primes_tot = year_data['PRIMES_GARANTIES'].sum() + year_data['PRIMES_VARIABLES'].sum()
+                prest_tot = year_data['PREST_DECES'].sum() + year_data['PREST_ECH'].sum() + year_data['PREST_MRV'].sum()
+                frais_tot = year_data['FRAIS_ACQUIS'].sum() + year_data['FRAIS_FIXES'].sum()
+                valeur_march = year_data['VALEUR_MARCHANDE'].iloc[-1]  # End of year value
+                passif = year_data['PASSIF_REDRESSE'].iloc[-1]  # End of year value
+                
+                print(f"Year {year:3d} | Months: {len(year_data):2d} | "
+                      f"Premiums: ${primes_tot:12,.2f} | Benefits: ${prest_tot:12,.2f} | "
+                      f"Fees: ${frais_tot:10,.2f} | Market Val: ${valeur_march:12,.2f} | "
+                      f"Liability: ${passif:12,.2f}")
+            
+            print("-" * 120)
+            
+            # Show detailed monthly data for first and last year
+            print(f"\nDetailed monthly data for Year 0:")
+            year_0 = debug_data[debug_data['AN_EVAL'] == 0]
+            print(year_0[['AN_EVAL', 'MOIS_EVAL', 'PRIMES_GARANTIES', 'PRIMES_VARIABLES', 
+                         'PREST_DECES', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE']].to_string(index=False))
+            
+            last_year = debug_data['AN_EVAL'].max()
+            print(f"\nDetailed monthly data for Year {last_year}:")
+            year_last = debug_data[debug_data['AN_EVAL'] == last_year]
+            print(year_last[['AN_EVAL', 'MOIS_EVAL', 'PRIMES_GARANTIES', 'PRIMES_VARIABLES',
+                            'PREST_DECES', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE']].to_string(index=False))
+            
+            # Show present values
+            print(f"\nPresent Values (discounted to time 0):")
+            vp_cols = [col for col in debug_data.columns if col.startswith('VP_')]
+            if vp_cols:
+                # Sum all PV columns (they're already summed across all timesteps)
+                vp_summary = debug_data[vp_cols].iloc[0]  # First row has cumulative PVs
+                for col in vp_cols:
+                    if abs(vp_summary[col]) > 0.01:  # Only show non-zero values
+                        print(f"  {col:30s}: ${vp_summary[col]:15,.2f}")
+            
+            # Save debug data to CSV
+            output_path.mkdir(parents=True, exist_ok=True)
+            debug_filename = f"DEBUG_account_{debug_account}_scenario_averaged.csv"
+            debug_filepath = output_path.joinpath(debug_filename)
+            debug_data.to_csv(debug_filepath, index=False, sep=';')
+            print(f"\n✓ Debug data saved to: {debug_filepath}")
+            print(f"  Contains {len(debug_data):,} timesteps with all {len(debug_data.columns)} columns")
+        else:
+            print(f"\n⚠️  WARNING: No data found for Account {debug_account}")
+            print(f"    Available account range: {all_results['ID_COMPTE'].min()} to {all_results['ID_COMPTE'].max()}")
+        
+        print("="*60 + "\n")
+    
     # Aggregate and save results
     print("\n" + "="*60)
     print("AGGREGATING RESULTS")
@@ -1651,12 +1727,30 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
 # =============================================================================
 
 if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Run GPU-accelerated actuarial projections')
+    parser.add_argument('--debug-account', type=int, default=None,
+                       help='Account ID to show detailed year-by-year results (for debugging)')
+    parser.add_argument('--debug-scenario', type=int, default=None,
+                       help='Scenario number (ignored - showing scenario-averaged results)')
+    parser.add_argument('--max-accounts', type=int, default=None,
+                       help='Maximum number of accounts to process (for testing)')
+    args = parser.parse_args()
+    
     try:
         if not cuda.is_available():
             print("ERROR: CUDA is not available. Please check your GPU setup.")
             exit(1)
 
         print(f"CUDA Device: {cuda.get_current_device().name}")
+        
+        # Show debug mode info
+        if args.debug_account is not None:
+            print(f"\n🔍 DEBUG MODE ENABLED")
+            print(f"   Will show detailed scenario-averaged results for:")
+            print(f"   Account {args.debug_account}")
+            print(f"   (Note: --debug-scenario parameter is ignored, showing averaged results)")
+            print()
 
         DATA_PATH = HERE.joinpath("algo2/data_in")
         OUTPUT_PATH = HERE.joinpath("algo2/data_out_gpu")
@@ -1666,8 +1760,10 @@ if __name__ == "__main__":
             output_path=OUTPUT_PATH,
             nb_an_projection=100,
             nb_scenarios=100,
-            max_accounts=3,  # Process all accounts
-            threads_per_block=(16, 8)  # (accounts_per_block, scenarios_per_block)
+            max_accounts=args.max_accounts,
+            threads_per_block=(32, 8),  # (accounts_per_block, scenarios_per_block) - 256 threads per block
+            debug_account=args.debug_account,
+            debug_scenario=args.debug_scenario
         )
 
         if results:

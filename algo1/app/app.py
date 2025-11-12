@@ -11,7 +11,7 @@ import pandas as pd
 import io
 
 # Import your ACFC algorithm
-from test.gpu1 import gpu_acfc_algorithm_complete, initialize_cuda_for_thread, _thread_local
+from algo1.gpu1 import gpu_acfc_algorithm_complete, initialize_cuda_for_thread, _thread_local
 
 from paths import HERE
 

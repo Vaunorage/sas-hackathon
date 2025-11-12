@@ -4,14 +4,14 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-COPY pyproject.toml .
+COPY ../pyproject.toml .
 RUN uv pip install --system -e .
 
 # Copy ALL necessary files
-COPY paths.py .
+COPY ../paths.py .
 COPY app ./app
 COPY test ./test
-COPY data_in ./data_in
+COPY ../data_in ./data_in
 
 # Add /app to PYTHONPATH so paths.py can be imported
 ENV PYTHONPATH=/app:$PYTHONPATH

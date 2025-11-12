@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPU Actuarial Projections API</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .header .status {
+            display: flex;
+            gap: 20px;
+            margin-top: 15px;
+        }
+
+        .status-badge {
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .status-badge.healthy {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-badge.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .card h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 22px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        .form-group input[type="number"],
+        .form-group input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .jobs-list {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .job-item {
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .job-item:hover {
+            border-color: #667eea;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.2);
+        }
+
+        .job-item.selected {
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+
+        .job-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .job-id {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .job-status {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .job-status.pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .job-status.running {
+            background: #cfe2ff;
+            color: #084298;
+        }
+
+        .job-status.completed {
+            background: #d1e7dd;
+            color: #0f5132;
+        }
+
+        .job-status.failed {
+            background: #f8d7da;
+            color: #842029;
+        }
+
+        .job-details {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .results-section {
+            margin-top: 20px;
+        }
+
+        .result-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: #f0f0f0;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .tab.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .result-content {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            max-height: 400px;
+            overflow: auto;
+        }
+
+        .result-content pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+
+        .file-list {
+            list-style: none;
+            padding: 0;
+        }
+
+        .file-list li {
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .download-btn {
+            font-size: 12px;
+            padding: 6px 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 GPU Actuarial Projections API</h1>
+            <p>Web interface for managing GPU-accelerated actuarial projection jobs</p>
+            <div class="status">
+                <span id="api-status" class="status-badge">Checking...</span>
+                <span id="gpu-status" class="status-badge">GPU: Unknown</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>📤 Create New Job</h2>
+            <form id="job-form">
+                <div class="form-group">
+                    <label for="files">Upload CSV Files (select all required files):</label>
+                    <input type="file" id="files" name="files" accept=".csv" multiple required>
+                    <small style="color: #666; display: block; margin-top: 5px;">
+                        Required: POPULATION.csv, MORTALITE.csv, RENDEMENTS.csv, DEPOTS_FUTURS.csv, 
+                        FRAIS_ADMIN.csv, MIN_FERR.csv, TX_LAPSE_PART.csv, TX_LAPSE_TOT.csv, 
+                        ACQUISITION.csv, COUSSINS_ESCAP.csv
+                    </small>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div class="form-group">
+                        <label for="nb_an_projection">Years to Project:</label>
+                        <input type="number" id="nb_an_projection" name="nb_an_projection" value="100" min="1" max="150">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="nb_scenarios">Number of Scenarios:</label>
+                        <input type="number" id="nb_scenarios" name="nb_scenarios" value="100" min="1" max="1000">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="max_accounts">Max Accounts (optional):</label>
+                        <input type="number" id="max_accounts" name="max_accounts" placeholder="Leave empty for all">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="debug_account">Debug Account ID (optional):</label>
+                        <input type="number" id="debug_account" name="debug_account" placeholder="Leave empty for no debug">
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary" id="submit-btn">Create Job</button>
+            </form>
+            <div id="create-message"></div>
+        </div>
+
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0;">📋 Jobs</h2>
+                <button class="btn btn-secondary" onclick="loadJobs()">🔄 Refresh</button>
+            </div>
+            <div id="jobs-list" class="jobs-list">
+                <div class="loading">Loading jobs...</div>
+            </div>
+        </div>
+
+        <div class="card" id="job-details-card" style="display: none;">
+            <h2>📊 Job Details</h2>
+            <div id="job-details-content"></div>
+            
+            <div class="results-section">
+                <h3>Results</h3>
+                <div class="result-tabs">
+                    <button class="tab active" onclick="loadResults('summary')">Summary</button>
+                    <button class="tab" onclick="loadResults('detailed')">Detailed</button>
+                    <button class="tab" onclick="loadResults('internal')">Internal</button>
+                </div>
+                <div id="results-content" class="result-content">
+                    <div class="loading">Select a result type to view</div>
+                </div>
+            </div>
+
+            <div class="results-section">
+                <h3>Files</h3>
+                <div id="files-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:5000';
+        let selectedJobId = null;
+
+        // Check API health on load
+        async function checkHealth() {
+            try {
+                const response = await fetch(`${API_BASE}/`);
+                const data = await response.json();
+                
+                document.getElementById('api-status').textContent = `API: v${data.version}`;
+                document.getElementById('api-status').className = 'status-badge healthy';
+                
+                document.getElementById('gpu-status').textContent = data.gpu_available ? 'GPU: Available' : 'GPU: Not Available';
+                document.getElementById('gpu-status').className = data.gpu_available ? 'status-badge healthy' : 'status-badge error';
+            } catch (error) {
+                document.getElementById('api-status').textContent = 'API: Offline';
+                document.getElementById('api-status').className = 'status-badge error';
+            }
+        }
+
+        // Load jobs list
+        async function loadJobs() {
+            try {
+                const response = await fetch(`${API_BASE}/jobs`);
+                const data = await response.json();
+                
+                const jobsList = document.getElementById('jobs-list');
+                
+                if (data.jobs.length === 0) {
+                    jobsList.innerHTML = '<div class="loading">No jobs found</div>';
+                    return;
+                }
+                
+                jobsList.innerHTML = data.jobs.map(job => `
+                    <div class="job-item ${job.job_id === selectedJobId ? 'selected' : ''}" onclick="selectJob('${job.job_id}')">
+                        <div class="job-header">
+                            <span class="job-id">${job.job_id}</span>
+                            <span class="job-status ${job.status}">${job.status}</span>
+                        </div>
+                        <div class="job-details">
+                            Created: ${new Date(job.created_at).toLocaleString()}<br>
+                            Files: ${job.uploaded_files.length} uploaded, ${job.result_files.length} results
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                document.getElementById('jobs-list').innerHTML = '<div class="error">Failed to load jobs</div>';
+            }
+        }
+
+        // Select a job
+        async function selectJob(jobId) {
+            selectedJobId = jobId;
+            loadJobs(); // Refresh to show selection
+            
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
+                const job = await response.json();
+                
+                const detailsCard = document.getElementById('job-details-card');
+                detailsCard.style.display = 'block';
+                
+                const detailsContent = document.getElementById('job-details-content');
+                detailsContent.innerHTML = `
+                    <p><strong>Job ID:</strong> ${job.job_id}</p>
+                    <p><strong>Status:</strong> <span class="job-status ${job.status}">${job.status}</span></p>
+                    <p><strong>Created:</strong> ${new Date(job.created_at).toLocaleString()}</p>
+                    <p><strong>Started:</strong> ${job.started_at ? new Date(job.started_at).toLocaleString() : 'N/A'}</p>
+                    <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'N/A'}</p>
+                    ${job.error_message ? `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>` : ''}
+                    <p><strong>Parameters:</strong></p>
+                    <pre>${JSON.stringify(job.parameters, null, 2)}</pre>
+                `;
+                
+                // Load files
+                loadFiles(jobId);
+                
+                // Auto-load summary if completed
+                if (job.status === 'completed') {
+                    loadResults('summary');
+                }
+            } catch (error) {
+                alert('Failed to load job details');
+            }
+        }
+
+        // Load results
+        async function loadResults(type) {
+            if (!selectedJobId) return;
+            
+            // Update tab styling
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            const resultsContent = document.getElementById('results-content');
+            resultsContent.innerHTML = '<div class="loading">Loading results...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${selectedJobId}/results?type=${type}`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    resultsContent.innerHTML = `
+                        <p><strong>Result Type:</strong> ${data.result_type}</p>
+                        <p><strong>Record Count:</strong> ${data.count}</p>
+                        <pre>${JSON.stringify(data.data.slice(0, 10), null, 2)}</pre>
+                        ${data.count > 10 ? '<p><em>Showing first 10 records</em></p>' : ''}
+                    `;
+                } else {
+                    resultsContent.innerHTML = `<div class="error">${data.message || 'Failed to load results'}</div>`;
+                }
+            } catch (error) {
+                resultsContent.innerHTML = '<div class="error">Failed to load results</div>';
+            }
+        }
+
+        // Load files
+        async function loadFiles(jobId) {
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
+                const data = await response.json();
+                
+                const filesList = document.getElementById('files-list');
+                
+                let html = '';
+                
+                if (data.uploaded_files.length > 0) {
+                    html += '<h4>Uploaded Files</h4><ul class="file-list">';
+                    data.uploaded_files.forEach(file => {
+                        html += `
+                            <li>
+                                <span>${file.name} (${(file.size / 1024).toFixed(2)} KB)</span>
+                                <button class="btn btn-secondary download-btn" onclick="downloadFile('${jobId}', '${file.name}')">Download</button>
+                            </li>
+                        `;
+                    });
+                    html += '</ul>';
+                }
+                
+                if (data.result_files.length > 0) {
+                    html += '<h4>Result Files</h4><ul class="file-list">';
+                    data.result_files.forEach(file => {
+                        html += `
+                            <li>
+                                <span>${file.name} (${(file.size / 1024).toFixed(2)} KB)</span>
+                                <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${file.name}')">Download</button>
+                            </li>
+                        `;
+                    });
+                    html += '</ul>';
+                }
+                
+                if (html === '') {
+                    html = '<p>No files available</p>';
+                }
+                
+                filesList.innerHTML = html;
+            } catch (error) {
+                document.getElementById('files-list').innerHTML = '<div class="error">Failed to load files</div>';
+            }
+        }
+
+        // Download file
+        function downloadFile(jobId, fileName) {
+            window.open(`${API_BASE}/jobs/${jobId}/files/${fileName}`, '_blank');
+        }
+
+        // Handle form submission
+        document.getElementById('job-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('submit-btn');
+            const messageDiv = document.getElementById('create-message');
+            
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Creating Job...';
+            messageDiv.innerHTML = '';
+            
+            try {
+                const formData = new FormData();
+                
+                // Add files
+                const files = document.getElementById('files').files;
+                for (let file of files) {
+                    formData.append('files', file);
+                }
+                
+                // Add parameters
+                const nbAnProjection = document.getElementById('nb_an_projection').value;
+                const nbScenarios = document.getElementById('nb_scenarios').value;
+                const maxAccounts = document.getElementById('max_accounts').value;
+                const debugAccount = document.getElementById('debug_account').value;
+                
+                formData.append('nb_an_projection', nbAnProjection);
+                formData.append('nb_scenarios', nbScenarios);
+                if (maxAccounts) formData.append('max_accounts', maxAccounts);
+                if (debugAccount) formData.append('debug_account', debugAccount);
+                
+                const response = await fetch(`${API_BASE}/jobs`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    messageDiv.innerHTML = `<div class="success">Job created successfully! Job ID: ${data.job_id}</div>`;
+                    document.getElementById('job-form').reset();
+                    loadJobs();
+                    
+                    // Auto-select the new job after a short delay
+                    setTimeout(() => selectJob(data.job_id), 1000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error">${data.message || 'Failed to create job'}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to create job: ${error.message}</div>`;
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Create Job';
+            }
+        });
+
+        // Auto-refresh jobs every 5 seconds
+        setInterval(loadJobs, 5000);
+
+        // Initialize
+        checkHealth();
+        loadJobs();
+    </script>
+</body>
+</html>
