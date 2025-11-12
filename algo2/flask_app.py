@@ -686,6 +686,6 @@ if __name__ == '__main__':
     # Run the app
     app.run(
         host='0.0.0.0',
-        port=5000,
+        port=8000,
         debug=(ENVIRONMENT == 'development')
     )
