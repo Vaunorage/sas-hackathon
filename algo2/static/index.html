@@ -490,7 +490,7 @@ input[type="password"] {
 
                     <div class="form-group">
                         <label for="max_accounts">Max Accounts (optional):</label>
-                        <input type="number" id="max_accounts" name="max_accounts" placeholder="Leave empty for all">
+                        <input type="number" id="max_accounts" name="max_accounts" value="20" min="1">
                     </div>
 
                     <div class="form-group">
@@ -710,6 +710,27 @@ input[type="password"] {
                         progressInfo = `<br><small>⏳ Batch ${job.current_batch || 0}/${job.total_batches} (${progressPercent.toFixed(0)}%)</small>`;
                     }
                     
+                    // Duration info for completed jobs
+                    let durationInfo = '';
+                    if (job.status === 'completed' && job.completed_at && job.started_at) {
+                        const startTime = new Date(job.started_at);
+                        const endTime = new Date(job.completed_at);
+                        const durationMs = endTime - startTime;
+                        const seconds = Math.floor(durationMs / 1000);
+                        const minutes = Math.floor(seconds / 60);
+                        const hours = Math.floor(minutes / 60);
+                        
+                        let durationStr = '';
+                        if (hours > 0) {
+                            durationStr = `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+                        } else if (minutes > 0) {
+                            durationStr = `${minutes}m ${seconds % 60}s`;
+                        } else {
+                            durationStr = `${seconds}s`;
+                        }
+                        durationInfo = `<br>Duration: ${durationStr}`;
+                    }
+                    
                     return `
                         <div class="job-item ${job.job_id === selectedJobId ? 'selected' : ''}" id="job-${job.job_id}">
                             <div class="job-item-header" onclick="toggleJob('${job.job_id}')">
@@ -719,7 +740,7 @@ input[type="password"] {
                                 </div>
                                 <div class="job-details">
                                     Created: ${new Date(job.created_at).toLocaleString()}<br>
-                                    ${fileInfo}${progressInfo}
+                                    ${fileInfo}${progressInfo}${durationInfo}
                                 </div>
                             </div>
                             <div class="job-item-details" id="job-details-${job.job_id}">
