@@ -3,476 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SAS GPU Actuarial Projections</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #f0f0f0;
-            color: #333;
-            margin: 0;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1000px;
-            margin: 0 auto;
-            background: white;
-            border: 1px solid #ccc;
-            padding: 20px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-        }
-        
-        .header {
-            background: #003366;
-            color: white;
-            padding: 15px;
-            margin-bottom: 20px;
-            border-bottom: 4px solid #ff6600;
-        }
-        
-        .header h1 {
-            margin: 0;
-            font-size: 24px;
-        }
-        
-        .card {
-            border: 1px solid #ddd;
-            padding: 15px;
-            margin-bottom: 20px;
-            background: white;
-        }
-        
-        .card h2 {
-            color: #003366;
-            border-bottom: 1px solid #ddd;
-            padding-bottom: 5px;
-            margin-top: 0;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 10px 0;
-        }
-        
-        th, td {
-            border: 1px solid #ddd;
-            padding: 8px;
-            text-align: left;
-        }
-        
-        th {
-            background-color: #003366;
-            color: white;
-        }
-        
-        input, select, button {
-            padding: 6px;
-            margin: 5px 0;
-            border: 1px solid #ccc;
-        }
-        
-        button {
-            background-color: #003366;
-            color: white;
-            border: none;
-            padding: 8px 15px;
-            cursor: pointer;
-        }
-        
-        button:hover {
-            background-color: #004080;
-        }
-        
-        .sas-logo {
-            font-weight: bold;
-            color: #ff6600;
-            font-size: 18px;
-        }
-        
-        /* Modal Styles */
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            overflow: auto;
-            background-color: rgba(0, 0, 0, 0.5);
-        }
-
-        .modal-content {
-            background-color: white;
-            margin: 2% auto;
-            padding: 0;
-            border-radius: 8px;
-            width: 90%;
-            max-width: 1200px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-            border: 1px solid #d0d0d0;
-        }
-
-        .modal-header {
-            padding: 20px 25px;
-            background: linear-gradient(135deg, #0074bc 0%, #003d6e 100%);
-            color: white;
-            border-radius: 8px 8px 0 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .modal-header h2 {
-            margin: 0;
-            font-size: 20px;
-        }
-
-        .close-modal {
-            font-size: 32px;
-            font-weight: bold;
-            cursor: pointer;
-            color: white;
-            transition: color 0.3s;
-        }
-
-        .close-modal:hover {
-            color: #ddd;
-        }
-
-        .modal-body {
-            padding: 20px;
-            max-height: 600px;
-            overflow-y: auto;
-        }
-
-        .modal-footer {
-            padding: 15px 20px;
-            border-top: 1px solid #e0e0e0;
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-        }
-
-        /* Table Styles */
-        .preview-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-        }
-
-        .preview-table th {
-            background-color: #0074bc;
-            color: white;
-            padding: 10px;
-            text-align: left;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
-
-        .preview-table td {
-            padding: 10px 12px;
-            border-bottom: 1px solid #e8e8e8;
-            color: #333;
-        }
-
-        .preview-table tbody tr:hover {
-            background-color: #f0f7ff;
-            transition: background-color 0.2s;
-        }
-        
-        .preview-table tbody tr:nth-child(even) {
-            background-color: #fafafa;
-        }
-
-        /* File Preview Button */
-        .file-preview-btn {
-            background: #0074bc;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 13px;
-            transition: all 0.3s;
-        }
-
-        .file-preview-btn:hover {
-            background: #005a94;
-            transform: translateY(-1px);
-        }
-
-        /* Collapsible section header */
-        #custom-paths-section h3 {
-            transition: color 0.3s;
-        }
-
-        #custom-paths-section h3:hover {
-            color: #0074bc !important;
-        }
-
-        #file-paths-toggle-icon {
-            transition: transform 0.3s;
-            font-size: 14px;
-        }
-
-        #file-paths-content {
-            transition: all 0.3s ease-out;
-            overflow: hidden;
-        }
-
-        /* Progress bar styling */
-        .progress-container {
-            width: 100%;
-            background: #e0e0e0;
-            border-radius: 10px;
-            overflow: hidden;
-            margin: 10px 0;
-            height: 24px;
-            position: relative;
-        }
-
-        .progress-bar {
-            height: 100%;
-            background: linear-gradient(90deg, #0074bc 0%, #005a94 100%);
-            transition: width 0.3s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 12px;
-            font-weight: bold;
-        }
-
-        .progress-text {
-            position: absolute;
-            width: 100%;
-            text-align: center;
-            line-height: 24px;
-            font-size: 12px;
-            font-weight: 500;
-            color: #333;
-            z-index: 1;
-        }
-
-        /* File input styling */
-        input[type="file"] {
-            cursor: pointer;
-            border: 1px solid #e0e0e0;
-            border-radius: 5px;
-            background: white;
-        }
-
-        input[type="file"]::-webkit-file-upload-button {
-            background: #0074bc;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 13px;
-            margin-right: 10px;
-        }
-
-        input[type="file"]::-webkit-file-upload-button:hover {
-            background: #005a94;
-        }
-
-        .jobs-list {
-            max-height: 800px;
-            overflow-y: auto;
-        }
-
-        .job-item {
-            border: 1px solid #d0d0d0;
-            border-radius: 6px;
-            margin-bottom: 12px;
-            transition: all 0.3s;
-            overflow: hidden;
-            background: white;
-        }
-
-        .job-item-header {
-            padding: 18px;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-
-        .job-item-header:hover {
-            background: #f8fbff;
-        }
-
-        .job-item.selected {
-            border-color: #0074bc;
-            border-width: 2px;
-            box-shadow: 0 3px 10px rgba(0, 116, 188, 0.2);
-        }
-
-        .job-item.selected .job-item-header {
-            background: #f0f7ff;
-        }
-
-        .job-item-details {
-            display: none;
-            padding: 15px;
-            border-top: 1px solid #e0e0e0;
-            background: white;
-        }
-
-        .job-item.selected .job-item-details {
-            display: block;
-        }
-
-        .job-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-
-        .job-id {
-            font-weight: 600;
-            color: #333;
-        }
-
-        .job-status {
-            padding: 5px 14px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .job-status.pending {
-            background: #fff3cd;
-            color: #856404;
-            border: 1px solid #ffc107;
-        }
-
-        .job-status.running {
-            background: #d1ecf1;
-            color: #0c5460;
-            border: 1px solid #0074bc;
-        }
-
-        .job-status.completed {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #28a745;
-        }
-
-        .job-status.failed {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #dc3545;
-        }
-
-        .job-status.cancelled {
-            background: #e2e3e5;
-            color: #383d41;
-            border: 1px solid #6c757d;
-        }
-
-        .job-details {
-            font-size: 14px;
-            color: #666;
-        }
-
-        .results-section {
-            margin-top: 20px;
-        }
-
-        .result-tabs {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-
-        .tab {
-            padding: 10px 20px;
-            background: #f0f0f0;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-        }
-
-        .tab.active {
-            background: #0074bc;
-            color: white;
-        }
-
-        .result-content {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 5px;
-            max-height: 400px;
-            overflow: auto;
-        }
-
-        .result-content pre {
-            margin: 0;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }
-
-        .loading {
-            text-align: center;
-            padding: 20px;
-            color: #666;
-        }
-
-        .error {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 15px;
-            border-radius: 5px;
-            margin-top: 10px;
-        }
-
-        .success {
-            background: #d4edda;
-            color: #155724;
-            padding: 15px;
-            border-radius: 5px;
-            margin-top: 10px;
-        }
-
-        .file-list {
-            list-style: none;
-            padding: 0;
-        }
-
-        .file-list li {
-            padding: 10px;
-            background: #f8f9fa;
-            border-radius: 5px;
-            margin-bottom: 5px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .download-btn {
-            font-size: 12px;
-            padding: 6px 15px;
-        }
-    </style>
+    <title>GPU Actuarial Projections</title>
+    <link rel="stylesheet" href="corp_style.css">
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 15px;">
-                <div style="background: #0074bc; color: white; padding: 12px 20px; border-radius: 5px; font-weight: bold; font-size: 24px; letter-spacing: 1px;">
-                    SAS
-                </div>
+            <div>
                 <div>
-                    <h1 style="margin-bottom: 5px; color: #003d6e;">GPU Actuarial Projections</h1>
-                    <p style="margin: 0; color: #666;">High-performance actuarial modeling powered by GPU acceleration</p>
+                    <h1>GPU Actuarial Projections</h1>
+                    <p>High-performance actuarial modeling powered by GPU acceleration</p>
                 </div>
             </div>
             <div class="status">
@@ -482,67 +22,67 @@
         </div>
 
         <div class="card">
-            <h2 style="color: #003d6e; border-bottom: 3px solid #0074bc; padding-bottom: 10px;">Create New Job</h2>
+            <h2>Create New Job</h2>
             <form id="job-form">
-                <div id="custom-paths-section" style="border: 1px solid #d0d0d0; padding: 20px; border-radius: 6px; margin-bottom: 20px; background: #f8f9fa;">
-                    <h3 onclick="toggleFilePaths()" style="margin-bottom: 10px; font-size: 16px; color: #003d6e; cursor: pointer; display: flex; align-items: center; gap: 8px; font-weight: 600;">
+                <div id="custom-paths-section">
+                    <h3 onclick="toggleFilePaths()">
                         <span id="file-paths-toggle-icon">▶</span> Upload Custom Files (Optional)
                     </h3>
-                    <div id="file-paths-content" style="display: none;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                            <p style="margin: 0; font-size: 13px; color: #666; font-style: italic;">
+                    <div id="file-paths-content">
+                        <div>
+                            <p>
                                 Upload custom files to override defaults. Unspecified files will use defaults from data_in folder.
                             </p>
-                            <button type="button" class="btn btn-secondary" onclick="clearAllFiles()" style="padding: 6px 12px; font-size: 12px;">
+                            <button type="button" class="btn btn-secondary" onclick="clearAllFiles()">
                                 Clear All
                             </button>
                         </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                        <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="POPULATION" style="font-size: 13px;">POPULATION.csv:</label>
-                            <input type="file" id="POPULATION" name="POPULATION" accept=".csv" style="padding: 8px; font-size: 13px;">
+                        <div>
+                        <div class="form-group">
+                            <label for="POPULATION">POPULATION.csv:</label>
+                            <input type="file" id="POPULATION" name="POPULATION" accept=".csv">
                         </div>
-                        <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="MORTALITE" style="font-size: 13px;">MORTALITE.csv:</label>
-                            <input type="file" id="MORTALITE" name="MORTALITE" accept=".csv" style="padding: 8px; font-size: 13px;">
+                        <div class="form-group">
+                            <label for="MORTALITE">MORTALITE.csv:</label>
+                            <input type="file" id="MORTALITE" name="MORTALITE" accept=".csv">
                         </div>
-                        <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="RENDEMENTS" style="font-size: 13px;">RENDEMENTS.csv:</label>
-                            <input type="file" id="RENDEMENTS" name="RENDEMENTS" accept=".csv" style="padding: 8px; font-size: 13px;">
+                        <div class="form-group">
+                            <label for="RENDEMENTS">RENDEMENTS.csv:</label>
+                            <input type="file" id="RENDEMENTS" name="RENDEMENTS" accept=".csv">
                         </div>
-                        <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="DEPOTS_FUTURS" style="font-size: 13px;">DEPOTS_FUTURS.csv:</label>
-                            <input type="file" id="DEPOTS_FUTURS" name="DEPOTS_FUTURS" accept=".csv" style="padding: 8px; font-size: 13px;">
+                        <div class="form-group">
+                            <label for="DEPOTS_FUTURS">DEPOTS_FUTURS.csv:</label>
+                            <input type="file" id="DEPOTS_FUTURS" name="DEPOTS_FUTURS" accept=".csv">
                         </div>
-                        <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="FRAIS_ADMIN" style="font-size: 13px;">FRAIS_ADMIN.csv:</label>
-                            <input type="file" id="FRAIS_ADMIN" name="FRAIS_ADMIN" accept=".csv" style="padding: 8px; font-size: 13px;">
+                        <div class="form-group">
+                            <label for="FRAIS_ADMIN">FRAIS_ADMIN.csv:</label>
+                            <input type="file" id="FRAIS_ADMIN" name="FRAIS_ADMIN" accept=".csv">
                         </div>
-                        <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="MIN_FERR" style="font-size: 13px;">MIN_FERR.csv:</label>
-                            <input type="file" id="MIN_FERR" name="MIN_FERR" accept=".csv" style="padding: 8px; font-size: 13px;">
+                        <div class="form-group">
+                            <label for="MIN_FERR">MIN_FERR.csv:</label>
+                            <input type="file" id="MIN_FERR" name="MIN_FERR" accept=".csv">
                         </div>
-                        <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="TX_LAPSE_PART" style="font-size: 13px;">TX_LAPSE_PART.csv:</label>
-                            <input type="file" id="TX_LAPSE_PART" name="TX_LAPSE_PART" accept=".csv" style="padding: 8px; font-size: 13px;">
+                        <div class="form-group">
+                            <label for="TX_LAPSE_PART">TX_LAPSE_PART.csv:</label>
+                            <input type="file" id="TX_LAPSE_PART" name="TX_LAPSE_PART" accept=".csv">
                         </div>
-                        <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="TX_LAPSE_TOT" style="font-size: 13px;">TX_LAPSE_TOT.csv:</label>
-                            <input type="file" id="TX_LAPSE_TOT" name="TX_LAPSE_TOT" accept=".csv" style="padding: 8px; font-size: 13px;">
+                        <div class="form-group">
+                            <label for="TX_LAPSE_TOT">TX_LAPSE_TOT.csv:</label>
+                            <input type="file" id="TX_LAPSE_TOT" name="TX_LAPSE_TOT" accept=".csv">
                         </div>
-                        <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="ACQUISITION" style="font-size: 13px;">ACQUISITION.csv:</label>
-                            <input type="file" id="ACQUISITION" name="ACQUISITION" accept=".csv" style="padding: 8px; font-size: 13px;">
+                        <div class="form-group">
+                            <label for="ACQUISITION">ACQUISITION.csv:</label>
+                            <input type="file" id="ACQUISITION" name="ACQUISITION" accept=".csv">
                         </div>
-                        <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="COUSSINS_ESCAP" style="font-size: 13px;">COUSSINS_ESCAP.csv:</label>
-                            <input type="file" id="COUSSINS_ESCAP" name="COUSSINS_ESCAP" accept=".csv" style="padding: 8px; font-size: 13px;">
+                        <div class="form-group">
+                            <label for="COUSSINS_ESCAP">COUSSINS_ESCAP.csv:</label>
+                            <input type="file" id="COUSSINS_ESCAP" name="COUSSINS_ESCAP" accept=".csv">
                         </div>
                         </div>
                     </div>
                 </div>
 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div>
                     <div class="form-group">
                         <label for="nb_an_projection">Years to Project:</label>
                         <input type="number" id="nb_an_projection" name="nb_an_projection" value="100" min="1" max="150">
@@ -564,14 +104,14 @@
                     </div>
                 </div>
 
-                <button type="submit" class="btn btn-primary" id="submit-btn" style="margin-top: 10px; padding: 14px 40px; font-size: 16px;">Create Job</button>
+                <button type="submit" class="btn btn-primary" id="submit-btn">Create Job</button>
             </form>
             <div id="create-message"></div>
         </div>
 
         <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h2 style="margin: 0; color: #003d6e; border-bottom: 3px solid #0074bc; padding-bottom: 10px;">Job Management</h2>
+            <div>
+                <h2>Job Management</h2>
                 <button class="btn btn-secondary" onclick="loadJobs()">↻ Refresh</button>
             </div>
             <div id="jobs-list" class="jobs-list">
@@ -579,28 +119,28 @@
             </div>
         </div>
 
-        <div class="card" style="text-align: center; padding: 30px;">
+        <div class="card">
             <button class="btn admin-btn" onclick="openAdminModal()">
                 ⚙️ Admin Actions
             </button>
         </div>
 
-        <div style="text-align: center; padding: 20px 0; color: rgba(255, 255, 255, 0.8); font-size: 13px;">
-            <p style="margin: 0;">SAS GPU Actuarial Projections Platform</p>
-            <p style="margin: 5px 0 0 0; opacity: 0.7;">Powered by GPU-accelerated computing</p>
+        <div>
+            <p>GPU Actuarial Projections Platform</p>
+            <p>Powered by GPU-accelerated computing</p>
         </div>
 
     </div>
 
     <!-- Admin Actions Modal -->
     <div id="admin-modal" class="modal">
-        <div class="modal-content" style="max-width: 600px;">
-            <div class="modal-header" style="background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);">
+        <div class="modal-content">
+            <div class="modal-header">
                 <h2>⚠️ Admin Actions</h2>
                 <span class="close-modal" onclick="closeAdminModal()">&times;</span>
             </div>
             <div class="modal-body">
-                <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #f39c12;">
+                <div>
                     <strong>⚠️ Warning:</strong> These actions are irreversible!
                 </div>
                 <form id="clear-db-form">
@@ -614,11 +154,11 @@
                             Also delete all uploaded files and results
                         </label>
                     </div>
-                    <button type="submit" class="btn" style="background-color: #e74c3c; color: white; width: 100%;">
+                    <button type="submit" class="btn">
                         🗑️ Clear Database
                     </button>
                 </form>
-                <div id="clear-db-message" style="margin-top: 15px;"></div>
+                <div id="clear-db-message"></div>
             </div>
         </div>
     </div>
@@ -632,7 +172,7 @@
             </div>
             <div class="modal-body">
                 <div id="modal-file-info"></div>
-                <div id="modal-table-container" style="overflow-x: auto; max-height: 500px; overflow-y: auto;"></div>
+                <div id="modal-table-container"></div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closePreviewModal()">Close</button>
@@ -772,7 +312,7 @@
                     let progressInfo = '';
                     if (job.status === 'running' && job.total_batches > 0) {
                         const progressPercent = job.progress_percent || 0;
-                        progressInfo = `<br><small style="color: #0074bc;">⏳ Batch ${job.current_batch || 0}/${job.total_batches} (${progressPercent.toFixed(0)}%)</small>`;
+                        progressInfo = `<br><small>⏳ Batch ${job.current_batch || 0}/${job.total_batches} (${progressPercent.toFixed(0)}%)</small>`;
                     }
                     
                     return `
@@ -943,23 +483,23 @@
                     other: '📄 Other'
                 };
                 
-                let html = '<div style="display: grid; gap: 15px;">';
+                let html = '<div>';
                 
                 Object.entries(filesByType).forEach(([type, files]) => {
                     if (files.length > 0) {
-                        html += `<div style="border: 1px solid #e0e0e0; border-radius: 5px; padding: 15px;">`;
-                        html += `<h4 style="margin-bottom: 10px;">${typeLabels[type]}</h4>`;
+                        html += `<div>`;
+                        html += `<h4>${typeLabels[type]}</h4>`;
                         files.forEach(file => {
                             const fileName = file.name;
                             const fileSize = file.size ? `(${(file.size / 1024).toFixed(2)} KB)` : '';
-                            const description = file.description ? `<div style="font-size: 12px; color: #666; margin-top: 3px;">${file.description}</div>` : '';
+                            const description = file.description ? `<div>${file.description}</div>` : '';
                             html += `
-                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #f9f9f9; border-radius: 5px; margin-bottom: 8px;">
+                                <div>
                                     <div>
                                         <strong>${fileName}</strong> ${fileSize}
                                         ${description}
                                     </div>
-                                    <div style="display: flex; gap: 8px;">
+                                    <div>
                                         <button class="file-preview-btn" onclick="previewFile('${jobId}', '${fileName}')">👁️ Preview</button>
                                         <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${fileName}')">⬇️ Download</button>
                                     </div>
@@ -1196,92 +736,6 @@
         // Initialize
         checkHealth();
         loadJobs();
-        
-        // Add 1990s-style JavaScript functionality
-        const API_BASE = window.location.origin;
-        let selectedJobId = null;
-
-        // Load jobs list
-        async function loadJobs() {
-            try {
-                const response = await fetch(`${API_BASE}/jobs`);
-                const data = await response.json();
-                
-                const jobsList = document.getElementById('jobs-list');
-                
-                if (data.jobs.length === 0) {
-                    jobsList.innerHTML = '<tr><td colspan="3">No jobs found</td></tr>';
-                    return;
-                }
-                
-                jobsList.innerHTML = data.jobs.map(job => {
-                    return `
-                        <tr onclick="showJobDetails('${job.job_id}')">
-                            <td>${job.job_id}</td>
-                            <td><span style="color: ${getStatusColor(job.status)}">${job.status}</span></td>
-                            <td>${new Date(job.created_at).toLocaleString()}</td>
-                        </tr>
-                    `;
-                }).join('');
-                
-            } catch (error) {
-                jobsList.innerHTML = '<tr><td colspan="3">Error loading jobs</td></tr>';
-            }
-        }
-        
-        function getStatusColor(status) {
-            switch(status) {
-                case 'completed': return 'green';
-                case 'running': return 'blue';
-                case 'failed': return 'red';
-                default: return 'black';
-            }
-        }
-        
-        function showJobDetails(jobId) {
-            alert(`Job details for ${jobId} would be shown here in a popup window.`);
-        }
-        
-        // Form submission
-        document.getElementById('job-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const submitBtn = document.getElementById('submit-btn');
-            submitBtn.disabled = true;
-            submitBtn.value = 'Processing...';
-            
-            try {
-                const response = await fetch(`${API_BASE}/jobs`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        nb_an_projection: document.getElementById('nb_an_projection').value,
-                        nb_scenarios: document.getElementById('nb_scenarios').value
-                    })
-                });
-                
-                const data = await response.json();
-                
-                if (response.ok) {
-                    alert(`Job created successfully! ID: ${data.job_id}`);
-                    loadJobs();
-                } else {
-                    alert(`Error: ${data.message || data.error}`);
-                }
-            } catch (error) {
-                alert(`Error: ${error.message}`);
-            } finally {
-                submitBtn.disabled = false;
-                submitBtn.value = 'Run Projection';
-            }
-        });
-        
-        // Initial load
-        window.onload = function() {
-            loadJobs();
-        };
     </script>
 </body>
 </html>
