@@ -258,31 +258,53 @@ def process_job(job_id: str):
         debug_account = params.get('debug_account', None)
         
         # Set up paths
-        # Use default data folder if specified, otherwise use job upload folder
-        if params.get('use_default_files', False):
-            data_path = app.config['DEFAULT_DATA_FOLDER']
+        # Check if job has uploaded files
+        upload_folder = get_job_upload_folder(job_id)
+        has_uploaded_files = job.get('uploaded_files') and len(job['uploaded_files']) > 0
+        
+        # Use uploaded files folder if files were uploaded, otherwise use default data folder
+        if has_uploaded_files:
+            data_path = upload_folder
         else:
-            data_path = get_job_upload_folder(job_id)
+            data_path = app.config['DEFAULT_DATA_FOLDER']
+        
         output_path = get_job_results_folder(job_id)
         
-        # Get custom file paths (if provided), fall back to default files for unspecified ones
+        # Get custom file paths for mixed uploads (some uploaded, some from defaults)
         default_data_path = app.config['DEFAULT_DATA_FOLDER']
+        uploaded_file_list = job.get('uploaded_files', [])
         
-        custom_paths = {
-            'population_path': Path(params['population_path']) if params.get('population_path') else (default_data_path / 'POPULATION.csv' if params.get('use_custom_paths') else None),
-            'mortalite_path': Path(params['mortalite_path']) if params.get('mortalite_path') else (default_data_path / 'MORTALITE.csv' if params.get('use_custom_paths') else None),
-            'rendements_path': Path(params['rendements_path']) if params.get('rendements_path') else (default_data_path / 'RENDEMENTS.csv' if params.get('use_custom_paths') else None),
-            'depots_futurs_path': Path(params['depots_futurs_path']) if params.get('depots_futurs_path') else (default_data_path / 'DEPOTS_FUTURS.csv' if params.get('use_custom_paths') else None),
-            'frais_admin_path': Path(params['frais_admin_path']) if params.get('frais_admin_path') else (default_data_path / 'FRAIS_ADMIN.csv' if params.get('use_custom_paths') else None),
-            'min_ferr_path': Path(params['min_ferr_path']) if params.get('min_ferr_path') else (default_data_path / 'MIN_FERR.csv' if params.get('use_custom_paths') else None),
-            'tx_lapse_part_path': Path(params['tx_lapse_part_path']) if params.get('tx_lapse_part_path') else (default_data_path / 'TX_LAPSE_PART.csv' if params.get('use_custom_paths') else None),
-            'tx_lapse_tot_path': Path(params['tx_lapse_tot_path']) if params.get('tx_lapse_tot_path') else (default_data_path / 'TX_LAPSE_TOT.csv' if params.get('use_custom_paths') else None),
-            'acquisition_path': Path(params['acquisition_path']) if params.get('acquisition_path') else (default_data_path / 'ACQUISITION.csv' if params.get('use_custom_paths') else None),
-            'coussins_escap_path': Path(params['coussins_escap_path']) if params.get('coussins_escap_path') else (default_data_path / 'COUSSINS_ESCAP.csv' if params.get('use_custom_paths') else None)
-        }
+        custom_paths = {}
+        
+        # If files were uploaded, specify individual paths for each file
+        if has_uploaded_files:
+            file_mapping = {
+                'population_path': 'POPULATION.csv',
+                'mortalite_path': 'MORTALITE.csv',
+                'rendements_path': 'RENDEMENTS.csv',
+                'depots_futurs_path': 'DEPOTS_FUTURS.csv',
+                'frais_admin_path': 'FRAIS_ADMIN.csv',
+                'min_ferr_path': 'MIN_FERR.csv',
+                'tx_lapse_part_path': 'TX_LAPSE_PART.csv',
+                'tx_lapse_tot_path': 'TX_LAPSE_TOT.csv',
+                'acquisition_path': 'ACQUISITION.csv',
+                'coussins_escap_path': 'COUSSINS_ESCAP.csv'
+            }
+            
+            for path_key, filename in file_mapping.items():
+                if filename in uploaded_file_list:
+                    # Use uploaded file
+                    custom_paths[path_key] = upload_folder / filename
+                else:
+                    # Use default file
+                    custom_paths[path_key] = default_data_path / filename
         
         # Run GPU projection
         print(f"Starting GPU projection for job {job_id}")
+        print(f"  Data path: {data_path}")
+        print(f"  Uploaded files: {uploaded_file_list}")
+        if custom_paths:
+            print(f"  Using custom paths for {len(custom_paths)} files")
         results = run_projection_gpu(
             data_path=data_path,
             output_path=output_path,
