@@ -277,6 +277,25 @@
             transform: translateY(-1px);
         }
 
+        /* Collapsible section header */
+        #custom-paths-section h3 {
+            transition: color 0.3s;
+        }
+
+        #custom-paths-section h3:hover {
+            color: #667eea !important;
+        }
+
+        #file-paths-toggle-icon {
+            transition: transform 0.3s;
+            font-size: 14px;
+        }
+
+        #file-paths-content {
+            transition: all 0.3s ease-out;
+            overflow: hidden;
+        }
+
         .jobs-list {
             max-height: 800px;
             overflow-y: auto;
@@ -466,11 +485,14 @@
             <h2>📤 Create New Job</h2>
             <form id="job-form">
                 <div id="custom-paths-section" style="border: 2px solid #e0e0e0; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                    <h3 style="margin-bottom: 10px; font-size: 16px; color: #555;">File Paths (Optional)</h3>
-                    <p style="margin-bottom: 15px; font-size: 13px; color: #666; font-style: italic;">
-                        Specify custom paths for files you want to override. Unspecified files will use defaults from data_in folder.
-                    </p>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <h3 onclick="toggleFilePaths()" style="margin-bottom: 10px; font-size: 16px; color: #555; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+                        <span id="file-paths-toggle-icon">▶</span> File Paths (Optional) - Click to expand
+                    </h3>
+                    <div id="file-paths-content" style="display: none;">
+                        <p style="margin-bottom: 15px; font-size: 13px; color: #666; font-style: italic;">
+                            Specify custom paths for files you want to override. Unspecified files will use defaults from data_in folder.
+                        </p>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                         <div class="form-group" style="margin-bottom: 10px;">
                             <label for="population_path" style="font-size: 13px;">POPULATION.csv:</label>
                             <input type="text" id="population_path" name="population_path" placeholder="/path/to/POPULATION.csv" style="padding: 8px; font-size: 13px;">
@@ -510,6 +532,7 @@
                         <div class="form-group" style="margin-bottom: 10px;">
                             <label for="coussins_escap_path" style="font-size: 13px;">COUSSINS_ESCAP.csv:</label>
                             <input type="text" id="coussins_escap_path" name="coussins_escap_path" placeholder="/path/to/COUSSINS_ESCAP.csv" style="padding: 8px; font-size: 13px;">
+                        </div>
                         </div>
                     </div>
                 </div>
@@ -701,6 +724,15 @@
                     return;
                 }
                 
+                // Store expanded job details content before rebuilding
+                let expandedContent = null;
+                if (selectedJobId) {
+                    const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
+                    if (detailsDiv) {
+                        expandedContent = detailsDiv.innerHTML;
+                    }
+                }
+                
                 jobsList.innerHTML = data.jobs.map(job => {
                     // Count files by type
                     let fileInfo = '';
@@ -745,9 +777,12 @@
                     `;
                 }).join('');
                 
-                // Reload details for currently selected job
-                if (selectedJobId) {
-                    loadJobDetails(selectedJobId);
+                // Restore expanded job details if it was open
+                if (selectedJobId && expandedContent) {
+                    const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
+                    if (detailsDiv) {
+                        detailsDiv.innerHTML = expandedContent;
+                    }
                 }
             } catch (error) {
                 document.getElementById('jobs-list').innerHTML = '<div class="error">Failed to load jobs</div>';
@@ -984,6 +1019,20 @@
             }
         });
 
+        // Toggle file paths section
+        function toggleFilePaths() {
+            const content = document.getElementById('file-paths-content');
+            const icon = document.getElementById('file-paths-toggle-icon');
+            
+            if (content.style.display === 'none' || content.style.display === '') {
+                content.style.display = 'block';
+                icon.textContent = '▼';
+            } else {
+                content.style.display = 'none';
+                icon.textContent = '▶';
+            }
+        }
+
         // Cancel a job
         async function cancelJob(jobId) {
             if (!confirm(`Are you sure you want to cancel job ${jobId}?`)) {
@@ -1087,8 +1136,8 @@
             }
         });
 
-        // Auto-refresh jobs every 5 seconds
-        setInterval(loadJobs, 5000);
+        // Auto-refresh jobs every 10 seconds
+        setInterval(loadJobs, 10000);
 
         // Initialize
         checkHealth();
