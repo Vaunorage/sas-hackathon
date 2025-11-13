@@ -163,6 +163,8 @@ def update_job_progress(job_id: str, current_batch: int, total_batches: int) -> 
     """
     progress_percent = (current_batch / total_batches * 100.0) if total_batches > 0 else 0.0
     
+    print(f"  Progress update: {job_id} - Batch {current_batch}/{total_batches} ({progress_percent:.1f}%)")
+    
     # Update in-memory progress for fast access
     job_progress[job_id] = {
         'current': current_batch,

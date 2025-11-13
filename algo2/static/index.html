@@ -846,11 +846,18 @@
                     `;
                 }).join('');
                 
-                // Restore expanded job details if it was open
-                if (selectedJobId && expandedContent) {
-                    const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
-                    if (detailsDiv) {
-                        detailsDiv.innerHTML = expandedContent;
+                // Reload details for expanded running jobs to show live progress
+                if (selectedJobId) {
+                    const selectedJob = data.jobs.find(j => j.job_id === selectedJobId);
+                    if (selectedJob && selectedJob.status === 'running') {
+                        // Refresh details for running job to show progress
+                        loadJobDetails(selectedJobId);
+                    } else if (expandedContent) {
+                        // Restore content for non-running jobs
+                        const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
+                        if (detailsDiv) {
+                            detailsDiv.innerHTML = expandedContent;
+                        }
                     }
                 }
             } catch (error) {
@@ -907,17 +914,27 @@
                 
                 // Progress bar
                 let progressHTML = '';
-                if (job.status === 'running' && job.total_batches > 0) {
-                    const progressPercent = job.progress_percent || 0;
-                    progressHTML = `
-                        <div style="margin: 15px 0;">
-                            <strong>Progress:</strong>
-                            <div class="progress-container">
-                                <div class="progress-text">Batch ${job.current_batch || 0} / ${job.total_batches} (${progressPercent.toFixed(1)}%)</div>
-                                <div class="progress-bar" style="width: ${progressPercent}%;"></div>
+                if (job.status === 'running') {
+                    console.log(`Job ${jobId} progress:`, {
+                        current_batch: job.current_batch,
+                        total_batches: job.total_batches,
+                        progress_percent: job.progress_percent
+                    });
+                    
+                    if (job.total_batches > 0) {
+                        const progressPercent = job.progress_percent || 0;
+                        progressHTML = `
+                            <div style="margin: 15px 0;">
+                                <strong>Progress:</strong>
+                                <div class="progress-container">
+                                    <div class="progress-text">Batch ${job.current_batch || 0} / ${job.total_batches} (${progressPercent.toFixed(1)}%)</div>
+                                    <div class="progress-bar" style="width: ${progressPercent}%;"></div>
+                                </div>
                             </div>
-                        </div>
-                    `;
+                        `;
+                    } else {
+                        progressHTML = `<p style="color: #667eea; font-size: 13px; margin: 10px 0;"><em>⏳ Initializing batch processing...</em></p>`;
+                    }
                 }
                 
                 detailsDiv.innerHTML = `
