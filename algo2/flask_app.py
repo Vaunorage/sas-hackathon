@@ -69,7 +69,10 @@ def init_db():
             error_message TEXT,
             parameters TEXT,
             uploaded_files TEXT,
-            result_files TEXT
+            result_files TEXT,
+            current_batch INTEGER DEFAULT 0,
+            total_batches INTEGER DEFAULT 0,
+            progress_percent REAL DEFAULT 0.0
         )
     """)
     
@@ -85,6 +88,7 @@ db_initialized = True
 # Track running jobs and their threads
 job_threads = {}
 job_cancellation_flags = {}
+job_progress = {}  # In-memory progress tracking: {job_id: {'current': int, 'total': int}}
 
 # =============================================================================
 # DATABASE HELPERS
@@ -137,6 +141,37 @@ def update_job_status(job_id: str, status: str, error_message: Optional[str] = N
     conn.commit()
     conn.close()
 
+def update_job_progress(job_id: str, current_batch: int, total_batches: int) -> None:
+    """
+    Update job progress
+    
+    Args:
+        job_id: Job identifier
+        current_batch: Current batch number (1-indexed)
+        total_batches: Total number of batches
+    """
+    progress_percent = (current_batch / total_batches * 100.0) if total_batches > 0 else 0.0
+    
+    # Update in-memory progress for fast access
+    job_progress[job_id] = {
+        'current': current_batch,
+        'total': total_batches,
+        'percent': progress_percent
+    }
+    
+    # Update database
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        UPDATE jobs 
+        SET current_batch = ?, total_batches = ?, progress_percent = ?
+        WHERE job_id = ?
+    """, (current_batch, total_batches, progress_percent, job_id))
+    
+    conn.commit()
+    conn.close()
+
 def update_job_results(job_id: str, result_files: list) -> None:
     """
     Update job with result files
@@ -165,7 +200,7 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     conn.close()
     
     if row:
-        return {
+        job_data = {
             'job_id': row['job_id'],
             'status': row['status'],
             'created_at': row['created_at'],
@@ -174,8 +209,12 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
             'error_message': row['error_message'],
             'parameters': json.loads(row['parameters']) if row['parameters'] else {},
             'uploaded_files': json.loads(row['uploaded_files']) if row['uploaded_files'] else [],
-            'result_files': json.loads(row['result_files']) if row['result_files'] else []
+            'result_files': json.loads(row['result_files']) if row['result_files'] else [],
+            'current_batch': row.get('current_batch', 0),
+            'total_batches': row.get('total_batches', 0),
+            'progress_percent': row.get('progress_percent', 0.0)
         }
+        return job_data
     return None
 
 def get_all_jobs() -> list:
@@ -198,7 +237,10 @@ def get_all_jobs() -> list:
             'error_message': row['error_message'],
             'parameters': json.loads(row['parameters']) if row['parameters'] else {},
             'uploaded_files': json.loads(row['uploaded_files']) if row['uploaded_files'] else [],
-            'result_files': json.loads(row['result_files']) if row['result_files'] else []
+            'result_files': json.loads(row['result_files']) if row['result_files'] else [],
+            'current_batch': row.get('current_batch', 0),
+            'total_batches': row.get('total_batches', 0),
+            'progress_percent': row.get('progress_percent', 0.0)
         })
     return jobs
 
@@ -299,6 +341,11 @@ def process_job(job_id: str):
                     # Use default file
                     custom_paths[path_key] = default_data_path / filename
         
+        # Define progress callback
+        def progress_callback(current_batch: int, total_batches: int):
+            """Callback to update job progress"""
+            update_job_progress(job_id, current_batch, total_batches)
+        
         # Run GPU projection
         print(f"Starting GPU projection for job {job_id}")
         print(f"  Data path: {data_path}")
@@ -312,6 +359,7 @@ def process_job(job_id: str):
             nb_scenarios=nb_scenarios,
             max_accounts=max_accounts,
             debug_account=debug_account,
+            progress_callback=progress_callback,
             **custom_paths
         )
         
@@ -373,6 +421,8 @@ def process_job(job_id: str):
             del job_threads[job_id]
         if job_id in job_cancellation_flags:
             del job_cancellation_flags[job_id]
+        if job_id in job_progress:
+            del job_progress[job_id]
 
 # =============================================================================
 # API ROUTES - HEALTH & STATUS

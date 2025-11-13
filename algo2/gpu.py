@@ -1161,7 +1161,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                        tx_lapse_part_path: Optional[Path] = None,
                        tx_lapse_tot_path: Optional[Path] = None,
                        acquisition_path: Optional[Path] = None,
-                       coussins_escap_path: Optional[Path] = None):
+                       coussins_escap_path: Optional[Path] = None,
+                       progress_callback: Optional[callable] = None):
     """
     Main function to run GPU-accelerated projection in batches to manage memory.
 
@@ -1353,6 +1354,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         current_batch_size = end_idx - start_idx
 
         print(f"\n--- Processing Batch {i + 1}/{num_batches} (Accounts {start_idx} to {end_idx - 1}) ---")
+        
+        # Report progress if callback provided
+        if progress_callback:
+            try:
+                progress_callback(i + 1, num_batches)
+            except Exception as e:
+                print(f"  Warning: Progress callback failed: {e}")
 
         # 1. Prepare batch-specific data
         batch_account_data = np.ascontiguousarray(all_account_data[start_idx:end_idx])

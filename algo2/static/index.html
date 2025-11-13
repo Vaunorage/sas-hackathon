@@ -296,6 +296,40 @@
             overflow: hidden;
         }
 
+        /* Progress bar styling */
+        .progress-container {
+            width: 100%;
+            background: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+            height: 24px;
+            position: relative;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .progress-text {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            line-height: 24px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #333;
+            z-index: 1;
+        }
+
         /* File input styling */
         input[type="file"] {
             cursor: pointer;
@@ -786,6 +820,13 @@
                         fileInfo = 'Results: No files yet';
                     }
                     
+                    // Progress info for running jobs
+                    let progressInfo = '';
+                    if (job.status === 'running' && job.total_batches > 0) {
+                        const progressPercent = job.progress_percent || 0;
+                        progressInfo = `<br><small style="color: #667eea;">⏳ Batch ${job.current_batch || 0}/${job.total_batches} (${progressPercent.toFixed(0)}%)</small>`;
+                    }
+                    
                     return `
                         <div class="job-item ${job.job_id === selectedJobId ? 'selected' : ''}" id="job-${job.job_id}">
                             <div class="job-item-header" onclick="toggleJob('${job.job_id}')">
@@ -795,7 +836,7 @@
                                 </div>
                                 <div class="job-details">
                                     Created: ${new Date(job.created_at).toLocaleString()}<br>
-                                    ${fileInfo}
+                                    ${fileInfo}${progressInfo}
                                 </div>
                             </div>
                             <div class="job-item-details" id="job-details-${job.job_id}">
@@ -864,10 +905,26 @@
                     cancelButton = `<button class="cancel-btn" onclick="cancelJob('${job.job_id}')">❌ Cancel Job</button>`;
                 }
                 
+                // Progress bar
+                let progressHTML = '';
+                if (job.status === 'running' && job.total_batches > 0) {
+                    const progressPercent = job.progress_percent || 0;
+                    progressHTML = `
+                        <div style="margin: 15px 0;">
+                            <strong>Progress:</strong>
+                            <div class="progress-container">
+                                <div class="progress-text">Batch ${job.current_batch || 0} / ${job.total_batches} (${progressPercent.toFixed(1)}%)</div>
+                                <div class="progress-bar" style="width: ${progressPercent}%;"></div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
                 detailsDiv.innerHTML = `
                     <div style="margin-bottom: 20px;">
                         <p><strong>Started:</strong> ${job.started_at ? new Date(job.started_at).toLocaleString() : 'Not started yet'}</p>
                         <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'Not completed yet'}</p>
+                        ${progressHTML}
                         ${cancelButton}
                         ${job.error_message ? `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>` : ''}
                         ${fileSourceHTML}
