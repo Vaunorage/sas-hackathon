@@ -5,188 +5,91 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SAS GPU Actuarial Projections</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #0074bc 0%, #003d6e 100%);
-            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            color: #333;
+            margin: 0;
             padding: 20px;
         }
-
+        
         .container {
-            max-width: 1200px;
+            max-width: 1000px;
             margin: 0 auto;
-        }
-
-        .header {
             background: white;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
-            margin-bottom: 25px;
-            border-top: 4px solid #0074bc;
-        }
-
-        .header h1 {
-            color: #003d6e;
-            margin-bottom: 5px;
-            font-size: 28px;
-        }
-
-        .header .status {
-            display: flex;
-            gap: 20px;
-            margin-top: 15px;
-        }
-
-        .status-badge {
-            padding: 6px 16px;
-            border-radius: 20px;
-            font-size: 13px;
-            font-weight: 600;
-            border: 1px solid;
-        }
-
-        .status-badge.healthy {
-            background: #d4edda;
-            color: #155724;
-            border-color: #28a745;
-        }
-
-        .status-badge.error {
-            background: #f8d7da;
-            color: #721c24;
-            border-color: #dc3545;
-        }
-
-        .card {
-            background: white;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
-            margin-bottom: 25px;
-            border-left: 4px solid #0074bc;
-        }
-
-        .card h2 {
-            color: #003d6e;
-            margin-bottom: 25px;
-            font-size: 22px;
-            font-weight: 600;
-        }
-
-        .form-group {
-            margin-bottom: 20px;
-        }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            color: #555;
-            font-weight: 500;
-        }
-
-        .form-group input[type="number"],
-        .form-group input[type="file"],
-        .form-group input[type="text"],
-        .form-group input[type="password"] {
-            width: 100%;
-            padding: 12px;
-            border: 1px solid #d0d0d0;
-            border-radius: 6px;
-            font-size: 14px;
-            transition: all 0.3s;
-        }
-
-        .form-group input:focus {
-            outline: none;
-            border-color: #0074bc;
-            box-shadow: 0 0 0 3px rgba(0, 116, 188, 0.1);
+            border: 1px solid #ccc;
+            padding: 20px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
         }
         
-        .form-group input[type="checkbox"] {
-            width: auto;
-            margin-right: 8px;
+        .header {
+            background: #003366;
+            color: white;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-bottom: 4px solid #ff6600;
         }
-
-        .btn {
-            padding: 12px 28px;
+        
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        
+        .card {
+            border: 1px solid #ddd;
+            padding: 15px;
+            margin-bottom: 20px;
+            background: white;
+        }
+        
+        .card h2 {
+            color: #003366;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 5px;
+            margin-top: 0;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+        }
+        
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        
+        th {
+            background-color: #003366;
+            color: white;
+        }
+        
+        input, select, button {
+            padding: 6px;
+            margin: 5px 0;
+            border: 1px solid #ccc;
+        }
+        
+        button {
+            background-color: #003366;
+            color: white;
             border: none;
-            border-radius: 6px;
-            font-size: 15px;
-            font-weight: 600;
+            padding: 8px 15px;
             cursor: pointer;
-            transition: all 0.2s;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
-
-        .btn-primary {
-            background: #0074bc;
-            color: white;
+        
+        button:hover {
+            background-color: #004080;
         }
-
-        .btn-primary:hover {
-            background: #005a94;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0, 116, 188, 0.3);
+        
+        .sas-logo {
+            font-weight: bold;
+            color: #ff6600;
+            font-size: 18px;
         }
-
-        .btn-secondary {
-            background: #6c757d;
-            color: white;
-        }
-
-        .btn-secondary:hover {
-            background: #5a6268;
-            transform: translateY(-1px);
-            box-shadow: 0 3px 6px rgba(0, 0, 0, 0.15);
-        }
-
-        .btn:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
-
-        .admin-btn {
-            background: #dc3545;
-            color: white;
-            font-size: 15px;
-            font-weight: 600;
-            padding: 14px 35px;
-            box-shadow: 0 3px 6px rgba(220, 53, 69, 0.25);
-            border-radius: 6px;
-        }
-
-        .admin-btn:hover {
-            background: #c82333;
-            box-shadow: 0 5px 10px rgba(220, 53, 69, 0.35);
-            transform: translateY(-2px);
-        }
-
-        .cancel-btn {
-            background-color: #e74c3c;
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            margin-top: 10px;
-            font-size: 14px;
-            font-weight: 500;
-            transition: all 0.3s;
-        }
-
-        .cancel-btn:hover {
-            background-color: #c0392b;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-        }
-
+        
         /* Modal Styles */
         .modal {
             display: none;
@@ -1293,6 +1196,92 @@
         // Initialize
         checkHealth();
         loadJobs();
+        
+        // Add 1990s-style JavaScript functionality
+        const API_BASE = window.location.origin;
+        let selectedJobId = null;
+
+        // Load jobs list
+        async function loadJobs() {
+            try {
+                const response = await fetch(`${API_BASE}/jobs`);
+                const data = await response.json();
+                
+                const jobsList = document.getElementById('jobs-list');
+                
+                if (data.jobs.length === 0) {
+                    jobsList.innerHTML = '<tr><td colspan="3">No jobs found</td></tr>';
+                    return;
+                }
+                
+                jobsList.innerHTML = data.jobs.map(job => {
+                    return `
+                        <tr onclick="showJobDetails('${job.job_id}')">
+                            <td>${job.job_id}</td>
+                            <td><span style="color: ${getStatusColor(job.status)}">${job.status}</span></td>
+                            <td>${new Date(job.created_at).toLocaleString()}</td>
+                        </tr>
+                    `;
+                }).join('');
+                
+            } catch (error) {
+                jobsList.innerHTML = '<tr><td colspan="3">Error loading jobs</td></tr>';
+            }
+        }
+        
+        function getStatusColor(status) {
+            switch(status) {
+                case 'completed': return 'green';
+                case 'running': return 'blue';
+                case 'failed': return 'red';
+                default: return 'black';
+            }
+        }
+        
+        function showJobDetails(jobId) {
+            alert(`Job details for ${jobId} would be shown here in a popup window.`);
+        }
+        
+        // Form submission
+        document.getElementById('job-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('submit-btn');
+            submitBtn.disabled = true;
+            submitBtn.value = 'Processing...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/jobs`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        nb_an_projection: document.getElementById('nb_an_projection').value,
+                        nb_scenarios: document.getElementById('nb_scenarios').value
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert(`Job created successfully! ID: ${data.job_id}`);
+                    loadJobs();
+                } else {
+                    alert(`Error: ${data.message || data.error}`);
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.value = 'Run Projection';
+            }
+        });
+        
+        // Initial load
+        window.onload = function() {
+            loadJobs();
+        };
     </script>
 </body>
 </html>
