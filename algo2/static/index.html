@@ -168,21 +168,54 @@ input[type="password"] {
     cursor: pointer;
 }
 
+#modal-table-container {
+    overflow: auto;
+    max-height: 500px;
+    border: 2px inset #808080;
+    background: #fff;
+    padding: 5px;
+}
+
+#modal-file-info {
+    padding: 10px;
+    background: #e0e0e0;
+    border: 1px solid #000;
+    margin-bottom: 10px;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+#modal-file-info p {
+    margin: 0;
+}
+
 .preview-table {
     width: 100%;
     border-collapse: collapse;
-    margin-top: 10px;
-}
-
-.preview-table th, .preview-table td {
-    border: 1px solid #000;
-    padding: 5px;
-    text-align: left;
+    font-size: 12px;
+    font-family: Arial, Helvetica, sans-serif;
 }
 
 .preview-table th {
-    background-color: #a0a0a0;
+    background-color: #000080;
+    color: #fff;
+    border: 1px solid #000;
+    padding: 8px 6px;
+    text-align: left;
     font-weight: bold;
+    position: sticky;
+    top: 0;
+    white-space: nowrap;
+}
+
+.preview-table td {
+    border: 1px solid #808080;
+    padding: 6px;
+    text-align: left;
+    background: #fff;
+}
+
+.preview-table tbody tr:nth-child(even) td {
+    background-color: #f0f0f0;
 }
 
 #custom-paths-section h3 {
