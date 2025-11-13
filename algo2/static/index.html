@@ -738,4 +738,240 @@
         loadJobs();
     </script>
 </body>
+<style>
+    /* 1990s Corporate Style */
+body {
+    font-family: 'Times New Roman', Times, serif;
+    background-color: #c0c0c0; /* Classic gray */
+    color: #000;
+    margin: 0;
+    padding: 0;
+}
+
+.container {
+    width: 980px;
+    margin: 10px auto;
+    background-color: #fff;
+    border: 2px solid #000;
+    padding: 10px;
+}
+
+.header {
+    background-color: #000080; /* Navy blue */
+    color: #fff;
+    padding: 10px;
+    border-bottom: 2px solid #000;
+    margin-bottom: 10px;
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 28px;
+    font-weight: bold;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border: 1px solid #000;
+    font-size: 12px;
+    background: #fff;
+}
+
+.status-badge.healthy {
+    color: #008000;
+}
+
+.status-badge.error {
+    color: #ff0000;
+}
+
+.card {
+    border: 1px solid #000;
+    padding: 15px;
+    margin-bottom: 15px;
+    background: #f0f0f0;
+}
+
+.card h2 {
+    font-size: 20px;
+    font-weight: bold;
+    margin-top: 0;
+    border-bottom: 1px solid #000;
+    padding-bottom: 5px;
+}
+
+.form-group {
+    margin-bottom: 10px;
+}
+
+.form-group label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 5px;
+}
+
+input[type="number"],
+input[type="file"],
+input[type="text"],
+input[type="password"] {
+    width: 98%;
+    padding: 5px;
+    border: 1px solid #000;
+    background-color: #fff;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+.btn {
+    background-color: #c0c0c0;
+    border: 2px outset #fff;
+    padding: 8px 15px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.btn:active {
+    border-style: inset;
+}
+
+.btn-primary {
+    background-color: #000080;
+    color: #fff;
+}
+
+.btn-secondary {
+    background-color: #808080;
+    color: #fff;
+}
+
+.admin-btn {
+    background-color: #ff0000;
+    color: #fff;
+}
+
+.cancel-btn {
+    background-color: #c00000;
+    color: #fff;
+}
+
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+    background-color: #fefefe;
+    margin: 5% auto;
+    padding: 20px;
+    border: 2px solid #000;
+    width: 80%;
+    max-width: 800px;
+}
+
+.modal-header {
+    padding-bottom: 10px;
+    border-bottom: 1px solid #000;
+}
+
+.close-modal {
+    float: right;
+    font-size: 20px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.preview-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+
+.preview-table th, .preview-table td {
+    border: 1px solid #000;
+    padding: 5px;
+    text-align: left;
+}
+
+.preview-table th {
+    background-color: #a0a0a0;
+    font-weight: bold;
+}
+
+#custom-paths-section h3 {
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: bold;
+}
+
+#file-paths-content {
+    display: none;
+    padding: 10px;
+    border: 1px dashed #000;
+    margin-top: 10px;
+}
+
+.progress-container {
+    width: 100%;
+    border: 1px solid #000;
+    background: #fff;
+    height: 20px;
+}
+
+.progress-bar {
+    height: 100%;
+    background: #000080; /* Navy blue */
+    text-align: center;
+    color: white;
+    font-size: 12px;
+    line-height: 20px;
+}
+
+.job-item {
+    border: 1px solid #000;
+    margin-bottom: 5px;
+}
+
+.job-item-header {
+    padding: 10px;
+    cursor: pointer;
+    background: #e0e0e0;
+}
+
+.job-item.selected .job-item-header {
+    background: #d0d0d0;
+    font-weight: bold;
+}
+
+.job-item-details {
+    display: none;
+    padding: 10px;
+    background: #fff;
+}
+
+.job-status {
+    padding: 2px 5px;
+    border: 1px solid #000;
+    font-size: 12px;
+}
+
+.job-status.pending { background: #ffff00; } /* Yellow */
+.job-status.running { background: #00ff00; } /* Green */
+.job-status.completed { background: #add8e6; } /* Light blue */
+.job-status.failed { background: #ff0000; color: #fff; } /* Red */
+.job-status.cancelled { background: #808080; color: #fff; } /* Gray */
+
+.error { color: #ff0000; font-weight: bold; }
+.success { color: #008000; font-weight: bold; }
+
+.loading {
+    font-style: italic;
+}
+
+</style>
 </html>
