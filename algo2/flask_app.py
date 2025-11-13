@@ -487,6 +487,7 @@ def create_job_endpoint():
         uploaded_files = []
         upload_folder = get_job_upload_folder(job_id)
         
+        # Check for files uploaded as a batch (old method)
         if 'files' in request.files:
             files = request.files.getlist('files')
             for file in files:
@@ -496,18 +497,33 @@ def create_job_endpoint():
                     file.save(filepath)
                     uploaded_files.append(filename)
         
+        # Check for individual file uploads with specific names
+        expected_files = [
+            'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv',
+            'DEPOTS_FUTURS.csv', 'FRAIS_ADMIN.csv', 'MIN_FERR.csv',
+            'TX_LAPSE_PART.csv', 'TX_LAPSE_TOT.csv', 'ACQUISITION.csv',
+            'COUSSINS_ESCAP.csv'
+        ]
+        
+        for expected_filename in expected_files:
+            file_key = expected_filename.replace('.csv', '')
+            if file_key in request.files:
+                file = request.files[file_key]
+                if file and file.filename and allowed_file(file.filename):
+                    # Save with expected filename
+                    filepath = upload_folder / expected_filename
+                    file.save(filepath)
+                    uploaded_files.append(expected_filename)
+        
         # Check if we have either uploaded files, custom paths mode, or use default files
         use_custom_paths = parameters.get('use_custom_paths', False)
         use_default_files = parameters.get('use_default_files', False)
         
-        # If using custom paths mode, that's valid (even without specifying paths, defaults will be used)
-        # If using default files, that's valid
-        # Otherwise, uploaded files are required
+        # Allow job creation if we have files OR will use defaults
+        # (We always use defaults for unspecified files now)
         if not uploaded_files and not use_custom_paths and not use_default_files:
-            return jsonify({
-                'error': 'No valid CSV files uploaded, custom paths mode, or default files selected',
-                'message': 'Please upload files, enable custom paths mode, or select "Use default files"'
-            }), 400
+            # Actually, it's OK to have no files - we'll use defaults
+            pass
         
         # Create job in database
         create_job(job_id, parameters, uploaded_files)

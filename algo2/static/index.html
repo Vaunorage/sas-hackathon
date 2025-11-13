@@ -296,6 +296,29 @@
             overflow: hidden;
         }
 
+        /* File input styling */
+        input[type="file"] {
+            cursor: pointer;
+            border: 1px solid #e0e0e0;
+            border-radius: 5px;
+            background: white;
+        }
+
+        input[type="file"]::-webkit-file-upload-button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-right: 10px;
+        }
+
+        input[type="file"]::-webkit-file-upload-button:hover {
+            background: #5568d3;
+        }
+
         .jobs-list {
             max-height: 800px;
             overflow-y: auto;
@@ -486,52 +509,57 @@
             <form id="job-form">
                 <div id="custom-paths-section" style="border: 2px solid #e0e0e0; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
                     <h3 onclick="toggleFilePaths()" style="margin-bottom: 10px; font-size: 16px; color: #555; cursor: pointer; display: flex; align-items: center; gap: 8px;">
-                        <span id="file-paths-toggle-icon">▶</span> File Paths (Optional) - Click to expand
+                        <span id="file-paths-toggle-icon">▶</span> Upload Custom Files (Optional) - Click to expand
                     </h3>
                     <div id="file-paths-content" style="display: none;">
-                        <p style="margin-bottom: 15px; font-size: 13px; color: #666; font-style: italic;">
-                            Specify custom paths for files you want to override. Unspecified files will use defaults from data_in folder.
-                        </p>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <p style="margin: 0; font-size: 13px; color: #666; font-style: italic;">
+                                Upload custom files to override defaults. Unspecified files will use defaults from data_in folder.
+                            </p>
+                            <button type="button" class="btn btn-secondary" onclick="clearAllFiles()" style="padding: 6px 12px; font-size: 12px;">
+                                Clear All
+                            </button>
+                        </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="population_path" style="font-size: 13px;">POPULATION.csv:</label>
-                            <input type="text" id="population_path" name="population_path" placeholder="/path/to/POPULATION.csv" style="padding: 8px; font-size: 13px;">
+                            <label for="POPULATION" style="font-size: 13px;">POPULATION.csv:</label>
+                            <input type="file" id="POPULATION" name="POPULATION" accept=".csv" style="padding: 8px; font-size: 13px;">
                         </div>
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="mortalite_path" style="font-size: 13px;">MORTALITE.csv:</label>
-                            <input type="text" id="mortalite_path" name="mortalite_path" placeholder="/path/to/MORTALITE.csv" style="padding: 8px; font-size: 13px;">
+                            <label for="MORTALITE" style="font-size: 13px;">MORTALITE.csv:</label>
+                            <input type="file" id="MORTALITE" name="MORTALITE" accept=".csv" style="padding: 8px; font-size: 13px;">
                         </div>
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="rendements_path" style="font-size: 13px;">RENDEMENTS.csv:</label>
-                            <input type="text" id="rendements_path" name="rendements_path" placeholder="/path/to/RENDEMENTS.csv" style="padding: 8px; font-size: 13px;">
+                            <label for="RENDEMENTS" style="font-size: 13px;">RENDEMENTS.csv:</label>
+                            <input type="file" id="RENDEMENTS" name="RENDEMENTS" accept=".csv" style="padding: 8px; font-size: 13px;">
                         </div>
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="depots_futurs_path" style="font-size: 13px;">DEPOTS_FUTURS.csv:</label>
-                            <input type="text" id="depots_futurs_path" name="depots_futurs_path" placeholder="/path/to/DEPOTS_FUTURS.csv" style="padding: 8px; font-size: 13px;">
+                            <label for="DEPOTS_FUTURS" style="font-size: 13px;">DEPOTS_FUTURS.csv:</label>
+                            <input type="file" id="DEPOTS_FUTURS" name="DEPOTS_FUTURS" accept=".csv" style="padding: 8px; font-size: 13px;">
                         </div>
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="frais_admin_path" style="font-size: 13px;">FRAIS_ADMIN.csv:</label>
-                            <input type="text" id="frais_admin_path" name="frais_admin_path" placeholder="/path/to/FRAIS_ADMIN.csv" style="padding: 8px; font-size: 13px;">
+                            <label for="FRAIS_ADMIN" style="font-size: 13px;">FRAIS_ADMIN.csv:</label>
+                            <input type="file" id="FRAIS_ADMIN" name="FRAIS_ADMIN" accept=".csv" style="padding: 8px; font-size: 13px;">
                         </div>
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="min_ferr_path" style="font-size: 13px;">MIN_FERR.csv:</label>
-                            <input type="text" id="min_ferr_path" name="min_ferr_path" placeholder="/path/to/MIN_FERR.csv" style="padding: 8px; font-size: 13px;">
+                            <label for="MIN_FERR" style="font-size: 13px;">MIN_FERR.csv:</label>
+                            <input type="file" id="MIN_FERR" name="MIN_FERR" accept=".csv" style="padding: 8px; font-size: 13px;">
                         </div>
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="tx_lapse_part_path" style="font-size: 13px;">TX_LAPSE_PART.csv:</label>
-                            <input type="text" id="tx_lapse_part_path" name="tx_lapse_part_path" placeholder="/path/to/TX_LAPSE_PART.csv" style="padding: 8px; font-size: 13px;">
+                            <label for="TX_LAPSE_PART" style="font-size: 13px;">TX_LAPSE_PART.csv:</label>
+                            <input type="file" id="TX_LAPSE_PART" name="TX_LAPSE_PART" accept=".csv" style="padding: 8px; font-size: 13px;">
                         </div>
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="tx_lapse_tot_path" style="font-size: 13px;">TX_LAPSE_TOT.csv:</label>
-                            <input type="text" id="tx_lapse_tot_path" name="tx_lapse_tot_path" placeholder="/path/to/TX_LAPSE_TOT.csv" style="padding: 8px; font-size: 13px;">
+                            <label for="TX_LAPSE_TOT" style="font-size: 13px;">TX_LAPSE_TOT.csv:</label>
+                            <input type="file" id="TX_LAPSE_TOT" name="TX_LAPSE_TOT" accept=".csv" style="padding: 8px; font-size: 13px;">
                         </div>
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="acquisition_path" style="font-size: 13px;">ACQUISITION.csv:</label>
-                            <input type="text" id="acquisition_path" name="acquisition_path" placeholder="/path/to/ACQUISITION.csv" style="padding: 8px; font-size: 13px;">
+                            <label for="ACQUISITION" style="font-size: 13px;">ACQUISITION.csv:</label>
+                            <input type="file" id="ACQUISITION" name="ACQUISITION" accept=".csv" style="padding: 8px; font-size: 13px;">
                         </div>
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="coussins_escap_path" style="font-size: 13px;">COUSSINS_ESCAP.csv:</label>
-                            <input type="text" id="coussins_escap_path" name="coussins_escap_path" placeholder="/path/to/COUSSINS_ESCAP.csv" style="padding: 8px; font-size: 13px;">
+                            <label for="COUSSINS_ESCAP" style="font-size: 13px;">COUSSINS_ESCAP.csv:</label>
+                            <input type="file" id="COUSSINS_ESCAP" name="COUSSINS_ESCAP" accept=".csv" style="padding: 8px; font-size: 13px;">
                         </div>
                         </div>
                     </div>
@@ -818,23 +846,14 @@
                 const job = await response.json();
                 
                 // Build file source info
-                const customPathsUsed = job.parameters && Object.keys(job.parameters).some(key => 
-                    key.endsWith('_path') && job.parameters[key]
-                );
-                
                 let fileSourceHTML = '';
-                if (customPathsUsed) {
-                    fileSourceHTML = '<p><strong>Custom paths specified:</strong></p><ul style="font-size: 13px; color: #666;">';
-                    const pathKeys = ['population_path', 'mortalite_path', 'rendements_path', 'depots_futurs_path',
-                                      'frais_admin_path', 'min_ferr_path', 'tx_lapse_part_path', 'tx_lapse_tot_path',
-                                      'acquisition_path', 'coussins_escap_path'];
-                    pathKeys.forEach(key => {
-                        if (job.parameters[key]) {
-                            fileSourceHTML += `<li><strong>${key.replace('_path', '')}:</strong> ${job.parameters[key]}</li>`;
-                        }
+                if (job.uploaded_files && job.uploaded_files.length > 0) {
+                    fileSourceHTML = '<p><strong>Uploaded files:</strong></p><ul style="font-size: 13px; color: #666;">';
+                    job.uploaded_files.forEach(filename => {
+                        fileSourceHTML += `<li>${filename}</li>`;
                     });
                     fileSourceHTML += '</ul>';
-                    fileSourceHTML += '<p style="font-size: 13px; color: #666; font-style: italic; margin-top: 5px;">Unspecified files use defaults from data_in folder</p>';
+                    fileSourceHTML += '<p style="font-size: 13px; color: #666; font-style: italic; margin-top: 5px;">Other files use defaults from data_in folder</p>';
                 } else {
                     fileSourceHTML = '<p style="font-size: 13px; color: #666; font-style: italic;">All files use defaults from data_in folder</p>';
                 }
@@ -1033,6 +1052,23 @@
             }
         }
 
+        // Clear all file inputs
+        function clearAllFiles() {
+            const fileInputIds = [
+                'POPULATION', 'MORTALITE', 'RENDEMENTS', 
+                'DEPOTS_FUTURS', 'FRAIS_ADMIN', 'MIN_FERR',
+                'TX_LAPSE_PART', 'TX_LAPSE_TOT', 'ACQUISITION', 
+                'COUSSINS_ESCAP'
+            ];
+            
+            fileInputIds.forEach(id => {
+                const input = document.getElementById(id);
+                if (input) {
+                    input.value = '';
+                }
+            });
+        }
+
         // Cancel a job
         async function cancelJob(jobId) {
             if (!confirm(`Are you sure you want to cancel job ${jobId}?`)) {
@@ -1081,24 +1117,20 @@
             try {
                 const formData = new FormData();
                 
-                // Always use custom paths mode
-                // Add custom paths (any unspecified paths will use defaults from data_in)
-                const customPathIds = [
-                    'population_path', 'mortalite_path', 'rendements_path', 
-                    'depots_futurs_path', 'frais_admin_path', 'min_ferr_path',
-                    'tx_lapse_part_path', 'tx_lapse_tot_path', 'acquisition_path', 
-                    'coussins_escap_path'
+                // Add uploaded files (if any)
+                const fileInputIds = [
+                    'POPULATION', 'MORTALITE', 'RENDEMENTS', 
+                    'DEPOTS_FUTURS', 'FRAIS_ADMIN', 'MIN_FERR',
+                    'TX_LAPSE_PART', 'TX_LAPSE_TOT', 'ACQUISITION', 
+                    'COUSSINS_ESCAP'
                 ];
                 
-                customPathIds.forEach(pathId => {
-                    const value = document.getElementById(pathId).value;
-                    if (value) {
-                        formData.append(pathId, value);
+                fileInputIds.forEach(fileId => {
+                    const fileInput = document.getElementById(fileId);
+                    if (fileInput && fileInput.files.length > 0) {
+                        formData.append(fileId, fileInput.files[0]);
                     }
                 });
-                
-                // Always enable custom paths mode
-                formData.append('use_custom_paths', 'true');
                 
                 // Add parameters
                 const nbAnProjection = document.getElementById('nb_an_projection').value;
