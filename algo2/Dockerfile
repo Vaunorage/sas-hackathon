@@ -12,9 +12,19 @@ COPY flask_app.py .
 COPY gpu.py .
 COPY cpu.py .
 COPY paths.py .
+COPY extract_csv_from_zips.py .
 
 # Create directories for data
-RUN mkdir -p uploads results static
+RUN mkdir -p uploads results static data_in default_data
+
+# Copy zip files
+COPY *.zip ./default_data/
+
+# Extract CSV files from zips during build
+RUN python extract_csv_from_zips.py
+
+# Optional: Remove zip files to reduce image size
+# RUN rm -rf default_data
 
 # Copy web interface
 COPY static/index.html ./static/

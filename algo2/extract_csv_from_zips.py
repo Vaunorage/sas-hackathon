@@ -76,22 +76,36 @@ def extract_csv_from_zips(zip_files, destination_folder):
 
 if __name__ == "__main__":
     # Define the zip files to process
-    base_dir = HERE.joinpath('algo2')
+    # Check if running in Docker (working dir is /app) or locally
+    if HERE.name == 'app' or (HERE / 'flask_app.py').exists():
+        # Running in Docker or from algo2 directory
+        base_dir = HERE
+    else:
+        # Running from repo root
+        base_dir = HERE / 'algo2'
+    
     zip_data_dir = base_dir / "default_data"
     
-    zip_files = [
-        zip_data_dir / "data_1.zip",
-        zip_data_dir / "data_2.zip",
-        zip_data_dir / "data_3.zip",
-        zip_data_dir / "data_4.zip",
-        zip_data_dir / "data_5.zip",
-    ]
+    # Find all zip files in the default_data directory
+    zip_files = list(zip_data_dir.glob("*.zip"))
+    
+    if not zip_files:
+        print(f"Warning: No zip files found in {zip_data_dir}")
+        # Fallback to specific files if directory doesn't exist
+        zip_files = [
+            zip_data_dir / "data_1.zip",
+            zip_data_dir / "data_2.zip",
+            zip_data_dir / "data_3.zip",
+            zip_data_dir / "data_4.zip",
+            zip_data_dir / "data_5.zip",
+        ]
     
     # Define destination folder (you can change this)
     destination_folder = base_dir / "data_in"
     
     print("CSV Extraction Script")
     print(f"{'='*60}")
+    print(f"Base directory: {base_dir}")
     print(f"Source zip files: {len(zip_files)}")
     print(f"Destination: {destination_folder}")
     print(f"{'='*60}")
