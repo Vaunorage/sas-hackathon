@@ -76,6 +76,17 @@ def init_db():
         )
     """)
     
+    # Migrate existing database to add new columns if they don't exist
+    try:
+        cursor.execute("SELECT current_batch FROM jobs LIMIT 1")
+    except sqlite3.OperationalError:
+        # Column doesn't exist, add it
+        print("Migrating database: Adding progress tracking columns...")
+        cursor.execute("ALTER TABLE jobs ADD COLUMN current_batch INTEGER DEFAULT 0")
+        cursor.execute("ALTER TABLE jobs ADD COLUMN total_batches INTEGER DEFAULT 0")
+        cursor.execute("ALTER TABLE jobs ADD COLUMN progress_percent REAL DEFAULT 0.0")
+        print("Migration complete")
+    
     conn.commit()
     conn.close()
 
@@ -209,11 +220,19 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
             'error_message': row['error_message'],
             'parameters': json.loads(row['parameters']) if row['parameters'] else {},
             'uploaded_files': json.loads(row['uploaded_files']) if row['uploaded_files'] else [],
-            'result_files': json.loads(row['result_files']) if row['result_files'] else [],
-            'current_batch': row.get('current_batch', 0),
-            'total_batches': row.get('total_batches', 0),
-            'progress_percent': row.get('progress_percent', 0.0)
+            'result_files': json.loads(row['result_files']) if row['result_files'] else []
         }
+        
+        # Handle progress fields (may not exist in old records)
+        try:
+            job_data['current_batch'] = row['current_batch'] if row['current_batch'] is not None else 0
+            job_data['total_batches'] = row['total_batches'] if row['total_batches'] is not None else 0
+            job_data['progress_percent'] = row['progress_percent'] if row['progress_percent'] is not None else 0.0
+        except (KeyError, IndexError):
+            job_data['current_batch'] = 0
+            job_data['total_batches'] = 0
+            job_data['progress_percent'] = 0.0
+        
         return job_data
     return None
 
@@ -228,7 +247,7 @@ def get_all_jobs() -> list:
     
     jobs = []
     for row in rows:
-        jobs.append({
+        job_data = {
             'job_id': row['job_id'],
             'status': row['status'],
             'created_at': row['created_at'],
@@ -237,11 +256,20 @@ def get_all_jobs() -> list:
             'error_message': row['error_message'],
             'parameters': json.loads(row['parameters']) if row['parameters'] else {},
             'uploaded_files': json.loads(row['uploaded_files']) if row['uploaded_files'] else [],
-            'result_files': json.loads(row['result_files']) if row['result_files'] else [],
-            'current_batch': row.get('current_batch', 0),
-            'total_batches': row.get('total_batches', 0),
-            'progress_percent': row.get('progress_percent', 0.0)
-        })
+            'result_files': json.loads(row['result_files']) if row['result_files'] else []
+        }
+        
+        # Handle progress fields (may not exist in old records)
+        try:
+            job_data['current_batch'] = row['current_batch'] if row['current_batch'] is not None else 0
+            job_data['total_batches'] = row['total_batches'] if row['total_batches'] is not None else 0
+            job_data['progress_percent'] = row['progress_percent'] if row['progress_percent'] is not None else 0.0
+        except (KeyError, IndexError):
+            job_data['current_batch'] = 0
+            job_data['total_batches'] = 0
+            job_data['progress_percent'] = 0.0
+        
+        jobs.append(job_data)
     return jobs
 
 # =============================================================================
