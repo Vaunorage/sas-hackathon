@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
-"""
-Script to extract CSV files from zip archives into a destination folder.
-"""
+import copy
 import zipfile
 from pathlib import Path
 
@@ -75,14 +72,8 @@ def extract_csv_from_zips(zip_files, destination_folder):
 
 
 if __name__ == "__main__":
-    # Define the zip files to process
-    # Check if running in Docker (working dir is /app) or locally
-    if HERE.name == 'app' or (HERE / 'flask_app.py').exists():
-        # Running in Docker or from algo2 directory
-        base_dir = HERE
-    else:
-        # Running from repo root
-        base_dir = HERE / 'algo2'
+
+    base_dir = copy.deepcopy(HERE)
     
     zip_data_dir = base_dir / "default_data"
     

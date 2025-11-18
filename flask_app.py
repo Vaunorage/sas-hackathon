@@ -17,6 +17,8 @@ from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
+from paths import HERE
+
 # Import the GPU projection function
 try:
     from gpu import run_projection_gpu
@@ -32,15 +34,15 @@ except Exception as e:
 app = Flask(__name__, static_folder='static')
 CORS(app)  # Enable CORS for all routes
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max upload
-app.config['UPLOAD_FOLDER'] = Path(__file__).parent / 'uploads'
-app.config['RESULTS_FOLDER'] = Path(__file__).parent / 'results'
-app.config['DATABASE'] = Path(__file__).parent / 'jobs.db'
-app.config['DEFAULT_DATA_FOLDER'] = Path(__file__).parent / 'data_in'
+app.config['UPLOAD_FOLDER'] = HERE / 'uploads'
+app.config['RESULTS_FOLDER'] = HERE / 'results'
+app.config['DATABASE'] = HERE / 'jobs.db'
+app.config['DEFAULT_DATA_FOLDER'] = HERE/ 'data_in'
 
 # Create directories if they don't exist
 app.config['UPLOAD_FOLDER'].mkdir(exist_ok=True)
 app.config['RESULTS_FOLDER'].mkdir(exist_ok=True)
-Path(__file__).parent.joinpath('static').mkdir(exist_ok=True)
+HERE.joinpath('static').mkdir(exist_ok=True)
 
 # Application metadata
 APP_VERSION = "1.0.0"
@@ -505,7 +507,7 @@ def welcome():
 @app.route('/web', methods=['GET'])
 def web_interface():
     """Serve the web interface"""
-    return send_from_directory('static', 'index.html')
+    return send_from_directory('', 'index.html')
 
 @app.route('/ping', methods=['GET'])
 def ping():
