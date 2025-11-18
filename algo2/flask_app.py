@@ -13,25 +13,9 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 import pandas as pd
 
-# Load environment variables from .env file if it exists
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # python-dotenv not installed, continue without it
-
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-
-# PostgreSQL support
-try:
-    import psycopg
-    from psycopg.rows import dict_row
-    POSTGRES_AVAILABLE = True
-except ImportError:
-    print("Warning: psycopg not available. Install it to use NeonDB/PostgreSQL support.")
-    POSTGRES_AVAILABLE = False
 
 # Import the GPU projection function
 try:
@@ -63,10 +47,6 @@ APP_VERSION = "1.0.0"
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')  # Change in production!
 
-# Database configuration
-USE_NEONDB = os.getenv('USE_NEONDB', 'false').lower() == 'true'
-NEONDB_URL = os.getenv('NEONDB_URL', 'postgresql://neondb_owner:npg_U8nuV5Zzbsge@ep-spring-hall-a448t160-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require')
-
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'csv'}
 
@@ -75,70 +55,40 @@ ALLOWED_EXTENSIONS = {'csv'}
 # =============================================================================
 
 def init_db():
-    """Initialize the database (SQLite or PostgreSQL) with jobs table"""
-    if USE_NEONDB:
-        if not POSTGRES_AVAILABLE:
-            raise Exception("PostgreSQL support requires psycopg. Install it with: uv add psycopg[binary]")
-        
-        conn = psycopg.connect(NEONDB_URL)
-        cursor = conn.cursor()
-        
-        # PostgreSQL syntax
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                job_id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                started_at TEXT,
-                completed_at TEXT,
-                error_message TEXT,
-                parameters TEXT,
-                uploaded_files TEXT,
-                result_files TEXT,
-                current_batch INTEGER DEFAULT 0,
-                total_batches INTEGER DEFAULT 0,
-                progress_percent REAL DEFAULT 0.0
-            )
-        """)
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-    else:
-        # SQLite initialization
-        conn = sqlite3.connect(app.config['DATABASE'])
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                job_id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                started_at TEXT,
-                completed_at TEXT,
-                error_message TEXT,
-                parameters TEXT,
-                uploaded_files TEXT,
-                result_files TEXT,
-                current_batch INTEGER DEFAULT 0,
-                total_batches INTEGER DEFAULT 0,
-                progress_percent REAL DEFAULT 0.0
-            )
-        """)
-        
-        # Migrate existing database to add new columns if they don't exist
-        try:
-            cursor.execute("SELECT current_batch FROM jobs LIMIT 1")
-        except sqlite3.OperationalError:
-            # Column doesn't exist, add it
-            print("Migrating database: Adding progress tracking columns...")
-            cursor.execute("ALTER TABLE jobs ADD COLUMN current_batch INTEGER DEFAULT 0")
-            cursor.execute("ALTER TABLE jobs ADD COLUMN total_batches INTEGER DEFAULT 0")
-            cursor.execute("ALTER TABLE jobs ADD COLUMN progress_percent REAL DEFAULT 0.0")
-            print("Migration complete")
-        
-        conn.commit()
-        conn.close()
+    """Initialize the SQLite database with jobs table"""
+    conn = sqlite3.connect(app.config['DATABASE'])
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            error_message TEXT,
+            parameters TEXT,
+            uploaded_files TEXT,
+            result_files TEXT,
+            current_batch INTEGER DEFAULT 0,
+            total_batches INTEGER DEFAULT 0,
+            progress_percent REAL DEFAULT 0.0
+        )
+    """)
+    
+    # Migrate existing database to add new columns if they don't exist
+    try:
+        cursor.execute("SELECT current_batch FROM jobs LIMIT 1")
+    except sqlite3.OperationalError:
+        # Column doesn't exist, add it
+        print("Migrating database: Adding progress tracking columns...")
+        cursor.execute("ALTER TABLE jobs ADD COLUMN current_batch INTEGER DEFAULT 0")
+        cursor.execute("ALTER TABLE jobs ADD COLUMN total_batches INTEGER DEFAULT 0")
+        cursor.execute("ALTER TABLE jobs ADD COLUMN progress_percent REAL DEFAULT 0.0")
+        print("Migration complete")
+    
+    conn.commit()
+    conn.close()
 
 # Initialize database on startup
 init_db()
@@ -156,27 +106,19 @@ job_progress = {}  # In-memory progress tracking: {job_id: {'current': int, 'tot
 # =============================================================================
 
 def get_db_connection():
-    """Get a database connection (SQLite or PostgreSQL)"""
-    if USE_NEONDB:
-        if not POSTGRES_AVAILABLE:
-            raise Exception("PostgreSQL support requires psycopg. Install it with: uv add psycopg[binary]")
-        return psycopg.connect(NEONDB_URL, row_factory=dict_row)
-    else:
-        conn = sqlite3.connect(app.config['DATABASE'])
-        conn.row_factory = sqlite3.Row
-        return conn
+    """Get a database connection"""
+    conn = sqlite3.connect(app.config['DATABASE'])
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def create_job(job_id: str, parameters: Dict[str, Any], uploaded_files: list) -> None:
     """Create a new job in the database"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Use %s for PostgreSQL, ? for SQLite
-    placeholder = '%s' if USE_NEONDB else '?'
-    
-    cursor.execute(f"""
+    cursor.execute("""
         INSERT INTO jobs (job_id, status, created_at, parameters, uploaded_files)
-        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+        VALUES (?, ?, ?, ?, ?)
     """, (
         job_id,
         'pending',
@@ -186,7 +128,6 @@ def create_job(job_id: str, parameters: Dict[str, Any], uploaded_files: list) ->
     ))
     
     conn.commit()
-    cursor.close()
     conn.close()
 
 def update_job_status(job_id: str, status: str, error_message: Optional[str] = None) -> None:
@@ -204,13 +145,11 @@ def update_job_status(job_id: str, status: str, error_message: Optional[str] = N
     if error_message:
         updates['error_message'] = error_message
     
-    placeholder = '%s' if USE_NEONDB else '?'
-    set_clause = ', '.join([f"{k} = {placeholder}" for k in updates.keys()])
+    set_clause = ', '.join([f"{k} = ?" for k in updates.keys()])
     values = list(updates.values()) + [job_id]
     
-    cursor.execute(f"UPDATE jobs SET {set_clause} WHERE job_id = {placeholder}", values)
+    cursor.execute(f"UPDATE jobs SET {set_clause} WHERE job_id = ?", values)
     conn.commit()
-    cursor.close()
     conn.close()
 
 def update_job_progress(job_id: str, current_batch: int, total_batches: int) -> None:
@@ -237,16 +176,13 @@ def update_job_progress(job_id: str, current_batch: int, total_batches: int) -> 
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    placeholder = '%s' if USE_NEONDB else '?'
-    
-    cursor.execute(f"""
+    cursor.execute("""
         UPDATE jobs 
-        SET current_batch = {placeholder}, total_batches = {placeholder}, progress_percent = {placeholder}
-        WHERE job_id = {placeholder}
+        SET current_batch = ?, total_batches = ?, progress_percent = ?
+        WHERE job_id = ?
     """, (current_batch, total_batches, progress_percent, job_id))
     
     conn.commit()
-    cursor.close()
     conn.close()
 
 def update_job_results(job_id: str, result_files: list) -> None:
@@ -260,14 +196,11 @@ def update_job_results(job_id: str, result_files: list) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    placeholder = '%s' if USE_NEONDB else '?'
-    
-    cursor.execute(f"""
-        UPDATE jobs SET result_files = {placeholder} WHERE job_id = {placeholder}
+    cursor.execute("""
+        UPDATE jobs SET result_files = ? WHERE job_id = ?
     """, (json.dumps(result_files), job_id))
     
     conn.commit()
-    cursor.close()
     conn.close()
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
@@ -275,35 +208,28 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    placeholder = '%s' if USE_NEONDB else '?'
-    
-    cursor.execute(f"SELECT * FROM jobs WHERE job_id = {placeholder}", (job_id,))
+    cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
     row = cursor.fetchone()
-    cursor.close()
     conn.close()
     
     if row:
-        # Handle both SQLite Row objects and PostgreSQL dict rows
-        # Both should work as dict-like objects now
-        row_dict = dict(row)
-        
         job_data = {
-            'job_id': row_dict['job_id'],
-            'status': row_dict['status'],
-            'created_at': row_dict['created_at'],
-            'started_at': row_dict['started_at'],
-            'completed_at': row_dict['completed_at'],
-            'error_message': row_dict['error_message'],
-            'parameters': json.loads(row_dict['parameters']) if row_dict['parameters'] else {},
-            'uploaded_files': json.loads(row_dict['uploaded_files']) if row_dict['uploaded_files'] else [],
-            'result_files': json.loads(row_dict['result_files']) if row_dict['result_files'] else []
+            'job_id': row['job_id'],
+            'status': row['status'],
+            'created_at': row['created_at'],
+            'started_at': row['started_at'],
+            'completed_at': row['completed_at'],
+            'error_message': row['error_message'],
+            'parameters': json.loads(row['parameters']) if row['parameters'] else {},
+            'uploaded_files': json.loads(row['uploaded_files']) if row['uploaded_files'] else [],
+            'result_files': json.loads(row['result_files']) if row['result_files'] else []
         }
         
         # Handle progress fields (may not exist in old records)
         try:
-            job_data['current_batch'] = row_dict['current_batch'] if row_dict['current_batch'] is not None else 0
-            job_data['total_batches'] = row_dict['total_batches'] if row_dict['total_batches'] is not None else 0
-            job_data['progress_percent'] = row_dict['progress_percent'] if row_dict['progress_percent'] is not None else 0.0
+            job_data['current_batch'] = row['current_batch'] if row['current_batch'] is not None else 0
+            job_data['total_batches'] = row['total_batches'] if row['total_batches'] is not None else 0
+            job_data['progress_percent'] = row['progress_percent'] if row['progress_percent'] is not None else 0.0
         except (KeyError, IndexError):
             job_data['current_batch'] = 0
             job_data['total_batches'] = 0
@@ -319,32 +245,27 @@ def get_all_jobs() -> list:
     
     cursor.execute("SELECT * FROM jobs ORDER BY created_at DESC")
     rows = cursor.fetchall()
-    cursor.close()
     conn.close()
     
     jobs = []
     for row in rows:
-        # Handle both SQLite Row objects and PostgreSQL dict rows
-        # Both should work as dict-like objects now
-        row_dict = dict(row)
-        
         job_data = {
-            'job_id': row_dict['job_id'],
-            'status': row_dict['status'],
-            'created_at': row_dict['created_at'],
-            'started_at': row_dict['started_at'],
-            'completed_at': row_dict['completed_at'],
-            'error_message': row_dict['error_message'],
-            'parameters': json.loads(row_dict['parameters']) if row_dict['parameters'] else {},
-            'uploaded_files': json.loads(row_dict['uploaded_files']) if row_dict['uploaded_files'] else [],
-            'result_files': json.loads(row_dict['result_files']) if row_dict['result_files'] else []
+            'job_id': row['job_id'],
+            'status': row['status'],
+            'created_at': row['created_at'],
+            'started_at': row['started_at'],
+            'completed_at': row['completed_at'],
+            'error_message': row['error_message'],
+            'parameters': json.loads(row['parameters']) if row['parameters'] else {},
+            'uploaded_files': json.loads(row['uploaded_files']) if row['uploaded_files'] else [],
+            'result_files': json.loads(row['result_files']) if row['result_files'] else []
         }
         
         # Handle progress fields (may not exist in old records)
         try:
-            job_data['current_batch'] = row_dict['current_batch'] if row_dict['current_batch'] is not None else 0
-            job_data['total_batches'] = row_dict['total_batches'] if row_dict['total_batches'] is not None else 0
-            job_data['progress_percent'] = row_dict['progress_percent'] if row_dict['progress_percent'] is not None else 0.0
+            job_data['current_batch'] = row['current_batch'] if row['current_batch'] is not None else 0
+            job_data['total_batches'] = row['total_batches'] if row['total_batches'] is not None else 0
+            job_data['progress_percent'] = row['progress_percent'] if row['progress_percent'] is not None else 0.0
         except (KeyError, IndexError):
             job_data['current_batch'] = 0
             job_data['total_batches'] = 0
@@ -545,7 +466,6 @@ def welcome():
         'version': APP_VERSION,
         'environment': ENVIRONMENT,
         'gpu_available': GPU_AVAILABLE,
-        'database': 'NeonDB (PostgreSQL)' if USE_NEONDB else 'SQLite',
         'endpoints': {
             'health': '/ping',
             'ready': '/ready',
@@ -602,7 +522,6 @@ def ready():
         return jsonify({
             'status': 'ready',
             'database': 'initialized',
-            'database_type': 'NeonDB (PostgreSQL)' if USE_NEONDB else 'SQLite',
             'gpu_available': GPU_AVAILABLE
         })
     else:
@@ -1105,28 +1024,269 @@ def clear_database():
         }), 500
 
 # =============================================================================
+# API ROUTES - ACTUARIAL CODE EDITOR
+# =============================================================================
+
+@app.route('/editor', methods=['GET'])
+def code_editor():
+    """Serve the actuarial code editor interface"""
+    return send_from_directory('static', 'code_editor.html')
+
+
+@app.route('/api/actuarial/validate', methods=['POST'])
+def validate_actuarial_code():
+    """
+    Validate actuary-written custom code
+    
+    Request body:
+    {
+        "code": {
+            "mortality": "qx = ...",
+            "fee_base": "base_fee_calc = ...",
+            "guarantee_fee": "guarantee_fee_amount = ...",
+            "lapse_ratio": "vm_vg_ratio = ...",
+            "deposit": "depot_futur = ..."
+        }
+    }
+    
+    Response:
+    {
+        "valid": true/false,
+        "errors": {
+            "mortality": ["error1", "error2"],
+            ...
+        }
+    }
+    """
+    try:
+        from actuarial_code_validator import ActuaryCodeValidator
+        
+        data = request.get_json()
+        if not data or 'code' not in data:
+            return jsonify({
+                'valid': False,
+                'error': 'Missing code parameter'
+            }), 400
+        
+        code_sections = data['code']
+        validator = ActuaryCodeValidator()
+        
+        all_valid = True
+        all_errors = {}
+        
+        # Validate each section
+        for section_name, code in code_sections.items():
+            is_valid, errors = validator.validate(section_name, code)
+            if not is_valid:
+                all_valid = False
+                all_errors[section_name] = errors
+            else:
+                all_errors[section_name] = []
+        
+        return jsonify({
+            'valid': all_valid,
+            'errors': all_errors
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'valid': False,
+            'error': f'Validation error: {str(e)}'
+        }), 500
+
+
+@app.route('/api/actuarial/run', methods=['POST'])
+def run_with_custom_code():
+    """
+    Run projection with custom actuarial code
+    
+    Request body:
+    {
+        "code": {
+            "mortality": "...",
+            "fee_base": "...",
+            ...
+        },
+        "parameters": {
+            "nb_an_projection": 100,
+            "nb_scenarios": 100,
+            "max_accounts": null
+        }
+    }
+    
+    Response:
+    {
+        "job_id": "job_...",
+        "status": "pending",
+        "message": "Job created with custom code"
+    }
+    """
+    try:
+        from actuarial_code_validator import ActuaryCodeValidator, KernelCodeInjector
+        import tempfile
+        import shutil
+        
+        data = request.get_json()
+        if not data or 'code' not in data:
+            return jsonify({
+                'error': 'Missing code parameter'
+            }), 400
+        
+        code_sections = data['code']
+        parameters = data.get('parameters', {})
+        
+        # Validate all code sections first
+        validator = ActuaryCodeValidator()
+        all_valid = True
+        all_errors = {}
+        
+        for section_name, code in code_sections.items():
+            is_valid, errors = validator.validate(section_name, code)
+            if not is_valid:
+                all_valid = False
+                all_errors[section_name] = errors
+        
+        if not all_valid:
+            return jsonify({
+                'error': 'Code validation failed',
+                'errors': all_errors
+            }), 400
+        
+        # Generate job ID
+        job_id = f"job_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}_custom"
+        
+        # Inject code into kernel
+        gpu_path = Path(__file__).parent / 'gpu.py'
+        injector = KernelCodeInjector(str(gpu_path))
+        modified_source = injector.inject_custom_code(code_sections)
+        
+        # Save modified kernel to temporary location
+        custom_gpu_path = Path(__file__).parent / f'gpu_custom_{job_id}.py'
+        injector.save_modified_kernel(modified_source, str(custom_gpu_path))
+        
+        # Create job parameters
+        job_parameters = {
+            'nb_an_projection': parameters.get('nb_an_projection', 100),
+            'nb_scenarios': parameters.get('nb_scenarios', 100),
+            'max_accounts': parameters.get('max_accounts', None),
+            'use_custom_code': True,
+            'custom_gpu_module': f'gpu_custom_{job_id}'
+        }
+        
+        # Create job in database
+        create_job(job_id, job_parameters, [])
+        
+        # Initialize cancellation flag
+        job_cancellation_flags[job_id] = False
+        
+        # Start processing with custom kernel
+        def process_custom_job():
+            try:
+                # Import the custom GPU module dynamically
+                import importlib.util
+                spec = importlib.util.spec_from_file_location(
+                    f"gpu_custom_{job_id}",
+                    custom_gpu_path
+                )
+                custom_gpu_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(custom_gpu_module)
+                
+                # Update status
+                update_job_status(job_id, 'running')
+                
+                # Get parameters
+                params = job_parameters
+                
+                # Set up paths
+                data_path = app.config['DEFAULT_DATA_FOLDER']
+                output_path = get_job_results_folder(job_id)
+                
+                # Progress callback
+                def progress_callback(current_batch: int, total_batches: int):
+                    update_job_progress(job_id, current_batch, total_batches)
+                
+                # Run projection with custom kernel
+                custom_gpu_module.run_projection_gpu(
+                    data_path=data_path,
+                    output_path=output_path,
+                    nb_an_projection=params['nb_an_projection'],
+                    nb_scenarios=params['nb_scenarios'],
+                    max_accounts=params.get('max_accounts'),
+                    progress_callback=progress_callback
+                )
+                
+                # List result files
+                result_files = []
+                if output_path.exists():
+                    for file in output_path.glob('*.csv'):
+                        result_files.append({
+                            'name': file.name,
+                            'size': file.stat().st_size,
+                            'type': 'output'
+                        })
+                
+                # Update job with results
+                update_job_results(job_id, result_files)
+                update_job_status(job_id, 'completed')
+                
+                print(f"✓ Custom code job {job_id} completed successfully")
+                
+            except Exception as e:
+                error_msg = f"{str(e)}\n{traceback.format_exc()}"
+                print(f"Custom code job {job_id} failed: {error_msg}")
+                update_job_status(job_id, 'failed', error_message=error_msg)
+            finally:
+                # Clean up custom module file
+                try:
+                    if custom_gpu_path.exists():
+                        custom_gpu_path.unlink()
+                except:
+                    pass
+                
+                # Clean up thread tracking
+                if job_id in job_threads:
+                    del job_threads[job_id]
+                if job_id in job_cancellation_flags:
+                    del job_cancellation_flags[job_id]
+        
+        # Start processing in background thread
+        thread = threading.Thread(target=process_custom_job)
+        thread.daemon = True
+        thread.start()
+        
+        # Track the thread
+        job_threads[job_id] = thread
+        
+        return jsonify({
+            'job_id': job_id,
+            'status': 'pending',
+            'message': 'Job created with custom code and started',
+            'custom_code_applied': True
+        }), 201
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to create custom code job',
+            'message': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
 if __name__ == '__main__':
-    # Get port from environment (RunPod default is 80)
-    port = int(os.getenv('PORT', 80))
-    
     print("=" * 60)
     print("GPU Actuarial Projections API")
     print("=" * 60)
     print(f"Version: {APP_VERSION}")
     print(f"Environment: {ENVIRONMENT}")
     print(f"GPU Available: {GPU_AVAILABLE}")
-    print(f"Database Type: {'NeonDB (PostgreSQL)' if USE_NEONDB else 'SQLite'}")
-    if USE_NEONDB:
-        print(f"Database URL: {NEONDB_URL.split('@')[1] if '@' in NEONDB_URL else 'configured'}")
-    else:
-        print(f"Database: {app.config['DATABASE']}")
+    print(f"Database: {app.config['DATABASE']}")
     print(f"Upload Folder: {app.config['UPLOAD_FOLDER']}")
     print(f"Results Folder: {app.config['RESULTS_FOLDER']}")
     print(f"Admin Password: {'***' if ENVIRONMENT == 'production' else ADMIN_PASSWORD}")
-    print(f"Port: {port}")
     print("=" * 60)
     if ENVIRONMENT != 'production':
         print("⚠️  WARNING: Using default admin password!")
@@ -1136,6 +1296,6 @@ if __name__ == '__main__':
     # Run the app
     app.run(
         host='0.0.0.0',
-        port=port,
+        port=8000,
         debug=(ENVIRONMENT == 'development')
     )

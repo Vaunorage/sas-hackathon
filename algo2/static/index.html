@@ -89,6 +89,40 @@ input[type="password"] {
     font-family: Arial, Helvetica, sans-serif;
 }
 
+textarea.code-editor {
+    width: 98%;
+    min-height: 300px;
+    padding: 10px;
+    border: 2px solid #000;
+    background-color: #f0f0f0;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    resize: vertical;
+}
+
+.code-info {
+    background: #ffffcc;
+    border: 1px solid #000;
+    padding: 10px;
+    margin-bottom: 10px;
+}
+
+.validation-result {
+    padding: 10px;
+    margin-top: 10px;
+    border: 2px solid #000;
+}
+
+.validation-result.success {
+    background-color: #90EE90;
+    color: #006400;
+}
+
+.validation-result.error {
+    background-color: #FFB6C1;
+    color: #8B0000;
+}
+
 .btn {
     background-color: #c0c0c0;
     border: 2px outset #fff;
@@ -416,23 +450,6 @@ input[type="password"] {
             </div>
         </div>
 
-        <!-- API Key Configuration -->
-        <div class="card" id="api-key-section" style="background-color: #fff3cd; border: 2px solid #ff8c00;">
-            <h2>🔑 RunPod API Configuration</h2>
-            <p style="margin: 5px 0; font-size: 13px;">
-                When deployed on RunPod, enter your API key to authenticate requests.
-                <a href="https://www.runpod.io/console/user/settings" target="_blank" style="color: #000080;">Get your API key here</a>
-            </p>
-            <div class="form-group">
-                <label for="runpod-api-key">RunPod API Key (leave empty for local dev):</label>
-                <input type="password" id="runpod-api-key" placeholder="Enter your RunPod API key...">
-            </div>
-            <button type="button" class="btn btn-primary" onclick="saveApiKey()">💾 Save API Key</button>
-            <button type="button" class="btn btn-secondary" onclick="clearApiKey()">🗑️ Clear</button>
-            <button type="button" class="btn" onclick="toggleApiKeyVisibility()">👁️ Show/Hide</button>
-            <span id="api-key-status" style="margin-left: 10px; font-weight: bold;"></span>
-        </div>
-
         <div class="card">
             <h2>Create New Job</h2>
             <form id="job-form">
@@ -491,6 +508,43 @@ input[type="password"] {
                             <input type="file" id="COUSSINS_ESCAP" name="COUSSINS_ESCAP" accept=".csv">
                         </div>
                         </div>
+                    </div>
+                </div>
+
+                <div id="custom-code-section">
+                    <h3 onclick="toggleCustomCode()">
+                        <span id="custom-code-toggle-icon">▶</span> Custom Kernel Code (Optional)
+                    </h3>
+                    <div id="custom-code-content" style="display: none;">
+                        <div class="code-info">
+                            <p><strong>Customize Mortality Calculation:</strong></p>
+                            <p>Write Python code to modify how mortality rates are calculated. Your code must:</p>
+                            <ul>
+                                <li>Assign final value to <code>qx</code> variable</li>
+                                <li>Use only provided inputs: <code>qx</code>, <code>age</code>, <code>freq_eval</code>, <code>AJUST_NOUV_AFFAIRES</code></li>
+                                <li>No loops, imports, or external functions</li>
+                            </ul>
+                            <p><strong>Example:</strong> Increase mortality by 10% for age > 85</p>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="custom_mortality_code">Mortality Adjustment Code:</label>
+                            <textarea id="custom_mortality_code" class="code-editor" spellcheck="false"># Convert annual to period rate (default)
+qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
+
+# Add your custom adjustments below:
+# Example: Conservative adjustment for elderly
+# if age > 85:
+#     qx = qx * 1.10</textarea>
+                        </div>
+                        
+                        <button type="button" class="btn btn-secondary" onclick="validateCustomCode()">
+                            Validate Code
+                        </button>
+                        <button type="button" class="btn btn-secondary" onclick="clearCustomCode()">
+                            Reset to Default
+                        </button>
+                        <div id="validation-message"></div>
                     </div>
                 </div>
 
@@ -598,62 +652,6 @@ input[type="password"] {
         const API_BASE = window.location.origin;
         let selectedJobId = null;
 
-        // API Key Management
-        function getApiKey() {
-            return localStorage.getItem('runpod_api_key') || '';
-        }
-
-        function saveApiKey() {
-            const apiKey = document.getElementById('runpod-api-key').value.trim();
-            if (apiKey) {
-                localStorage.setItem('runpod_api_key', apiKey);
-                document.getElementById('api-key-status').innerHTML = '<span style="color: #008000;">✓ Saved</span>';
-                setTimeout(() => {
-                    document.getElementById('api-key-status').innerHTML = '';
-                }, 2000);
-            } else {
-                alert('Please enter an API key');
-            }
-        }
-
-        function clearApiKey() {
-            if (confirm('Clear saved API key?')) {
-                localStorage.removeItem('runpod_api_key');
-                document.getElementById('runpod-api-key').value = '';
-                document.getElementById('api-key-status').innerHTML = '<span style="color: #808080;">Cleared</span>';
-                setTimeout(() => {
-                    document.getElementById('api-key-status').innerHTML = '';
-                }, 2000);
-            }
-        }
-
-        function toggleApiKeyVisibility() {
-            const input = document.getElementById('runpod-api-key');
-            input.type = input.type === 'password' ? 'text' : 'password';
-        }
-
-        // Helper function to get fetch headers with auth
-        function getHeaders(includeJson = false) {
-            const headers = {};
-            const apiKey = getApiKey();
-            if (apiKey) {
-                headers['Authorization'] = `Bearer ${apiKey}`;
-            }
-            if (includeJson) {
-                headers['Content-Type'] = 'application/json';
-            }
-            return headers;
-        }
-
-        // Load API key on page load
-        window.addEventListener('DOMContentLoaded', () => {
-            const savedKey = getApiKey();
-            if (savedKey) {
-                document.getElementById('runpod-api-key').value = savedKey;
-                document.getElementById('api-key-status').innerHTML = '<span style="color: #008000;">✓ Loaded</span>';
-            }
-        });
-
         // Clear database (admin action)
         document.getElementById('clear-db-form').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -676,7 +674,9 @@ input[type="password"] {
             try {
                 const response = await fetch(`${API_BASE}/admin/clear-database`, {
                     method: 'POST',
-                    headers: getHeaders(true),
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
                     body: JSON.stringify({
                         password: password,
                         delete_files: deleteFiles
@@ -713,9 +713,7 @@ input[type="password"] {
         // Check API health on load
         async function checkHealth() {
             try {
-                const response = await fetch(`${API_BASE}/`, {
-                    headers: getHeaders()
-                });
+                const response = await fetch(`${API_BASE}/`);
                 const data = await response.json();
                 
                 document.getElementById('api-status').textContent = `API: v${data.version}`;
@@ -732,9 +730,7 @@ input[type="password"] {
         // Load jobs list
         async function loadJobs() {
             try {
-                const response = await fetch(`${API_BASE}/jobs`, {
-                    headers: getHeaders()
-                });
+                const response = await fetch(`${API_BASE}/jobs`);
                 const data = await response.json();
                 
                 const jobsList = document.getElementById('jobs-list');
@@ -869,9 +865,7 @@ input[type="password"] {
             const detailsDiv = document.getElementById(`job-details-${jobId}`);
             
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
-                    headers: getHeaders()
-                });
+                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
                 const job = await response.json();
                 
                 // Build file source info
@@ -943,9 +937,7 @@ input[type="password"] {
         // Display job files with preview buttons
         async function displayJobFiles(jobId) {
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`, {
-                    headers: getHeaders()
-                });
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
                 const data = await response.json();
                 
                 const filesDiv = document.getElementById(`files-display-${jobId}`);
@@ -1016,9 +1008,7 @@ input[type="password"] {
         // Preview file in modal
         async function previewFile(jobId, fileName) {
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}/preview?limit=100`, {
-                    headers: getHeaders()
-                });
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}/preview?limit=100`);
                 const data = await response.json();
                 
                 if (!response.ok) {
@@ -1128,6 +1118,71 @@ input[type="password"] {
             });
         }
 
+        // Toggle custom code section
+        function toggleCustomCode() {
+            const content = document.getElementById('custom-code-content');
+            const icon = document.getElementById('custom-code-toggle-icon');
+            
+            if (content.style.display === 'none' || content.style.display === '') {
+                content.style.display = 'block';
+                icon.textContent = '▼';
+            } else {
+                content.style.display = 'none';
+                icon.textContent = '▶';
+            }
+        }
+
+        // Validate custom code
+        async function validateCustomCode() {
+            const code = document.getElementById('custom_mortality_code').value;
+            const msgDiv = document.getElementById('validation-message');
+            
+            msgDiv.innerHTML = '<div class="validation-result">Validating...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/actuarial/validate`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        code: {
+                            mortality: code
+                        }
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.valid) {
+                    msgDiv.innerHTML = '<div class="validation-result success"><strong>✓ Code is valid!</strong> You can now create the job.</div>';
+                } else {
+                    let errorHtml = '<div class="validation-result error"><strong>✗ Code validation failed:</strong><ul>';
+                    if (result.errors && result.errors.mortality) {
+                        result.errors.mortality.forEach(err => {
+                            errorHtml += `<li>${err}</li>`;
+                        });
+                    }
+                    errorHtml += '</ul></div>';
+                    msgDiv.innerHTML = errorHtml;
+                }
+            } catch (error) {
+                msgDiv.innerHTML = `<div class="validation-result error"><strong>✗ Error:</strong> ${error.message}</div>`;
+            }
+        }
+
+        // Clear custom code (reset to default)
+        function clearCustomCode() {
+            const defaultCode = `# Convert annual to period rate (default)
+qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
+
+# Add your custom adjustments below:
+# Example: Conservative adjustment for elderly
+# if age > 85:
+#     qx = qx * 1.10`;
+            
+            document.getElementById('custom_mortality_code').value = defaultCode;
+            document.getElementById('validation-message').innerHTML = '<div class="validation-result success">Reset to default code</div>';
+        }
+
         // Cancel a job
         async function cancelJob(jobId) {
             if (!confirm(`Are you sure you want to cancel job ${jobId}?`)) {
@@ -1136,8 +1191,7 @@ input[type="password"] {
             
             try {
                 const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
-                    method: 'DELETE',
-                    headers: getHeaders()
+                    method: 'DELETE'
                 });
                 
                 const data = await response.json();
@@ -1158,35 +1212,9 @@ input[type="password"] {
             }
         }
 
-        // Download file with authentication
-        async function downloadFile(jobId, fileName) {
-            try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`, {
-                    headers: getHeaders()
-                });
-                
-                if (!response.ok) {
-                    alert('Failed to download file');
-                    return;
-                }
-                
-                // Get the file as blob
-                const blob = await response.blob();
-                
-                // Create download link
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = fileName;
-                document.body.appendChild(a);
-                a.click();
-                
-                // Cleanup
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(a);
-            } catch (error) {
-                alert(`Error downloading file: ${error.message}`);
-            }
+        // Download file
+        function downloadFile(jobId, fileName) {
+            window.open(`${API_BASE}/jobs/${jobId}/files/${fileName}`, '_blank');
         }
 
         // Handle form submission
@@ -1201,51 +1229,96 @@ input[type="password"] {
             messageDiv.innerHTML = '';
             
             try {
-                const formData = new FormData();
+                // Check if custom code is provided
+                const customCode = document.getElementById('custom_mortality_code').value;
+                const defaultCode = `# Convert annual to period rate (default)
+qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
+
+# Add your custom adjustments below:
+# Example: Conservative adjustment for elderly
+# if age > 85:
+#     qx = qx * 1.10`;
                 
-                // Add uploaded files (if any)
-                const fileInputIds = [
-                    'POPULATION', 'MORTALITE', 'RENDEMENTS', 
-                    'DEPOTS_FUTURS', 'FRAIS_ADMIN', 'MIN_FERR',
-                    'TX_LAPSE_PART', 'TX_LAPSE_TOT', 'ACQUISITION', 
-                    'COUSSINS_ESCAP'
-                ];
+                const hasCustomCode = customCode.trim() !== defaultCode.trim() && customCode.trim() !== '';
                 
-                fileInputIds.forEach(fileId => {
-                    const fileInput = document.getElementById(fileId);
-                    if (fileInput && fileInput.files.length > 0) {
-                        formData.append(fileId, fileInput.files[0]);
-                    }
-                });
-                
-                // Add parameters
-                const nbAnProjection = document.getElementById('nb_an_projection').value;
-                const nbScenarios = document.getElementById('nb_scenarios').value;
-                const maxAccounts = document.getElementById('max_accounts').value;
-                const debugAccount = document.getElementById('debug_account').value;
-                
-                formData.append('nb_an_projection', nbAnProjection);
-                formData.append('nb_scenarios', nbScenarios);
-                if (maxAccounts) formData.append('max_accounts', maxAccounts);
-                if (debugAccount) formData.append('debug_account', debugAccount);
-                
-                const response = await fetch(`${API_BASE}/jobs`, {
-                    method: 'POST',
-                    headers: getHeaders(),
-                    body: formData
-                });
-                
-                const data = await response.json();
-                
-                if (response.ok) {
-                    messageDiv.innerHTML = `<div class="success">Job created successfully! Job ID: ${data.job_id}</div>`;
-                    document.getElementById('job-form').reset();
-                    loadJobs();
+                if (hasCustomCode) {
+                    // Use custom code API endpoint
+                    const nbAnProjection = document.getElementById('nb_an_projection').value;
+                    const nbScenarios = document.getElementById('nb_scenarios').value;
+                    const maxAccounts = document.getElementById('max_accounts').value;
+                    const debugAccount = document.getElementById('debug_account').value;
                     
-                    // Auto-select the new job after a short delay
-                    setTimeout(() => selectJob(data.job_id), 1000);
+                    const requestBody = {
+                        code: {
+                            mortality: customCode
+                        },
+                        parameters: {
+                            nb_an_projection: parseInt(nbAnProjection),
+                            nb_scenarios: parseInt(nbScenarios),
+                            max_accounts: maxAccounts ? parseInt(maxAccounts) : null,
+                            debug_account: debugAccount ? parseInt(debugAccount) : null
+                        }
+                    };
+                    
+                    const response = await fetch(`${API_BASE}/api/actuarial/run`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(requestBody)
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        messageDiv.innerHTML = `<div class="success">✓ Job created with custom code! Job ID: ${data.job_id}</div>`;
+                        loadJobs();
+                        setTimeout(() => selectJob(data.job_id), 1000);
+                    } else {
+                        messageDiv.innerHTML = `<div class="error">✗ ${data.message || data.error || 'Failed to create job'}</div>`;
+                    }
                 } else {
-                    messageDiv.innerHTML = `<div class="error">${data.message || 'Failed to create job'}</div>`;
+                    // Use standard API endpoint
+                    const formData = new FormData();
+                    
+                    // Add uploaded files (if any)
+                    const fileInputIds = [
+                        'POPULATION', 'MORTALITE', 'RENDEMENTS', 
+                        'DEPOTS_FUTURS', 'FRAIS_ADMIN', 'MIN_FERR',
+                        'TX_LAPSE_PART', 'TX_LAPSE_TOT', 'ACQUISITION', 
+                        'COUSSINS_ESCAP'
+                    ];
+                    
+                    fileInputIds.forEach(fileId => {
+                        const fileInput = document.getElementById(fileId);
+                        if (fileInput && fileInput.files.length > 0) {
+                            formData.append(fileId, fileInput.files[0]);
+                        }
+                    });
+                    
+                    // Add parameters
+                    const nbAnProjection = document.getElementById('nb_an_projection').value;
+                    const nbScenarios = document.getElementById('nb_scenarios').value;
+                    const maxAccounts = document.getElementById('max_accounts').value;
+                    const debugAccount = document.getElementById('debug_account').value;
+                    
+                    formData.append('nb_an_projection', nbAnProjection);
+                    formData.append('nb_scenarios', nbScenarios);
+                    if (maxAccounts) formData.append('max_accounts', maxAccounts);
+                    if (debugAccount) formData.append('debug_account', debugAccount);
+                    
+                    const response = await fetch(`${API_BASE}/jobs`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        messageDiv.innerHTML = `<div class="success">Job created successfully! Job ID: ${data.job_id}</div>`;
+                        loadJobs();
+                        setTimeout(() => selectJob(data.job_id), 1000);
+                    } else {
+                        messageDiv.innerHTML = `<div class="error">${data.message || 'Failed to create job'}</div>`;
+                    }
                 }
             } catch (error) {
                 messageDiv.innerHTML = `<div class="error">Failed to create job: ${error.message}</div>`;
