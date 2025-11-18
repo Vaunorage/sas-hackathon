@@ -1453,11 +1453,16 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
         
         if n_valid > 0:
-            # Boolean indexing on contiguous 2D array (10-20x faster than fancy indexing!)
+            # Use np.compress for more memory-efficient extraction (avoids fragmentation)
             extract_start = datetime.now()
-            valid_data = reshaped[valid_mask_1d].copy()  # Copy to own memory
+            valid_data = np.compress(valid_mask_1d, reshaped, axis=0)
             extract_time = (datetime.now() - extract_start).total_seconds()
             print(f"    Extract valid data: {extract_time:.3f}s ({valid_data.nbytes / 1024**2:.1f} MB)")
+            
+            # FREE LARGE ARRAYS IMMEDIATELY to prevent fragmentation
+            del h_batch_output  # Free 4GB pinned memory NOW
+            del reshaped  # Free the view
+            del valid_mask_1d  # Free the mask
             
             if use_incremental:
                 # Incremental aggregation: aggregate this batch immediately
@@ -1534,20 +1539,23 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         cpu_proc_time = (cpu_proc_end - cpu_proc_start).total_seconds()
         print(f"    Total CPU processing: {cpu_proc_time:.2f}s")
 
-        # Cleanup ALL memory to prevent fragmentation
+        # Cleanup remaining GPU/batch memory
         del d_batch_account_data
         del d_batch_output
-        del h_batch_output  # Free the large 1.5 GB array!
-        del reshaped  # Free the reshaped view
-        del valid_mask_1d  # Free the boolean mask
+        if 'h_batch_output' in locals():
+            del h_batch_output  # May already be freed above
+        if 'reshaped' in locals():
+            del reshaped  # May already be freed above
+        if 'valid_mask_1d' in locals():
+            del valid_mask_1d  # May already be freed above
         if 'valid_data' in locals():
             del valid_data  # Already in list, free reference
         if use_pinned_memory and 'h_batch_input_pinned' in locals():
             del h_batch_input_pinned
         
-        # Force garbage collection every 5 batches to prevent fragmentation
+        # Force garbage collection after EVERY batch to prevent fragmentation
+        gc.collect()
         if (i + 1) % 5 == 0:
-            gc.collect()
             print(f"  [Memory cleanup: GC triggered]")
 
         batch_end_time = datetime.now()
