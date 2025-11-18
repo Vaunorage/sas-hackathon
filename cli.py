@@ -64,8 +64,92 @@ def init_db():
             result_files TEXT,
             current_batch INTEGER DEFAULT 0,
             total_batches INTEGER DEFAULT 0,
-            progress_percent REAL DEFAULT 0.0
+            progress_percent REAL DEFAULT 0.0,
+            results_data TEXT
         )
+    """)
+    
+    # Create table for flux_projetes results
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS flux_projetes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            an_eval INTEGER NOT NULL,
+            mois_eval INTEGER NOT NULL,
+            primes_garanties REAL,
+            prest_deces REAL,
+            prest_ech REAL,
+            prest_mrv REAL,
+            frais_acquis REAL,
+            comm_vente REAL,
+            primes_variables REAL,
+            frais_fixes REAL,
+            hon_gest REAL,
+            comm_maintien REAL,
+            valeur_marchande REAL,
+            passif_redresse REAL,
+            coussin_credit REAL,
+            coussin_marche REAL,
+            coussin_depense REAL,
+            coussin_decheance REAL,
+            coussin_mortalite REAL,
+            coussin_depot REAL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_flux_projetes_job_id 
+        ON flux_projetes(job_id)
+    """)
+    
+    # Create table for vp_flux_compte results
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS vp_flux_compte (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            id_compte INTEGER NOT NULL,
+            vp_frais_acquis REAL,
+            vp_comm_vente REAL,
+            vp_primes_garanties REAL,
+            vp_primes_variables REAL,
+            vp_frais_fixes REAL,
+            vp_hon_gest REAL,
+            vp_comm_maintien REAL,
+            vp_prest_ech REAL,
+            vp_prest_mrv REAL,
+            vp_prest_deces REAL,
+            vp_passif_redresse REAL,
+            vp_coussin_credit REAL,
+            vp_coussin_marche REAL,
+            vp_coussin_depense REAL,
+            vp_coussin_decheance REAL,
+            vp_coussin_mortalite REAL,
+            vp_coussin_depot REAL,
+            vp_valeur_marchande REAL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_vp_flux_compte_job_id 
+        ON vp_flux_compte(job_id)
+    """)
+    
+    # Create table for vp_flux_total results
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS vp_flux_total (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            categorie TEXT NOT NULL,
+            vp_flux_tot REAL NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_vp_flux_total_job_id 
+        ON vp_flux_total(job_id)
     """)
     
     # Migrate existing database to add new columns if they don't exist
@@ -75,6 +159,12 @@ def init_db():
         cursor.execute("ALTER TABLE jobs ADD COLUMN current_batch INTEGER DEFAULT 0")
         cursor.execute("ALTER TABLE jobs ADD COLUMN total_batches INTEGER DEFAULT 0")
         cursor.execute("ALTER TABLE jobs ADD COLUMN progress_percent REAL DEFAULT 0.0")
+    
+    # Migrate to add results_data column
+    try:
+        cursor.execute("SELECT results_data FROM jobs LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN results_data TEXT")
     
     conn.commit()
     conn.close()
@@ -158,6 +248,161 @@ def update_job_results(job_id: str, result_files: list) -> None:
     conn.commit()
     conn.close()
 
+def update_job_results_data(job_id: str, results_data: dict) -> None:
+    """Update job with results data from run_projection_gpu (legacy JSON storage)"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        UPDATE jobs SET results_data = ? WHERE job_id = ?
+    """, (json.dumps(results_data), job_id))
+    
+    conn.commit()
+    conn.close()
+
+def save_flux_projetes(job_id: str, df: pd.DataFrame) -> None:
+    """Save flux_projetes DataFrame to database table"""
+    conn = get_db_connection()
+    
+    # Prepare data for bulk insert
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    
+    # Rename columns to match database schema (lowercase)
+    df_copy.columns = df_copy.columns.str.lower()
+    
+    # Insert into database
+    df_copy.to_sql('flux_projetes', conn, if_exists='append', index=False)
+    conn.close()
+    print(f"  Saved {len(df)} flux_projetes records to database")
+
+def save_vp_flux_compte(job_id: str, df: pd.DataFrame) -> None:
+    """Save vp_flux_compte DataFrame to database table"""
+    conn = get_db_connection()
+    
+    # Prepare data for bulk insert
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    
+    # Rename columns to match database schema (lowercase)
+    df_copy.columns = df_copy.columns.str.lower()
+    
+    # Insert into database
+    df_copy.to_sql('vp_flux_compte', conn, if_exists='append', index=False)
+    conn.close()
+    print(f"  Saved {len(df)} vp_flux_compte records to database")
+
+def save_vp_flux_total(job_id: str, df: pd.DataFrame) -> None:
+    """Save vp_flux_total DataFrame to database table"""
+    conn = get_db_connection()
+    
+    # Prepare data for bulk insert
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    
+    # Rename columns to match database schema (lowercase)
+    df_copy.columns = df_copy.columns.str.lower()
+    
+    # Insert into database
+    df_copy.to_sql('vp_flux_total', conn, if_exists='append', index=False)
+    conn.close()
+    print(f"  Saved {len(df)} vp_flux_total records to database")
+
+def get_flux_projetes(job_id: str, an_eval: int = None, mois_eval: int = None) -> Optional[pd.DataFrame]:
+    """
+    Retrieve flux_projetes results for a job with optional filters
+    
+    Args:
+        job_id: Job identifier
+        an_eval: Filter by year (optional)
+        mois_eval: Filter by month (optional)
+    """
+    conn = get_db_connection()
+    try:
+        # Build query with filters
+        query = "SELECT * FROM flux_projetes WHERE job_id = ?"
+        params = [job_id]
+        
+        if an_eval is not None:
+            query += " AND an_eval = ?"
+            params.append(an_eval)
+        
+        if mois_eval is not None:
+            query += " AND mois_eval = ?"
+            params.append(mois_eval)
+        
+        query += " ORDER BY an_eval, mois_eval"
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        if len(df) > 0:
+            # Remove database-specific columns
+            df = df.drop(columns=['id', 'job_id'])
+            # Restore column names to uppercase
+            df.columns = df.columns.str.upper()
+            return df
+        return None
+    except Exception as e:
+        conn.close()
+        print(f"Error retrieving flux_projetes: {e}")
+        return None
+
+def get_vp_flux_compte(job_id: str, id_compte: int = None) -> Optional[pd.DataFrame]:
+    """
+    Retrieve vp_flux_compte results for a job with optional filter
+    
+    Args:
+        job_id: Job identifier
+        id_compte: Filter by account ID (optional)
+    """
+    conn = get_db_connection()
+    try:
+        # Build query with filter
+        query = "SELECT * FROM vp_flux_compte WHERE job_id = ?"
+        params = [job_id]
+        
+        if id_compte is not None:
+            query += " AND id_compte = ?"
+            params.append(id_compte)
+        
+        query += " ORDER BY id_compte"
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        if len(df) > 0:
+            # Remove database-specific columns
+            df = df.drop(columns=['id', 'job_id'])
+            # Restore column names to uppercase
+            df.columns = df.columns.str.upper()
+            return df
+        return None
+    except Exception as e:
+        conn.close()
+        print(f"Error retrieving vp_flux_compte: {e}")
+        return None
+
+def get_vp_flux_total(job_id: str) -> Optional[pd.DataFrame]:
+    """Retrieve vp_flux_total results for a job"""
+    conn = get_db_connection()
+    try:
+        df = pd.read_sql_query(
+            "SELECT * FROM vp_flux_total WHERE job_id = ?",
+            conn,
+            params=(job_id,)
+        )
+        conn.close()
+        if len(df) > 0:
+            # Remove database-specific columns
+            df = df.drop(columns=['id', 'job_id'])
+            # Restore column names to uppercase
+            df.columns = df.columns.str.upper()
+            return df
+        return None
+    except Exception as e:
+        conn.close()
+        print(f"Error retrieving vp_flux_total: {e}")
+        return None
+
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Get job details by ID"""
     conn = get_db_connection()
@@ -188,6 +433,12 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
             job_data['current_batch'] = 0
             job_data['total_batches'] = 0
             job_data['progress_percent'] = 0.0
+        
+        # Add results_data field
+        try:
+            job_data['results_data'] = json.loads(row['results_data']) if row['results_data'] else None
+        except (KeyError, IndexError):
+            job_data['results_data'] = None
         
         return job_data
     return None
@@ -223,6 +474,12 @@ def get_all_jobs() -> list:
             job_data['current_batch'] = 0
             job_data['total_batches'] = 0
             job_data['progress_percent'] = 0.0
+        
+        # Add results_data field
+        try:
+            job_data['results_data'] = json.loads(row['results_data']) if row['results_data'] else None
+        except (KeyError, IndexError):
+            job_data['results_data'] = None
         
         jobs.append(job_data)
     return jobs
@@ -281,6 +538,30 @@ def process_job(job_id: str):
             debug_account=debug_account,
             progress_callback=progress_callback
         )
+        
+        # Save results data to separate database tables
+        if results:
+            print(f"\nSaving results to database...")
+            if 'flux_projetes' in results and results['flux_projetes'] is not None:
+                save_flux_projetes(job_id, results['flux_projetes'])
+            if 'vp_flux_compte' in results and results['vp_flux_compte'] is not None:
+                save_vp_flux_compte(job_id, results['vp_flux_compte'])
+            if 'vp_flux_total' in results and results['vp_flux_total'] is not None:
+                save_vp_flux_total(job_id, results['vp_flux_total'])
+            
+            # Also save summary to JSON for backward compatibility
+            results_data = {
+                'vp_flux_total_summary': {
+                    'vp_flux_tot': float(results['vp_flux_total']['VP_FLUX_TOT'].iloc[0]) if 'vp_flux_total' in results and len(results['vp_flux_total']) > 0 else 0.0
+                },
+                'vp_flux_compte_summary': {
+                    'total_accounts': len(results['vp_flux_compte']) if 'vp_flux_compte' in results else 0
+                },
+                'flux_projetes_summary': {
+                    'total_periods': len(results['flux_projetes']) if 'flux_projetes' in results else 0
+                }
+            }
+            update_job_results_data(job_id, results_data)
         
         # List result files with metadata
         result_files = []
@@ -507,7 +788,7 @@ def cmd_list(args):
     return 0
 
 def cmd_results(args):
-    """View job results"""
+    """View job results from database or CSV files"""
     job = get_job(args.job_id)
     
     if not job:
@@ -518,43 +799,78 @@ def cmd_results(args):
         print(f"✗ Job not completed (status: {job['status']})")
         return 1
     
-    # Map result types to files
-    result_file_map = {
-        'summary': 'VP_FLUX_TOTAL_GPU.csv',
-        'detailed': 'VP_FLUX_COMPTE_GPU.csv',
-        'internal': 'FLUX_PROJETES_GPU.csv'
-    }
-    
-    result_file = result_file_map.get(args.type)
-    if not result_file:
-        print(f"✗ Invalid result type: {args.type}")
-        print(f"  Valid types: {', '.join(result_file_map.keys())}")
-        return 1
-    
-    # Read the result file
-    results_folder = get_job_results_folder(args.job_id)
-    file_path = results_folder / result_file
-    
-    if not file_path.exists():
-        print(f"✗ Result file not found: {result_file}")
-        return 1
-    
     try:
-        df = pd.read_csv(file_path, sep=';', nrows=args.limit if args.limit else None)
+        # Retrieve from database (preferred) or fallback to CSV
+        source = "database"
+        filter_info = []
+        
+        if args.type == 'summary':
+            df = get_vp_flux_total(args.job_id)
+            result_name = "VP_FLUX_TOTAL"
+        elif args.type == 'detailed':
+            # Apply ID_COMPTE filter if specified
+            id_compte = getattr(args, 'id_compte', None)
+            df = get_vp_flux_compte(args.job_id, id_compte=id_compte)
+            result_name = "VP_FLUX_COMPTE"
+            if id_compte is not None:
+                filter_info.append(f"ID_COMPTE={id_compte}")
+        elif args.type == 'internal':
+            # Apply AN_EVAL and MOIS_EVAL filters if specified
+            an_eval = getattr(args, 'an_eval', None)
+            mois_eval = getattr(args, 'mois_eval', None)
+            df = get_flux_projetes(args.job_id, an_eval=an_eval, mois_eval=mois_eval)
+            result_name = "FLUX_PROJETES"
+            if an_eval is not None:
+                filter_info.append(f"AN_EVAL={an_eval}")
+            if mois_eval is not None:
+                filter_info.append(f"MOIS_EVAL={mois_eval}")
+        else:
+            print(f"✗ Invalid result type: {args.type}")
+            print(f"  Valid types: summary, detailed, internal")
+            return 1
+        
+        # Fallback to CSV if database query returns no data
+        if df is None or len(df) == 0:
+            source = "CSV file"
+            result_file_map = {
+                'summary': 'VP_FLUX_TOTAL_GPU.csv',
+                'detailed': 'VP_FLUX_COMPTE_GPU.csv',
+                'internal': 'FLUX_PROJETES_GPU.csv'
+            }
+            results_folder = get_job_results_folder(args.job_id)
+            file_path = results_folder / result_file_map[args.type]
+            
+            if not file_path.exists():
+                print(f"✗ Results not found in database or CSV files")
+                return 1
+            
+            df = pd.read_csv(file_path, sep=';')
+        
+        total_rows = len(df)
+        
+        # Apply row limit if specified
+        display_limit = args.limit if args.limit else 10
+        if args.limit and args.limit < total_rows:
+            df_display = df.head(args.limit)
+        else:
+            df_display = df
         
         print(f"\n{'='*60}")
-        print(f"Results: {result_file}")
+        print(f"Results: {result_name} (source: {source})")
+        if filter_info:
+            print(f"Filters: {', '.join(filter_info)}")
         print(f"{'='*60}")
-        print(f"Rows: {len(df)}")
+        print(f"Total Rows: {total_rows}")
+        print(f"Displaying: {len(df_display)} rows")
         print(f"Columns: {len(df.columns)}")
         print(f"{'='*60}\n")
         
         if args.format == 'table':
-            print(tabulate(df.head(args.limit if args.limit else 10), headers='keys', tablefmt='grid'))
+            print(tabulate(df_display, headers='keys', tablefmt='grid', showindex=False))
         elif args.format == 'csv':
-            print(df.to_csv(sep=';', index=False))
+            print(df_display.to_csv(sep=';', index=False))
         elif args.format == 'json':
-            print(df.to_json(orient='records', indent=2))
+            print(df_display.to_json(orient='records', indent=2))
         
         print()
         
@@ -564,12 +880,76 @@ def cmd_results(args):
                 df.to_csv(output_file, sep=';', index=False)
             elif args.format == 'json':
                 df.to_json(output_file, orient='records', indent=2)
-            print(f"✓ Saved to: {output_file}")
+            print(f"✓ Saved {total_rows} rows to: {output_file}")
         
         return 0
         
     except Exception as e:
         print(f"✗ Error reading results: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+def cmd_get_all_results(args):
+    """Retrieve all result DataFrames from database"""
+    job = get_job(args.job_id)
+    
+    if not job:
+        print(f"✗ Job not found: {args.job_id}")
+        return 1
+    
+    if job['status'] != 'completed':
+        print(f"✗ Job not completed (status: {job['status']})")
+        return 1
+    
+    try:
+        print(f"\n{'='*60}")
+        print(f"Retrieving all results for job: {args.job_id}")
+        print(f"{'='*60}\n")
+        
+        # Retrieve all three result types
+        flux_projetes_df = get_flux_projetes(args.job_id)
+        vp_flux_compte_df = get_vp_flux_compte(args.job_id)
+        vp_flux_total_df = get_vp_flux_total(args.job_id)
+        
+        results = {
+            'flux_projetes': flux_projetes_df,
+            'vp_flux_compte': vp_flux_compte_df,
+            'vp_flux_total': vp_flux_total_df
+        }
+        
+        limit = args.limit if args.limit else 10
+        
+        for name, df in results.items():
+            print(f"\n{name.upper()}:")
+            print(f"{'-'*60}")
+            if df is not None and len(df) > 0:
+                print(f"Total rows: {len(df)}")
+                print(f"Columns: {list(df.columns)}\n")
+                
+                df_display = df.head(limit) if limit < len(df) else df
+                print(tabulate(df_display, headers='keys', tablefmt='grid', showindex=False))
+                
+                if len(df) > limit:
+                    print(f"\n(Showing first {limit} of {len(df)} rows)")
+            else:
+                print("No data available")
+            print()
+        
+        # Show summary
+        print(f"\n{'='*60}")
+        print("SUMMARY:")
+        print(f"  flux_projetes: {len(flux_projetes_df) if flux_projetes_df is not None else 0} rows")
+        print(f"  vp_flux_compte: {len(vp_flux_compte_df) if vp_flux_compte_df is not None else 0} rows")
+        print(f"  vp_flux_total: {len(vp_flux_total_df) if vp_flux_total_df is not None else 0} rows")
+        print(f"{'='*60}\n")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"✗ Error retrieving results: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
 
 def cmd_clear(args):
@@ -683,6 +1063,16 @@ def main():
     results_parser.add_argument('--format', default='table', choices=['table', 'csv', 'json'], help='Output format (default: table)')
     results_parser.add_argument('--limit', type=int, help='Limit number of rows')
     results_parser.add_argument('--save', help='Save results to file')
+    # Filters for flux_projetes (internal)
+    results_parser.add_argument('--an-eval', type=int, dest='an_eval', help='Filter by year (for internal type)')
+    results_parser.add_argument('--mois-eval', type=int, dest='mois_eval', help='Filter by month (for internal type)')
+    # Filter for vp_flux_compte (detailed)
+    results_parser.add_argument('--id-compte', type=int, dest='id_compte', help='Filter by account ID (for detailed type)')
+    
+    # Get all results command
+    get_all_parser = subparsers.add_parser('get-all-results', help='Retrieve all result types from database')
+    get_all_parser.add_argument('job_id', help='Job ID')
+    get_all_parser.add_argument('--limit', type=int, default=10, help='Limit number of rows displayed per table (default: 10)')
     
     # Clear command
     clear_parser = subparsers.add_parser('clear', help='Clear all jobs from database')
@@ -706,6 +1096,7 @@ def main():
         'watch': cmd_watch,
         'list': cmd_list,
         'results': cmd_results,
+        'get-all-results': cmd_get_all_results,
         'clear': cmd_clear,
         'info': cmd_info
     }

@@ -1332,10 +1332,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         merge_frequency = 50  # Merge every N batches
         merged_result = None  # Holds periodically merged data
     elif estimated_memory_gb <= memory_threshold_gb:
-        print(f"\nUsing PRE-ALLOCATION (dataset small: {estimated_rows:,} rows, ~{estimated_memory_gb:.2f} GB)")
+        print(f"\nUsing LIST-APPEND (dataset small: {estimated_rows:,} rows, ~{estimated_memory_gb:.2f} GB)")
+        print(f"Will store batches in list, then concatenate once at end (avoids slow array growth)")
         use_incremental = False
-        all_data = np.zeros((estimated_rows, n_output_fields), dtype=np.float32)
-        current_row = 0
+        batch_data_list = []  # Store each batch's valid_data
     else:
         print(f"\nWARNING: Dataset too large for pre-allocation but below incremental threshold")
         print(f"Forcing incremental aggregation to avoid memory issues")
@@ -1523,20 +1523,12 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 del valid_data
                 del batch_df
             else:
-                # Pre-allocation approach
-                fill_start = datetime.now()
-                if current_row + n_valid > len(all_data):
-                    print(f"    Resizing array (occupancy higher than estimated)...")
-                    new_size = max(len(all_data) * 2, current_row + n_valid)
-                    new_array = np.zeros((new_size, n_output_fields), dtype=np.float32)
-                    new_array[:current_row] = all_data[:current_row]
-                    all_data = new_array
-                    del new_array
-                
-                all_data[current_row:current_row + n_valid] = valid_data
-                current_row += n_valid
-                fill_time = (datetime.now() - fill_start).total_seconds()
-                print(f"    Filled array: {fill_time:.3f}s (total rows: {current_row:,})")
+                # List-append approach: O(1) append instead of O(n) array copy
+                append_start = datetime.now()
+                batch_data_list.append(valid_data)
+                append_time = (datetime.now() - append_start).total_seconds()
+                total_rows_so_far = sum(arr.shape[0] for arr in batch_data_list)
+                print(f"    Appended to list: {append_time:.3f}s (total rows: {total_rows_so_far:,}, {len(batch_data_list)} batches)")
         
         cpu_proc_end = datetime.now()
         cpu_proc_time = (cpu_proc_end - cpu_proc_start).total_seconds()
@@ -1603,14 +1595,22 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         # Note: calculs_sommaire is already scenario-averaged, skip that aggregation step
         all_results = calculs_sommaire
     else:
-        # Pre-allocation: trim and create DataFrame
-        print(f"\nTrimming pre-allocated array...")
-        print(f"  Allocated: {len(all_data):,} rows")
-        print(f"  Used: {current_row:,} rows")
-        print(f"  Occupancy: {current_row / max_possible_rows * 100:.2f}%")
-        print(f"  Wasted: {(len(all_data) - current_row) / len(all_data) * 100:.1f}%")
-        all_data = all_data[:current_row]
+        # List-append: concatenate all batches into single array
+        print(f"\nConcatenating {len(batch_data_list)} batch arrays...")
+        concat_start = datetime.now()
+        if len(batch_data_list) == 0:
+            all_data = np.zeros((0, n_output_fields), dtype=np.float32)
+        elif len(batch_data_list) == 1:
+            all_data = batch_data_list[0]
+        else:
+            all_data = np.concatenate(batch_data_list, axis=0)
+        concat_time = (datetime.now() - concat_start).total_seconds()
+        print(f"  Concatenated {len(all_data):,} rows in {concat_time:.2f}s")
         print(f"  Final size: {all_data.nbytes / 1024**3:.2f} GB")
+        print(f"  Occupancy: {len(all_data) / max_possible_rows * 100:.2f}%")
+        
+        # Free batch list
+        del batch_data_list
         
         # Create DataFrame
         df_start = datetime.now()
