@@ -507,7 +507,7 @@ def welcome():
 @app.route('/web', methods=['GET'])
 def web_interface():
     """Serve the web interface"""
-    return send_from_directory('', 'index.html')
+    return send_from_directory('static', 'index.html')
 
 @app.route('/ping', methods=['GET'])
 def ping():
