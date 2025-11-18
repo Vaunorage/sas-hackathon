@@ -19,6 +19,7 @@ COPY cpu.py .
 COPY paths.py .
 COPY extract_csv_from_zips.py .
 
+
 # Create directories for data
 RUN mkdir -p uploads results static data_in default_data
 

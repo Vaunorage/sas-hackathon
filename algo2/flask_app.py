@@ -1043,7 +1043,8 @@ if __name__ == '__main__':
         print("⚠️  WARNING: Using default admin password!")
         print("⚠️  Set ADMIN_PASSWORD environment variable for production")
         print("=" * 60)
-    
+
+
     # Run the app
     app.run(
         host='0.0.0.0',
