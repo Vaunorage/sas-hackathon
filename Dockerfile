@@ -1,10 +1,13 @@
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM pytorch/pytorch:2.4.0-cuda12.4-runtime-ubuntu22.04
 
 # Set working directory
 WORKDIR /app
 
-# Install uv
-RUN pip install --no-cache-dir uv
+# Install system dependencies and uv
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && pip install --no-cache-dir uv \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy pyproject.toml, uv.lock, and README for installation
 COPY pyproject.toml uv.lock README.md ./
@@ -20,16 +23,16 @@ COPY paths.py .
 COPY extract_csv_from_zips.py .
 
 # Create directories for data
-RUN mkdir -p uploads results static data_in default_data
+RUN mkdir -p uploads results static data_in
 
-# Copy zip files
-COPY *.zip ./default_data/
+# Copy zip files from default_data
+COPY default_data/*.zip ./default_data/
 
 # Extract CSV files from zips during build
 RUN uv run python extract_csv_from_zips.py
 
-# Optional: Remove zip files to reduce image size
-# RUN rm -rf default_data
+# Remove zip files to reduce image size
+RUN rm -rf default_data/*.zip
 
 # Copy web interface
 COPY static/index.html ./static/
