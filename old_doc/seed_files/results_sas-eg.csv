@@ -1,0 +1,7 @@
+Type d'évaluation,nb cpt,Boucle externe - Pas de temps moyen,Boucle externe - nb simulation,Boucle interne - Pas de temps moyen,Boucle interne - nb simulation,Boucle interne - nb de simul/knot,Boucle interne - Total (en G),Facteur multiplicatif,SAS EG approx. (heures),SAS EG approx. (jours),SAS EG approx. (année)
+Test,200,50,100,25,100,2,5,,0.3,0.0,0.0
+Réserve IFRS 17,165000,600,100,1,1,1,10,2,0.5,0.0,0.0
+ESCAP approche standard,165000,600,100,1,1,10,99,20,5.0,0.2,0.0
+Hedging,165000,600,100,1,1,15,149,30,7.4,0.3,0.0
+ESCAP crédit hedging,165000,600,100,12,20,1,2475,495,123.8,5.2,0.0
+Modèle interne AMF,165000,600,1000,25,100,10,2475000,495000,123750.0,5156.3,14.1

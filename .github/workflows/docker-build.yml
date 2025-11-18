@@ -19,7 +19,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
-          context: ./algo2
-          file: ./algo2/Dockerfile
+          context: .
+          file: Dockerfile
           push: true
           tags: vaunorage/sas-hackathon:latest
