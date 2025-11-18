@@ -1,7 +1,6 @@
-FROM pytorch/pytorch:2.4.0-cuda12.4-runtime-ubuntu22.04
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
-# Set working directory
-WORKDIR /app
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Install system dependencies and uv
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,7 +37,7 @@ RUN rm -rf default_data/*.zip
 COPY static/index.html ./static/
 
 # Expose port
-EXPOSE 5000
+EXPOSE 8000
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
