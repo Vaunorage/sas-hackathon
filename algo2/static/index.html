@@ -416,6 +416,23 @@ input[type="password"] {
             </div>
         </div>
 
+        <!-- API Key Configuration -->
+        <div class="card" id="api-key-section" style="background-color: #fff3cd; border: 2px solid #ff8c00;">
+            <h2>🔑 RunPod API Configuration</h2>
+            <p style="margin: 5px 0; font-size: 13px;">
+                When deployed on RunPod, enter your API key to authenticate requests.
+                <a href="https://www.runpod.io/console/user/settings" target="_blank" style="color: #000080;">Get your API key here</a>
+            </p>
+            <div class="form-group">
+                <label for="runpod-api-key">RunPod API Key (leave empty for local dev):</label>
+                <input type="password" id="runpod-api-key" placeholder="Enter your RunPod API key...">
+            </div>
+            <button type="button" class="btn btn-primary" onclick="saveApiKey()">💾 Save API Key</button>
+            <button type="button" class="btn btn-secondary" onclick="clearApiKey()">🗑️ Clear</button>
+            <button type="button" class="btn" onclick="toggleApiKeyVisibility()">👁️ Show/Hide</button>
+            <span id="api-key-status" style="margin-left: 10px; font-weight: bold;"></span>
+        </div>
+
         <div class="card">
             <h2>Create New Job</h2>
             <form id="job-form">
@@ -581,6 +598,62 @@ input[type="password"] {
         const API_BASE = window.location.origin;
         let selectedJobId = null;
 
+        // API Key Management
+        function getApiKey() {
+            return localStorage.getItem('runpod_api_key') || '';
+        }
+
+        function saveApiKey() {
+            const apiKey = document.getElementById('runpod-api-key').value.trim();
+            if (apiKey) {
+                localStorage.setItem('runpod_api_key', apiKey);
+                document.getElementById('api-key-status').innerHTML = '<span style="color: #008000;">✓ Saved</span>';
+                setTimeout(() => {
+                    document.getElementById('api-key-status').innerHTML = '';
+                }, 2000);
+            } else {
+                alert('Please enter an API key');
+            }
+        }
+
+        function clearApiKey() {
+            if (confirm('Clear saved API key?')) {
+                localStorage.removeItem('runpod_api_key');
+                document.getElementById('runpod-api-key').value = '';
+                document.getElementById('api-key-status').innerHTML = '<span style="color: #808080;">Cleared</span>';
+                setTimeout(() => {
+                    document.getElementById('api-key-status').innerHTML = '';
+                }, 2000);
+            }
+        }
+
+        function toggleApiKeyVisibility() {
+            const input = document.getElementById('runpod-api-key');
+            input.type = input.type === 'password' ? 'text' : 'password';
+        }
+
+        // Helper function to get fetch headers with auth
+        function getHeaders(includeJson = false) {
+            const headers = {};
+            const apiKey = getApiKey();
+            if (apiKey) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+            if (includeJson) {
+                headers['Content-Type'] = 'application/json';
+            }
+            return headers;
+        }
+
+        // Load API key on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedKey = getApiKey();
+            if (savedKey) {
+                document.getElementById('runpod-api-key').value = savedKey;
+                document.getElementById('api-key-status').innerHTML = '<span style="color: #008000;">✓ Loaded</span>';
+            }
+        });
+
         // Clear database (admin action)
         document.getElementById('clear-db-form').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -603,9 +676,7 @@ input[type="password"] {
             try {
                 const response = await fetch(`${API_BASE}/admin/clear-database`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: getHeaders(true),
                     body: JSON.stringify({
                         password: password,
                         delete_files: deleteFiles
@@ -642,7 +713,9 @@ input[type="password"] {
         // Check API health on load
         async function checkHealth() {
             try {
-                const response = await fetch(`${API_BASE}/`);
+                const response = await fetch(`${API_BASE}/`, {
+                    headers: getHeaders()
+                });
                 const data = await response.json();
                 
                 document.getElementById('api-status').textContent = `API: v${data.version}`;
@@ -659,7 +732,9 @@ input[type="password"] {
         // Load jobs list
         async function loadJobs() {
             try {
-                const response = await fetch(`${API_BASE}/jobs`);
+                const response = await fetch(`${API_BASE}/jobs`, {
+                    headers: getHeaders()
+                });
                 const data = await response.json();
                 
                 const jobsList = document.getElementById('jobs-list');
@@ -794,7 +869,9 @@ input[type="password"] {
             const detailsDiv = document.getElementById(`job-details-${jobId}`);
             
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
+                    headers: getHeaders()
+                });
                 const job = await response.json();
                 
                 // Build file source info
@@ -866,7 +943,9 @@ input[type="password"] {
         // Display job files with preview buttons
         async function displayJobFiles(jobId) {
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`, {
+                    headers: getHeaders()
+                });
                 const data = await response.json();
                 
                 const filesDiv = document.getElementById(`files-display-${jobId}`);
@@ -937,7 +1016,9 @@ input[type="password"] {
         // Preview file in modal
         async function previewFile(jobId, fileName) {
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}/preview?limit=100`);
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}/preview?limit=100`, {
+                    headers: getHeaders()
+                });
                 const data = await response.json();
                 
                 if (!response.ok) {
@@ -1055,7 +1136,8 @@ input[type="password"] {
             
             try {
                 const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
-                    method: 'DELETE'
+                    method: 'DELETE',
+                    headers: getHeaders()
                 });
                 
                 const data = await response.json();
@@ -1076,9 +1158,35 @@ input[type="password"] {
             }
         }
 
-        // Download file
-        function downloadFile(jobId, fileName) {
-            window.open(`${API_BASE}/jobs/${jobId}/files/${fileName}`, '_blank');
+        // Download file with authentication
+        async function downloadFile(jobId, fileName) {
+            try {
+                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}`, {
+                    headers: getHeaders()
+                });
+                
+                if (!response.ok) {
+                    alert('Failed to download file');
+                    return;
+                }
+                
+                // Get the file as blob
+                const blob = await response.blob();
+                
+                // Create download link
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = fileName;
+                document.body.appendChild(a);
+                a.click();
+                
+                // Cleanup
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            } catch (error) {
+                alert(`Error downloading file: ${error.message}`);
+            }
         }
 
         // Handle form submission
@@ -1123,6 +1231,7 @@ input[type="password"] {
                 
                 const response = await fetch(`${API_BASE}/jobs`, {
                     method: 'POST',
+                    headers: getHeaders(),
                     body: formData
                 });
                 
