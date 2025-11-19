@@ -62,23 +62,23 @@ docker build -t gpu-actuarial-api:latest .
 
 #### Run CLI commands in Docker
 
-Run CLI commands using `docker run`:
+Run CLI commands using `docker run` with `uv run` to access installed dependencies:
 
 ```bash
 # Run a projection job
-docker run --gpus all gpu-actuarial-api:latest python cli.py run --years 100 --scenarios 100
+docker run --gpus all gpu-actuarial-api:latest uv run python cli.py run --years 100 --scenarios 100
 
 # Run asynchronously
-docker run --gpus all gpu-actuarial-api:latest python cli.py run --years 100 --scenarios 100 --async
+docker run --gpus all gpu-actuarial-api:latest uv run python cli.py run --years 100 --scenarios 100 --async
 
 # Check job status
-docker run --gpus all gpu-actuarial-api:latest python cli.py status job_20250118_101530_123456
+docker run --gpus all gpu-actuarial-api:latest uv run python cli.py status job_20250118_101530_123456
 
 # List all jobs
-docker run --gpus all gpu-actuarial-api:latest python cli.py list
+docker run --gpus all gpu-actuarial-api:latest uv run python cli.py list
 
 # View results
-docker run --gpus all gpu-actuarial-api:latest python cli.py results job_20250118_101530_123456 --type summary
+docker run --gpus all gpu-actuarial-api:latest uv run python cli.py results job_20250118_101530_123456 --type summary
 ```
 
 #### Persist data with Docker volumes
@@ -91,14 +91,14 @@ docker run --gpus all \
   -v $(pwd)/jobs.db:/app/jobs.db \
   -v $(pwd)/results:/app/results \
   gpu-actuarial-api:latest \
-  python cli.py run --years 100 --scenarios 100
+  uv run python cli.py run --years 100 --scenarios 100
 
 # Check status (data persists)
 docker run --gpus all \
   -v $(pwd)/jobs.db:/app/jobs.db \
   -v $(pwd)/results:/app/results \
   gpu-actuarial-api:latest \
-  python cli.py list
+  uv run python cli.py list
 ```
 
 #### Docker Compose for persistent CLI usage
@@ -119,7 +119,7 @@ services:
       - ./jobs.db:/app/jobs.db
       - ./results:/app/results
       - ./uploads:/app/uploads
-    entrypoint: python cli.py
+    entrypoint: uv run python cli.py
 ```
 
 Then run commands:
