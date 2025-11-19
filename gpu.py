@@ -1251,6 +1251,28 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     start_time = datetime.now()
     print(f"Starting GPU projection at {start_time}")
     print("=" * 60)
+    
+    # Check GPU availability
+    try:
+        if not cuda.is_available():
+            raise RuntimeError(
+                "CUDA is not available. Please ensure:\n"
+                "  1. NVIDIA GPU is present in the system\n"
+                "  2. NVIDIA drivers are installed\n"
+                "  3. Docker container is run with '--gpus all' flag\n"
+                "  4. NVIDIA Container Toolkit is installed"
+            )
+        
+        # Test GPU access
+        gpu = cuda.get_current_device()
+        print(f"GPU Device: {gpu.name.decode()}")
+        free_mem, total_mem = cuda.current_context().get_memory_info()
+        print(f"GPU Memory: {free_mem / 1024**3:.2f} GB free / {total_mem / 1024**3:.2f} GB total")
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to initialize GPU: {e}\n"
+            f"Please ensure Docker is run with '--gpus all' flag and NVIDIA drivers are installed."
+        )
 
     # Update config
     CONFIG['NB_AN_PROJECTION'] = nb_an_projection
