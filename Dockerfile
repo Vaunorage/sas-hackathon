@@ -38,11 +38,12 @@ RUN rm -rf default_data/*.zip
 COPY static/index.html ./static/
 
 # Expose port
-EXPOSE 8000
+EXPOSE 80
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV ENVIRONMENT=production
+ENV PORT=80
 
-# Run the Flask application using uv
-CMD ["uv", "run", "python", "flask_app.py"]
+# Run the Flask application using gunicorn
+CMD ["uv", "run", "gunicorn", "--bind", "0.0.0.0:80", "--workers", "4", "--timeout", "300", "--worker-class", "sync", "flask_app:app"]

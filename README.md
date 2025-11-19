@@ -9,13 +9,13 @@ Flask API for GPU-accelerated actuarial projections.
 docker build -t your-username/gpu-actuarial-api:latest .
 
 # Run with GPU support
-docker run --gpus all -p 5000:5000 your-username/gpu-actuarial-api:latest
+docker run --gpus all -p 80:80 your-username/gpu-actuarial-api:latest
 
 # Access the API
-curl http://localhost:5000/ping
+curl http://localhost/ping
 
 # Access web interface
-open http://localhost:5000/web
+open http://localhost/web
 ```
 
 ## Docker Hub
@@ -33,13 +33,14 @@ Your application is deployed on RunPod with a load-balancing endpoint. Here's ho
 ### Understanding RunPod Setup
 
 RunPod distributes HTTP requests across available workers. Your container must:
-1. Run an HTTP server on the port specified in the `PORT` environment variable (default: 8000)
-2. Have a `/ping` health check endpoint on the port specified in `PORT_HEALTH` (default: 8000)
+1. Run an HTTP server on the port specified in the `PORT` environment variable (default: 80)
+2. Have a `/ping` health check endpoint on the port specified in `PORT_HEALTH` (default: 80)
 
 ### Current Configuration
 
-The Flask app in `flask_app.py` is configured to:
-- Listen on port 8000 (via `PORT` env var)
+The Flask app runs using gunicorn with the following configuration:
+- Listen on port 80 (configurable via `PORT` env var)
+- 4 worker processes for handling concurrent requests
 - Provide `/ping` endpoint for health checks
 - Handle job submissions and result retrieval
 
@@ -93,8 +94,8 @@ You can monitor your workers through the RunPod dashboard:
 ### Environment Variables
 
 When deploying to RunPod, ensure these are set:
-- `PORT=8000` - Main HTTP server port
-- `PORT_HEALTH=8000` - Health check port
+- `PORT=80` - Main HTTP server port (gunicorn bind port)
+- `PORT_HEALTH=80` - Health check port
 - `ADMIN_PASSWORD` - Admin password for CLI operations (if needed)
 - `ENVIRONMENT=production` - Set to production
 - `USE_NEONDB=false` - Set to `true` to use PostgreSQL/NeonDB (default: SQLite)
