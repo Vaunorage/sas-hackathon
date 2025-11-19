@@ -89,40 +89,6 @@ input[type="password"] {
     font-family: Arial, Helvetica, sans-serif;
 }
 
-textarea.code-editor {
-    width: 98%;
-    min-height: 300px;
-    padding: 10px;
-    border: 2px solid #000;
-    background-color: #f0f0f0;
-    font-family: 'Courier New', monospace;
-    font-size: 13px;
-    resize: vertical;
-}
-
-.code-info {
-    background: #ffffcc;
-    border: 1px solid #000;
-    padding: 10px;
-    margin-bottom: 10px;
-}
-
-.validation-result {
-    padding: 10px;
-    margin-top: 10px;
-    border: 2px solid #000;
-}
-
-.validation-result.success {
-    background-color: #90EE90;
-    color: #006400;
-}
-
-.validation-result.error {
-    background-color: #FFB6C1;
-    color: #8B0000;
-}
-
 .btn {
     background-color: #c0c0c0;
     border: 2px outset #fff;
@@ -445,6 +411,9 @@ textarea.code-editor {
                 </div>
             </div>
             <div class="status">
+                <button class="btn" onclick="openTokenModal()" style="margin-right: 10px; padding: 5px 10px;" title="Configure API Token">
+                    🔑 Token
+                </button>
                 <span id="api-status" class="status-badge">Checking...</span>
                 <span id="gpu-status" class="status-badge">GPU: Unknown</span>
             </div>
@@ -457,7 +426,7 @@ textarea.code-editor {
                     <h3 onclick="toggleFilePaths()">
                         <span id="file-paths-toggle-icon">▶</span> Upload Custom Files (Optional)
                     </h3>
-                    <div id="file-paths-content">
+                    <div id="file-paths-content" style="display: none;">
                         <div>
                             <p>
                                 Upload custom files to override defaults. Unspecified files will use defaults from data_in folder.
@@ -511,43 +480,6 @@ textarea.code-editor {
                     </div>
                 </div>
 
-                <div id="custom-code-section">
-                    <h3 onclick="toggleCustomCode()">
-                        <span id="custom-code-toggle-icon">▶</span> Custom Kernel Code (Optional)
-                    </h3>
-                    <div id="custom-code-content" style="display: none;">
-                        <div class="code-info">
-                            <p><strong>Customize Mortality Calculation:</strong></p>
-                            <p>Write Python code to modify how mortality rates are calculated. Your code must:</p>
-                            <ul>
-                                <li>Assign final value to <code>qx</code> variable</li>
-                                <li>Use only provided inputs: <code>qx</code>, <code>age</code>, <code>freq_eval</code>, <code>AJUST_NOUV_AFFAIRES</code></li>
-                                <li>No loops, imports, or external functions</li>
-                            </ul>
-                            <p><strong>Example:</strong> Increase mortality by 10% for age > 85</p>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="custom_mortality_code">Mortality Adjustment Code:</label>
-                            <textarea id="custom_mortality_code" class="code-editor" spellcheck="false"># Convert annual to period rate (default)
-qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
-
-# Add your custom adjustments below:
-# Example: Conservative adjustment for elderly
-# if age > 85:
-#     qx = qx * 1.10</textarea>
-                        </div>
-                        
-                        <button type="button" class="btn btn-secondary" onclick="validateCustomCode()">
-                            Validate Code
-                        </button>
-                        <button type="button" class="btn btn-secondary" onclick="clearCustomCode()">
-                            Reset to Default
-                        </button>
-                        <div id="validation-message"></div>
-                    </div>
-                </div>
-
                 <div>
                     <div class="form-group">
                         <label for="nb_an_projection">Years to Project:</label>
@@ -596,6 +528,30 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
             <p>Powered by GPU-accelerated computing</p>
         </div>
 
+    </div>
+
+    <!-- Token Setup Modal -->
+    <div id="token-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2>🔑 API Token Setup</h2>
+            </div>
+            <div class="modal-body">
+                <p>Enter your RunPod API endpoint token to access the service:</p>
+                <form id="token-form">
+                    <div class="form-group">
+                        <label for="api-token">API Token:</label>
+                        <input type="password" id="api-token" name="api-token" placeholder="Enter your RunPod token" required style="width: 95%;">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Save Token</button>
+                    <button type="button" class="btn btn-secondary" onclick="skipToken()">Skip (Use Default)</button>
+                </form>
+                <div id="token-message"></div>
+                <div style="margin-top: 15px; padding: 10px; background: #ffffcc; border: 1px solid #000; font-size: 12px;">
+                    <strong>Note:</strong> Your token will be stored locally in your browser. You can change it later by clicking the 🔑 icon in the header.
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Admin Actions Modal -->
@@ -651,6 +607,60 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
         // Use current origin to support both localhost and proxy URLs (e.g., RunPod)
         const API_BASE = window.location.origin;
         let selectedJobId = null;
+        
+        // Token Management
+        function getApiToken() {
+            return localStorage.getItem('api_token') || '';
+        }
+        
+        function setApiToken(token) {
+            localStorage.setItem('api_token', token);
+            localStorage.setItem('token_set_at', new Date().toISOString());
+        }
+        
+        function hasTokenBeenSet() {
+            return localStorage.getItem('token_set_at') !== null;
+        }
+        
+        function openTokenModal() {
+            document.getElementById('token-modal').style.display = 'block';
+            document.getElementById('api-token').value = getApiToken();
+        }
+        
+        function closeTokenModal() {
+            document.getElementById('token-modal').style.display = 'none';
+        }
+        
+        function skipToken() {
+            setApiToken('');
+            closeTokenModal();
+        }
+        
+        // Handle token form submission
+        document.getElementById('token-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const token = document.getElementById('api-token').value;
+            setApiToken(token);
+            document.getElementById('token-message').innerHTML = '<div class="success">✓ Token saved successfully!</div>';
+            setTimeout(() => {
+                closeTokenModal();
+                document.getElementById('token-message').innerHTML = '';
+                // Refresh health check with new token
+                checkHealth();
+            }, 1000);
+        });
+        
+        // Helper function to make API requests with token
+        async function fetchWithToken(url, options = {}) {
+            const token = getApiToken();
+            if (!options.headers) {
+                options.headers = {};
+            }
+            if (token) {
+                options.headers['Authorization'] = `Bearer ${token}`;
+            }
+            return fetch(url, options);
+        }
 
         // Clear database (admin action)
         document.getElementById('clear-db-form').addEventListener('submit', async (e) => {
@@ -672,7 +682,7 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
             messageDiv.innerHTML = '<div class="loading">Clearing database...</div>';
             
             try {
-                const response = await fetch(`${API_BASE}/admin/clear-database`, {
+                const response = await fetchWithToken(`${API_BASE}/admin/clear-database`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -713,7 +723,7 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
         // Check API health on load
         async function checkHealth() {
             try {
-                const response = await fetch(`${API_BASE}/`);
+                const response = await fetchWithToken(`${API_BASE}/`);
                 const data = await response.json();
                 
                 document.getElementById('api-status').textContent = `API: v${data.version}`;
@@ -730,7 +740,7 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
         // Load jobs list
         async function loadJobs() {
             try {
-                const response = await fetch(`${API_BASE}/jobs`);
+                const response = await fetchWithToken(`${API_BASE}/jobs`);
                 const data = await response.json();
                 
                 const jobsList = document.getElementById('jobs-list');
@@ -865,7 +875,7 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
             const detailsDiv = document.getElementById(`job-details-${jobId}`);
             
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}`);
+                const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}`);
                 const job = await response.json();
                 
                 // Build file source info
@@ -937,7 +947,7 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
         // Display job files with preview buttons
         async function displayJobFiles(jobId) {
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files`);
+                const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}/files`);
                 const data = await response.json();
                 
                 const filesDiv = document.getElementById(`files-display-${jobId}`);
@@ -1008,7 +1018,7 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
         // Preview file in modal
         async function previewFile(jobId, fileName) {
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}/files/${fileName}/preview?limit=100`);
+                const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}/files/${fileName}/preview?limit=100`);
                 const data = await response.json();
                 
                 if (!response.ok) {
@@ -1118,71 +1128,6 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
             });
         }
 
-        // Toggle custom code section
-        function toggleCustomCode() {
-            const content = document.getElementById('custom-code-content');
-            const icon = document.getElementById('custom-code-toggle-icon');
-            
-            if (content.style.display === 'none' || content.style.display === '') {
-                content.style.display = 'block';
-                icon.textContent = '▼';
-            } else {
-                content.style.display = 'none';
-                icon.textContent = '▶';
-            }
-        }
-
-        // Validate custom code
-        async function validateCustomCode() {
-            const code = document.getElementById('custom_mortality_code').value;
-            const msgDiv = document.getElementById('validation-message');
-            
-            msgDiv.innerHTML = '<div class="validation-result">Validating...</div>';
-            
-            try {
-                const response = await fetch(`${API_BASE}/api/actuarial/validate`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        code: {
-                            mortality: code
-                        }
-                    })
-                });
-                
-                const result = await response.json();
-                
-                if (result.valid) {
-                    msgDiv.innerHTML = '<div class="validation-result success"><strong>✓ Code is valid!</strong> You can now create the job.</div>';
-                } else {
-                    let errorHtml = '<div class="validation-result error"><strong>✗ Code validation failed:</strong><ul>';
-                    if (result.errors && result.errors.mortality) {
-                        result.errors.mortality.forEach(err => {
-                            errorHtml += `<li>${err}</li>`;
-                        });
-                    }
-                    errorHtml += '</ul></div>';
-                    msgDiv.innerHTML = errorHtml;
-                }
-            } catch (error) {
-                msgDiv.innerHTML = `<div class="validation-result error"><strong>✗ Error:</strong> ${error.message}</div>`;
-            }
-        }
-
-        // Clear custom code (reset to default)
-        function clearCustomCode() {
-            const defaultCode = `# Convert annual to period rate (default)
-qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
-
-# Add your custom adjustments below:
-# Example: Conservative adjustment for elderly
-# if age > 85:
-#     qx = qx * 1.10`;
-            
-            document.getElementById('custom_mortality_code').value = defaultCode;
-            document.getElementById('validation-message').innerHTML = '<div class="validation-result success">Reset to default code</div>';
-        }
-
         // Cancel a job
         async function cancelJob(jobId) {
             if (!confirm(`Are you sure you want to cancel job ${jobId}?`)) {
@@ -1190,7 +1135,7 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
             }
             
             try {
-                const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
+                const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}`, {
                     method: 'DELETE'
                 });
                 
@@ -1305,7 +1250,7 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
                     if (maxAccounts) formData.append('max_accounts', maxAccounts);
                     if (debugAccount) formData.append('debug_account', debugAccount);
                     
-                    const response = await fetch(`${API_BASE}/jobs`, {
+                    const response = await fetchWithToken(`${API_BASE}/jobs`, {
                         method: 'POST',
                         body: formData
                     });
@@ -1332,8 +1277,13 @@ qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
         setInterval(loadJobs, 10000);
 
         // Initialize
-        checkHealth();
-        loadJobs();
+        // Check if token modal should be shown on first visit
+        if (!hasTokenBeenSet()) {
+            openTokenModal();
+        } else {
+            checkHealth();
+            loadJobs();
+        }
     </script>
 </body>
 </html>

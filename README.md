@@ -26,6 +26,84 @@ docker login
 docker push your-username/gpu-actuarial-api:latest
 ```
 
+## RunPod Deployment
+
+Your application is deployed on RunPod with a load-balancing endpoint. Here's how to use it:
+
+### Understanding RunPod Setup
+
+RunPod distributes HTTP requests across available workers. Your container must:
+1. Run an HTTP server on the port specified in the `PORT` environment variable (default: 8000)
+2. Have a `/ping` health check endpoint on the port specified in `PORT_HEALTH` (default: 8000)
+
+### Current Configuration
+
+The Flask app in `flask_app.py` is configured to:
+- Listen on port 8000 (via `PORT` env var)
+- Provide `/ping` endpoint for health checks
+- Handle job submissions and result retrieval
+
+### Using Your RunPod Endpoint
+
+Replace `YOUR_ENDPOINT_URL` with your actual RunPod endpoint URL:
+
+**Health Check:**
+```bash
+curl https://YOUR_ENDPOINT_URL/ping
+```
+
+**Submit a Job (Web Interface):**
+```bash
+open https://YOUR_ENDPOINT_URL/web
+```
+
+**Submit a Job (API):**
+```bash
+# Upload CSV files and create a job
+curl -X POST https://YOUR_ENDPOINT_URL/jobs \
+  -F "files=@data_in/POPULATION.csv" \
+  -F "files=@data_in/MORTALITE.csv" \
+  -F "nb_an_projection=100" \
+  -F "nb_scenarios=100"
+```
+
+**Check Job Status:**
+```bash
+curl https://YOUR_ENDPOINT_URL/jobs/<job_id>
+```
+
+**Get Results:**
+```bash
+curl https://YOUR_ENDPOINT_URL/jobs/<job_id>/results?type=summary
+```
+
+**Download Result Files:**
+```bash
+curl https://YOUR_ENDPOINT_URL/jobs/<job_id>/files/<file_name> -o result.csv
+```
+
+### Monitoring RunPod Workers
+
+You can monitor your workers through the RunPod dashboard:
+1. Go to your RunPod console
+2. Navigate to your endpoint
+3. View active workers and their status
+4. Scale workers up/down as needed
+
+### Environment Variables
+
+When deploying to RunPod, ensure these are set:
+- `PORT=8000` - Main HTTP server port
+- `PORT_HEALTH=8000` - Health check port
+- `ADMIN_PASSWORD` - Admin password for CLI operations (if needed)
+- `ENVIRONMENT=production` - Set to production
+
+### Scaling Considerations
+
+- **GPU Memory**: Each worker has 16GB GPU RAM. Adjust `--max-accounts` if needed
+- **Worker Count**: Start with 1-2 workers, scale based on demand
+- **Timeout**: Set appropriate timeout for long-running jobs (typically 3600+ seconds)
+
 ## API Endpoints
 
 - `GET /` - API information
