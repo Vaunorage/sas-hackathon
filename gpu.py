@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import gc
+import psutil
+import os
 from pathlib import Path
 from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
@@ -1353,7 +1355,12 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         end_idx = min((i + 1) * batch_size, n_accounts)
         current_batch_size = end_idx - start_idx
 
+        # Memory snapshot at batch start
+        process = psutil.Process(os.getpid())
+        batch_mem_start = process.memory_info().rss / 1024**3
+        
         print(f"\n--- Processing Batch {i + 1}/{num_batches} (Accounts {start_idx} to {end_idx - 1}) ---")
+        print(f"  Memory at batch start: {batch_mem_start:.2f} GB")
         
         # Report progress if callback provided
         if progress_callback:
@@ -1453,16 +1460,42 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
         
         if n_valid > 0:
-            # Use np.compress for more memory-efficient extraction (avoids fragmentation)
-            extract_start = datetime.now()
-            valid_data = np.compress(valid_mask_1d, reshaped, axis=0)
-            extract_time = (datetime.now() - extract_start).total_seconds()
-            print(f"    Extract valid data: {extract_time:.3f}s ({valid_data.nbytes / 1024**2:.1f} MB)")
+            # Detailed memory profiling for extraction
+            process = psutil.Process(os.getpid())
+            mem_before = process.memory_info().rss / 1024**3
+            
+            # Step 1: Allocate output array
+            alloc_start = datetime.now()
+            output_array = np.empty((n_valid, n_output_fields), dtype=np.float32)
+            alloc_time = (datetime.now() - alloc_start).total_seconds()
+            mem_after_alloc = process.memory_info().rss / 1024**3
+            print(f"    Allocate output array ({n_valid:,} x {n_output_fields}): {alloc_time:.3f}s, mem: +{mem_after_alloc - mem_before:.2f} GB")
+            
+            # Step 2: Copy valid rows
+            copy_start = datetime.now()
+            valid_indices = np.where(valid_mask_1d)[0]
+            copy_time_indices = (datetime.now() - copy_start).total_seconds()
+            print(f"    Find valid indices: {copy_time_indices:.3f}s ({len(valid_indices):,} indices)")
+            
+            copy_data_start = datetime.now()
+            output_array[:] = reshaped[valid_indices]
+            copy_time_data = (datetime.now() - copy_data_start).total_seconds()
+            mem_after_copy = process.memory_info().rss / 1024**3
+            print(f"    Copy data via indexing: {copy_time_data:.3f}s, mem: +{mem_after_copy - mem_after_alloc:.2f} GB")
+            
+            valid_data = output_array
+            extract_time = alloc_time + copy_time_indices + copy_time_data
+            print(f"    Total extract: {extract_time:.3f}s ({valid_data.nbytes / 1024**2:.1f} MB)")
             
             # FREE LARGE ARRAYS IMMEDIATELY to prevent fragmentation
+            free_start = datetime.now()
             del h_batch_output  # Free 4GB pinned memory NOW
             del reshaped  # Free the view
             del valid_mask_1d  # Free the mask
+            del valid_indices
+            free_time = (datetime.now() - free_start).total_seconds()
+            mem_after_free = process.memory_info().rss / 1024**3
+            print(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_copy - mem_after_free:.2f} GB")
             
             if use_incremental:
                 # Incremental aggregation: aggregate this batch immediately
@@ -1554,9 +1587,11 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             del h_batch_input_pinned
         
         # Force garbage collection after EVERY batch to prevent fragmentation
+        gc_start = datetime.now()
         gc.collect()
-        if (i + 1) % 5 == 0:
-            print(f"  [Memory cleanup: GC triggered]")
+        gc_time = (datetime.now() - gc_start).total_seconds()
+        batch_mem_end = process.memory_info().rss / 1024**3
+        print(f"  [Memory cleanup: GC in {gc_time:.3f}s, mem at end: {batch_mem_end:.2f} GB, delta: {batch_mem_end - batch_mem_start:+.2f} GB]")
 
         batch_end_time = datetime.now()
         batch_duration = (batch_end_time - batch_start_time).total_seconds()
