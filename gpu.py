@@ -10,6 +10,7 @@ import math
 from numba import cuda
 from paths import HERE
 import argparse
+from multiprocessing import Pool, cpu_count
 
 # =============================================================================
 # CONFIGURATION
@@ -28,6 +29,31 @@ CONFIG = {
 # =============================================================================
 # UTILITY FUNCTIONS (CPU)
 # =============================================================================
+
+def _extract_valid_rows_chunk(args):
+    """
+    Worker function for parallel extraction of valid rows from a chunk.
+    This runs in a separate process to utilize multiple CPU cores.
+    
+    Args:
+        args: Tuple of (chunk_data, chunk_start_idx)
+    
+    Returns:
+        Tuple of (valid_data, chunk_start_idx) or None if no valid rows
+    """
+    chunk_data, chunk_start_idx = args
+    
+    # Create boolean mask for this chunk
+    valid_mask = chunk_data[:, 0] > 0
+    n_valid = np.sum(valid_mask)
+    
+    if n_valid == 0:
+        return None
+    
+    # Extract valid rows
+    valid_data = np.compress(valid_mask, chunk_data, axis=0)
+    return valid_data
+
 
 def parse_percentage(value):
     """Convert percentage string to float (e.g., '1.5%' -> 0.015, '(0.53%)' -> -0.0053)."""
@@ -1461,33 +1487,68 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         reshape_time = (datetime.now() - reshape_start).total_seconds()
         print(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s")
         
-        # Boolean mask on contiguous memory (much faster than fancy indexing!)
-        mask_start = datetime.now()
-        valid_mask_1d = reshaped[:, 0] > 0
-        n_valid = np.sum(valid_mask_1d)
-        mask_time = (datetime.now() - mask_start).total_seconds()
-        print(f"    Create boolean mask: {mask_time:.3f}s")
-        print(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
+        # PARALLEL EXTRACTION: Split work across CPU cores
+        process = psutil.Process(os.getpid())
+        mem_before = process.memory_info().rss / 1024**3
         
-        if n_valid > 0:
-            # Detailed memory profiling for extraction
-            process = psutil.Process(os.getpid())
-            mem_before = process.memory_info().rss / 1024**3
+        extract_start = datetime.now()
+        
+        # Determine number of workers (use available CPU cores)
+        n_workers = min(cpu_count(), 16)  # Cap at 16 to avoid overhead
+        
+        # Calculate chunk size (aim for ~1M rows per chunk for good parallelization)
+        rows_per_chunk = max(1000000, total_rows // (n_workers * 2))
+        n_chunks = (total_rows + rows_per_chunk - 1) // rows_per_chunk
+        n_workers = min(n_workers, n_chunks)  # Don't use more workers than chunks
+        
+        print(f"    Parallel extraction: {n_chunks} chunks across {n_workers} workers")
+        
+        # Split data into chunks
+        chunk_args = []
+        for chunk_idx in range(n_chunks):
+            start_idx = chunk_idx * rows_per_chunk
+            end_idx = min(start_idx + rows_per_chunk, total_rows)
+            chunk_data = reshaped[start_idx:end_idx]
+            chunk_args.append((chunk_data, start_idx))
+        
+        split_time = (datetime.now() - extract_start).total_seconds()
+        print(f"    Prepare chunks: {split_time:.3f}s")
+        
+        # Process chunks in parallel
+        parallel_start = datetime.now()
+        with Pool(processes=n_workers) as pool:
+            results = pool.map(_extract_valid_rows_chunk, chunk_args)
+        parallel_time = (datetime.now() - parallel_start).total_seconds()
+        print(f"    Parallel processing: {parallel_time:.3f}s")
+        
+        # Filter out None results and concatenate
+        concat_start = datetime.now()
+        valid_chunks = [r for r in results if r is not None]
+        
+        if len(valid_chunks) > 0:
+            if len(valid_chunks) == 1:
+                valid_data = valid_chunks[0]
+            else:
+                valid_data = np.vstack(valid_chunks)
             
-            # Extract valid rows using compress (avoids fancy indexing on pinned memory)
-            extract_start = datetime.now()
-            # np.compress works directly on the boolean mask and is more efficient
-            # than fancy indexing, especially with pinned CUDA memory
-            valid_data = np.compress(valid_mask_1d, reshaped, axis=0)
-            extract_time = (datetime.now() - extract_start).total_seconds()
+            n_valid = len(valid_data)
+            concat_time = (datetime.now() - concat_start).total_seconds()
             mem_after_extract = process.memory_info().rss / 1024**3
-            print(f"    Extract via compress: {extract_time:.3f}s, mem: +{mem_after_extract - mem_before:.2f} GB ({valid_data.nbytes / 1024**2:.1f} MB)")
+            
+            print(f"    Concatenate results: {concat_time:.3f}s")
+            print(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
+            print(f"    Total extract: {(datetime.now() - extract_start).total_seconds():.3f}s, mem: +{mem_after_extract - mem_before:.2f} GB ({valid_data.nbytes / 1024**2:.1f} MB)")
+        else:
+            valid_data = None
+            n_valid = 0
+            print(f"    No valid rows found")
+        
+        if valid_data is not None and n_valid > 0:
             
             # FREE LARGE ARRAYS IMMEDIATELY to prevent fragmentation
             free_start = datetime.now()
             del h_batch_regular  # Free regular memory copy
             del reshaped  # Free the view
-            del valid_mask_1d  # Free the mask
             free_time = (datetime.now() - free_start).total_seconds()
             mem_after_free = process.memory_info().rss / 1024**3
             print(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
@@ -1572,10 +1633,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         del d_batch_output
         if 'h_batch_output' in locals():
             del h_batch_output  # May already be freed above
+        if 'h_batch_regular' in locals():
+            del h_batch_regular  # May already be freed above
         if 'reshaped' in locals():
             del reshaped  # May already be freed above
-        if 'valid_mask_1d' in locals():
-            del valid_mask_1d  # May already be freed above
         if 'valid_data' in locals():
             del valid_data  # Already in list, free reference
         if use_pinned_memory and 'h_batch_input_pinned' in locals():
@@ -1761,7 +1822,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print("AGGREGATING RESULTS")
     print("="*60)
     
-    from algo2.cpu import (aggregate_by_scenario, aggregate_flux_projetes,
+    from cpu import (aggregate_by_scenario, aggregate_flux_projetes,
                            aggregate_vp_flux_compte, aggregate_vp_flux_total)
 
     agg_start = datetime.now()
@@ -1864,8 +1925,8 @@ if __name__ == "__main__":
             print(f"   (Note: --debug-scenario parameter is ignored, showing averaged results)")
             print()
 
-        DATA_PATH = HERE.joinpath("algo2/data_in")
-        OUTPUT_PATH = HERE.joinpath("algo2/data_out_gpu")
+        DATA_PATH = HERE.joinpath("data_in")
+        OUTPUT_PATH = HERE.joinpath("data_out_gpu")
 
         results = run_projection_gpu(
             data_path=DATA_PATH,
