@@ -16,6 +16,7 @@ RUN uv sync --frozen
 
 # Copy application files
 COPY flask_app.py .
+COPY cli.py .
 COPY gpu.py .
 COPY cpu.py .
 COPY paths.py .
