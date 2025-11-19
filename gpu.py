@@ -1281,17 +1281,22 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print(f"Optimization: Pinned memory = {use_pinned_memory}")
 
     # Load data
-    data = load_all_data(data_path,
-                         population_path=population_path,
-                         mortalite_path=mortalite_path,
-                         rendements_path=rendements_path,
-                         depots_futurs_path=depots_futurs_path,
-                         frais_admin_path=frais_admin_path,
-                         min_ferr_path=min_ferr_path,
-                         tx_lapse_part_path=tx_lapse_part_path,
-                         tx_lapse_tot_path=tx_lapse_tot_path,
-                         acquisition_path=acquisition_path,
-                         coussins_escap_path=coussins_escap_path)
+    try:
+        print("\nLoading data files...")
+        data = load_all_data(data_path,
+                             population_path=population_path,
+                             mortalite_path=mortalite_path,
+                             rendements_path=rendements_path,
+                             depots_futurs_path=depots_futurs_path,
+                             frais_admin_path=frais_admin_path,
+                             min_ferr_path=min_ferr_path,
+                             tx_lapse_part_path=tx_lapse_part_path,
+                             tx_lapse_tot_path=tx_lapse_tot_path,
+                             acquisition_path=acquisition_path,
+                             coussins_escap_path=coussins_escap_path)
+        print("✓ Data loaded successfully")
+    except Exception as e:
+        raise RuntimeError(f"Failed to load data: {e}")
 
     if max_accounts:
         data['population'] = data['population'].head(max_accounts)
@@ -1300,26 +1305,43 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print(f"\nPreparing {n_accounts} accounts for GPU processing...")
 
     # Prepare all account data on CPU first
-    all_account_data, _ = prepare_account_data(data['population'])
+    try:
+        all_account_data, _ = prepare_account_data(data['population'])
+        print("✓ Account data prepared")
+    except Exception as e:
+        raise RuntimeError(f"Failed to prepare account data: {e}")
 
     # Create GPU lookup tables
-    print("Creating GPU lookup tables...")
-    mortality_lookup = create_gpu_mortality_lookup(data['mortalite'])
-    (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx,
-     rend_sp500, rend_eafe) = create_gpu_returns_lookup(data['rendements'])
-    min_ferr_lookup = create_gpu_min_ferr_lookup(data['min_ferr'])
-    lapse_part_min, lapse_part_max = create_gpu_lapse_part_lookup(data['tx_lapse_part'])
-    lapse_tot_min, lapse_tot_max, lapse_tot_fact = create_gpu_lapse_tot_lookup(data['tx_lapse_tot'])
-    (deposits_pc, deposits_var, deposits_age_max,
-     deposits_i_even) = create_gpu_deposits_lookup(data['depots_futurs'])
-    fees_lookup = create_gpu_fees_lookup(data['frais_admin'])
-    (acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac,
-     acq_frais_ac, acq_frais_rf) = create_gpu_acquisition_lookup(data['acquisition'])
-    (cous_base_passif, cous_tx_passif, cous_base_credit, cous_tx_credit,
-     cous_base_marche, cous_tx_marche, cous_base_depense, cous_tx_depense,
-     cous_base_decheance, cous_tx_decheance, cous_base_mortalite, cous_tx_mortalite,
-     cous_base_depot, cous_tx_depot, cous_facteur_80,
-     cous_facteur_90) = create_gpu_coussins_lookup(data['coussins_escap'])
+    print("\nCreating GPU lookup tables...")
+    try:
+        mortality_lookup = create_gpu_mortality_lookup(data['mortalite'])
+        print("  ✓ Mortality lookup")
+        (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx,
+         rend_sp500, rend_eafe) = create_gpu_returns_lookup(data['rendements'])
+        print("  ✓ Returns lookup")
+        min_ferr_lookup = create_gpu_min_ferr_lookup(data['min_ferr'])
+        print("  ✓ Min FERR lookup")
+        lapse_part_min, lapse_part_max = create_gpu_lapse_part_lookup(data['tx_lapse_part'])
+        print("  ✓ Lapse partial lookup")
+        lapse_tot_min, lapse_tot_max, lapse_tot_fact = create_gpu_lapse_tot_lookup(data['tx_lapse_tot'])
+        print("  ✓ Lapse total lookup")
+        (deposits_pc, deposits_var, deposits_age_max,
+         deposits_i_even) = create_gpu_deposits_lookup(data['depots_futurs'])
+        print("  ✓ Deposits lookup")
+        fees_lookup = create_gpu_fees_lookup(data['frais_admin'])
+        print("  ✓ Fees lookup")
+        (acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac,
+         acq_frais_ac, acq_frais_rf) = create_gpu_acquisition_lookup(data['acquisition'])
+        print("  ✓ Acquisition lookup")
+        (cous_base_passif, cous_tx_passif, cous_base_credit, cous_tx_credit,
+         cous_base_marche, cous_tx_marche, cous_base_depense, cous_tx_depense,
+         cous_base_decheance, cous_tx_decheance, cous_base_mortalite, cous_tx_mortalite,
+         cous_base_depot, cous_tx_depot, cous_facteur_80,
+         cous_facteur_90) = create_gpu_coussins_lookup(data['coussins_escap'])
+        print("  ✓ Coussins lookup")
+        print("✓ All GPU lookup tables created")
+    except Exception as e:
+        raise RuntimeError(f"Failed to create GPU lookup tables: {e}\n{type(e).__name__}")
 
     lookup_tables = [
         mortality_lookup, forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe,
