@@ -33,6 +33,14 @@ except ImportError:
     PSYCOPG_AVAILABLE = False
     print("Warning: psycopg not available, PostgreSQL support disabled")
 
+# Import SQLAlchemy for pandas database operations
+try:
+    from sqlalchemy import create_engine
+    SQLALCHEMY_AVAILABLE = True
+except ImportError:
+    SQLALCHEMY_AVAILABLE = False
+    print("Warning: sqlalchemy not available, pandas database operations may fail")
+
 # Import the GPU projection function
 try:
     from gpu import run_projection_gpu
@@ -332,6 +340,19 @@ def get_db_connection():
         conn.row_factory = sqlite3.Row
         return conn
 
+def get_sqlalchemy_engine():
+    """Get a SQLAlchemy engine for pandas operations"""
+    if DATABASE_TYPE == 'postgresql':
+        # Convert psycopg URL to SQLAlchemy-compatible URL
+        # psycopg uses postgresql:// but we need to ensure proper format
+        if NEONDB_URL.startswith('postgresql://'):
+            url = NEONDB_URL.replace('postgresql://', 'postgresql+psycopg://', 1)
+        else:
+            url = NEONDB_URL
+        return create_engine(url)
+    else:
+        return create_engine(f'sqlite:///{app.config["DATABASE"]}')
+
 def create_job(job_id: str, parameters: Dict[str, Any], uploaded_files: list) -> None:
     """Create a new job in the database"""
     ph = get_placeholder()
@@ -421,7 +442,7 @@ def update_job_results_data(job_id: str, results_data: dict) -> None:
 
 def save_flux_projetes(job_id: str, df: pd.DataFrame) -> None:
     """Save flux_projetes DataFrame to database table"""
-    conn = get_db_connection()
+    engine = get_sqlalchemy_engine()
     
     # Prepare data for bulk insert
     df_copy = df.copy()
@@ -431,13 +452,13 @@ def save_flux_projetes(job_id: str, df: pd.DataFrame) -> None:
     df_copy.columns = df_copy.columns.str.lower()
     
     # Insert into database
-    df_copy.to_sql('flux_projetes', conn, if_exists='append', index=False)
-    conn.close()
+    df_copy.to_sql('flux_projetes', engine, if_exists='append', index=False)
+    engine.dispose()
     print(f"  Saved {len(df)} flux_projetes records to database")
 
 def save_vp_flux_compte(job_id: str, df: pd.DataFrame) -> None:
     """Save vp_flux_compte DataFrame to database table"""
-    conn = get_db_connection()
+    engine = get_sqlalchemy_engine()
     
     # Prepare data for bulk insert
     df_copy = df.copy()
@@ -447,13 +468,13 @@ def save_vp_flux_compte(job_id: str, df: pd.DataFrame) -> None:
     df_copy.columns = df_copy.columns.str.lower()
     
     # Insert into database
-    df_copy.to_sql('vp_flux_compte', conn, if_exists='append', index=False)
-    conn.close()
+    df_copy.to_sql('vp_flux_compte', engine, if_exists='append', index=False)
+    engine.dispose()
     print(f"  Saved {len(df)} vp_flux_compte records to database")
 
 def save_vp_flux_total(job_id: str, df: pd.DataFrame) -> None:
     """Save vp_flux_total DataFrame to database table"""
-    conn = get_db_connection()
+    engine = get_sqlalchemy_engine()
     
     # Prepare data for bulk insert
     df_copy = df.copy()
@@ -463,8 +484,8 @@ def save_vp_flux_total(job_id: str, df: pd.DataFrame) -> None:
     df_copy.columns = df_copy.columns.str.lower()
     
     # Insert into database
-    df_copy.to_sql('vp_flux_total', conn, if_exists='append', index=False)
-    conn.close()
+    df_copy.to_sql('vp_flux_total', engine, if_exists='append', index=False)
+    engine.dispose()
     print(f"  Saved {len(df)} vp_flux_total records to database")
 
 def get_flux_projetes(job_id: str, an_eval: int = None, mois_eval: int = None) -> Optional[pd.DataFrame]:
