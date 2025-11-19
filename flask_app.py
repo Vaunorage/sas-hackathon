@@ -10,14 +10,28 @@ import threading
 import traceback
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import pandas as pd
+from contextlib import contextmanager
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
 
 from paths import HERE
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Import PostgreSQL adapter if available
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+    PSYCOPG_AVAILABLE = True
+except ImportError:
+    PSYCOPG_AVAILABLE = False
+    print("Warning: psycopg not available, PostgreSQL support disabled")
 
 # Import the GPU projection function
 try:
@@ -52,16 +66,93 @@ ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')  # Change in production
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'csv'}
 
+# Database configuration
+USE_NEONDB = os.getenv('USE_NEONDB', 'false').lower() == 'true'
+NEONDB_URL = os.getenv('NEONDB_URL', '')
+
+# Determine which database to use
+if USE_NEONDB and PSYCOPG_AVAILABLE and NEONDB_URL:
+    DATABASE_TYPE = 'postgresql'
+    print(f"Using PostgreSQL/NeonDB: {NEONDB_URL.split('@')[1].split('/')[0] if '@' in NEONDB_URL else 'configured'}")
+else:
+    DATABASE_TYPE = 'sqlite'
+    if USE_NEONDB and not PSYCOPG_AVAILABLE:
+        print("Warning: USE_NEONDB=true but psycopg not available, falling back to SQLite")
+    elif USE_NEONDB and not NEONDB_URL:
+        print("Warning: USE_NEONDB=true but NEONDB_URL not set, falling back to SQLite")
+
+# =============================================================================
+# DATABASE ABSTRACTION LAYER
+# =============================================================================
+
+@contextmanager
+def get_db_cursor():
+    """Get a database cursor with automatic connection management"""
+    if DATABASE_TYPE == 'postgresql':
+        conn = psycopg.connect(NEONDB_URL, row_factory=dict_row)
+        try:
+            cursor = conn.cursor()
+            yield cursor, conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+    else:
+        conn = sqlite3.connect(app.config['DATABASE'])
+        conn.row_factory = sqlite3.Row
+        try:
+            cursor = conn.cursor()
+            yield cursor, conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+
+def execute_sql(sql: str, params: Tuple = ()) -> None:
+    """Execute SQL with parameters"""
+    with get_db_cursor() as (cursor, conn):
+        cursor.execute(sql, params)
+
+def fetch_one(sql: str, params: Tuple = ()) -> Optional[Dict]:
+    """Fetch one row as dictionary"""
+    with get_db_cursor() as (cursor, conn):
+        cursor.execute(sql, params)
+        row = cursor.fetchone()
+        if row:
+            return dict(row) if DATABASE_TYPE == 'postgresql' else {k: row[k] for k in row.keys()}
+        return None
+
+def fetch_all(sql: str, params: Tuple = ()) -> list:
+    """Fetch all rows as list of dictionaries"""
+    with get_db_cursor() as (cursor, conn):
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        if DATABASE_TYPE == 'postgresql':
+            return [dict(row) for row in rows]
+        else:
+            return [{k: row[k] for k in row.keys()} for row in rows]
+
+def get_placeholder():
+    """Get the parameter placeholder for the current database type"""
+    return '%s' if DATABASE_TYPE == 'postgresql' else '?'
+
 # =============================================================================
 # DATABASE INITIALIZATION
 # =============================================================================
 
 def init_db():
-    """Initialize the SQLite database with jobs table"""
-    conn = sqlite3.connect(app.config['DATABASE'])
-    cursor = conn.cursor()
+    """Initialize the database with required tables (supports both SQLite and PostgreSQL)"""
     
-    cursor.execute("""
+    # Determine ID column based on database type
+    id_column = "SERIAL PRIMARY KEY" if DATABASE_TYPE == 'postgresql' else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    
+    jobs_table = f"""
         CREATE TABLE IF NOT EXISTS jobs (
             job_id TEXT PRIMARY KEY,
             status TEXT NOT NULL,
@@ -77,12 +168,11 @@ def init_db():
             progress_percent REAL DEFAULT 0.0,
             results_data TEXT
         )
-    """)
+    """
     
-    # Create table for flux_projetes results
-    cursor.execute("""
+    flux_projetes_table = f"""
         CREATE TABLE IF NOT EXISTS flux_projetes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_column},
             job_id TEXT NOT NULL,
             an_eval INTEGER NOT NULL,
             mois_eval INTEGER NOT NULL,
@@ -106,17 +196,11 @@ def init_db():
             coussin_depot REAL,
             FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
         )
-    """)
+    """
     
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_flux_projetes_job_id 
-        ON flux_projetes(job_id)
-    """)
-    
-    # Create table for vp_flux_compte results
-    cursor.execute("""
+    vp_flux_compte_table = f"""
         CREATE TABLE IF NOT EXISTS vp_flux_compte (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_column},
             job_id TEXT NOT NULL,
             id_compte INTEGER NOT NULL,
             vp_frais_acquis REAL,
@@ -139,50 +223,56 @@ def init_db():
             vp_valeur_marchande REAL,
             FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
         )
-    """)
+    """
     
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_vp_flux_compte_job_id 
-        ON vp_flux_compte(job_id)
-    """)
-    
-    # Create table for vp_flux_total results
-    cursor.execute("""
+    vp_flux_total_table = f"""
         CREATE TABLE IF NOT EXISTS vp_flux_total (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_column},
             job_id TEXT NOT NULL,
             categorie TEXT NOT NULL,
             vp_flux_tot REAL NOT NULL,
             FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
         )
-    """)
+    """
     
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_vp_flux_total_job_id 
-        ON vp_flux_total(job_id)
-    """)
-    
-    # Migrate existing database to add new columns if they don't exist
-    try:
-        cursor.execute("SELECT current_batch FROM jobs LIMIT 1")
-    except sqlite3.OperationalError:
-        # Column doesn't exist, add it
-        print("Migrating database: Adding progress tracking columns...")
-        cursor.execute("ALTER TABLE jobs ADD COLUMN current_batch INTEGER DEFAULT 0")
-        cursor.execute("ALTER TABLE jobs ADD COLUMN total_batches INTEGER DEFAULT 0")
-        cursor.execute("ALTER TABLE jobs ADD COLUMN progress_percent REAL DEFAULT 0.0")
-        print("Migration complete")
-    
-    # Migrate to add results_data column
-    try:
-        cursor.execute("SELECT results_data FROM jobs LIMIT 1")
-    except sqlite3.OperationalError:
-        print("Migrating database: Adding results_data column...")
-        cursor.execute("ALTER TABLE jobs ADD COLUMN results_data TEXT")
-        print("Migration complete")
-    
-    conn.commit()
-    conn.close()
+    with get_db_cursor() as (cursor, conn):
+        # Create tables
+        cursor.execute(jobs_table)
+        cursor.execute(flux_projetes_table)
+        cursor.execute(vp_flux_compte_table)
+        cursor.execute(vp_flux_total_table)
+        
+        # Create indexes
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_flux_projetes_job_id 
+            ON flux_projetes(job_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_vp_flux_compte_job_id 
+            ON vp_flux_compte(job_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_vp_flux_total_job_id 
+            ON vp_flux_total(job_id)
+        """)
+        
+        # Handle migrations for SQLite only (PostgreSQL schema has all columns from start)
+        if DATABASE_TYPE == 'sqlite':
+            try:
+                cursor.execute("SELECT current_batch FROM jobs LIMIT 1")
+            except sqlite3.OperationalError:
+                print("Migrating database: Adding progress tracking columns...")
+                cursor.execute("ALTER TABLE jobs ADD COLUMN current_batch INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE jobs ADD COLUMN total_batches INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE jobs ADD COLUMN progress_percent REAL DEFAULT 0.0")
+                print("Migration complete")
+            
+            try:
+                cursor.execute("SELECT results_data FROM jobs LIMIT 1")
+            except sqlite3.OperationalError:
+                print("Migrating database: Adding results_data column...")
+                cursor.execute("ALTER TABLE jobs ADD COLUMN results_data TEXT")
+                print("Migration complete")
 
 # Initialize database on startup
 init_db()
@@ -200,35 +290,32 @@ job_progress = {}  # In-memory progress tracking: {job_id: {'current': int, 'tot
 # =============================================================================
 
 def get_db_connection():
-    """Get a database connection"""
-    conn = sqlite3.connect(app.config['DATABASE'])
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get a database connection (for backward compatibility with pandas.to_sql)"""
+    if DATABASE_TYPE == 'postgresql':
+        return psycopg.connect(NEONDB_URL)
+    else:
+        conn = sqlite3.connect(app.config['DATABASE'])
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def create_job(job_id: str, parameters: Dict[str, Any], uploaded_files: list) -> None:
     """Create a new job in the database"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
+    ph = get_placeholder()
+    sql = f"""
         INSERT INTO jobs (job_id, status, created_at, parameters, uploaded_files)
-        VALUES (?, ?, ?, ?, ?)
-    """, (
+        VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
+    """
+    execute_sql(sql, (
         job_id,
         'pending',
         datetime.utcnow().isoformat(),
         json.dumps(parameters),
         json.dumps(uploaded_files)
     ))
-    
-    conn.commit()
-    conn.close()
 
 def update_job_status(job_id: str, status: str, error_message: Optional[str] = None) -> None:
     """Update job status"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
+    ph = get_placeholder()
     updates = {'status': status}
     
     if status == 'running' and error_message is None:
@@ -239,12 +326,11 @@ def update_job_status(job_id: str, status: str, error_message: Optional[str] = N
     if error_message:
         updates['error_message'] = error_message
     
-    set_clause = ', '.join([f"{k} = ?" for k in updates.keys()])
+    set_clause = ', '.join([f"{k} = {ph}" for k in updates.keys()])
     values = list(updates.values()) + [job_id]
     
-    cursor.execute(f"UPDATE jobs SET {set_clause} WHERE job_id = ?", values)
-    conn.commit()
-    conn.close()
+    sql = f"UPDATE jobs SET {set_clause} WHERE job_id = {ph}"
+    execute_sql(sql, tuple(values))
 
 def update_job_progress(job_id: str, current_batch: int, total_batches: int) -> None:
     """
@@ -267,17 +353,13 @@ def update_job_progress(job_id: str, current_batch: int, total_batches: int) -> 
     }
     
     # Update database
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
+    ph = get_placeholder()
+    sql = f"""
         UPDATE jobs 
-        SET current_batch = ?, total_batches = ?, progress_percent = ?
-        WHERE job_id = ?
-    """, (current_batch, total_batches, progress_percent, job_id))
-    
-    conn.commit()
-    conn.close()
+        SET current_batch = {ph}, total_batches = {ph}, progress_percent = {ph}
+        WHERE job_id = {ph}
+    """
+    execute_sql(sql, (current_batch, total_batches, progress_percent, job_id))
 
 def update_job_results(job_id: str, result_files: list) -> None:
     """
@@ -287,15 +369,9 @@ def update_job_results(job_id: str, result_files: list) -> None:
         job_id: Job identifier
         result_files: List of file dictionaries with keys: name, type, description, size
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        UPDATE jobs SET result_files = ? WHERE job_id = ?
-    """, (json.dumps(result_files), job_id))
-    
-    conn.commit()
-    conn.close()
+    ph = get_placeholder()
+    sql = f"UPDATE jobs SET result_files = {ph} WHERE job_id = {ph}"
+    execute_sql(sql, (json.dumps(result_files), job_id))
 
 def update_job_results_data(job_id: str, results_data: dict) -> None:
     """
@@ -305,15 +381,9 @@ def update_job_results_data(job_id: str, results_data: dict) -> None:
         job_id: Job identifier
         results_data: Dictionary containing results from run_projection_gpu
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        UPDATE jobs SET results_data = ? WHERE job_id = ?
-    """, (json.dumps(results_data), job_id))
-    
-    conn.commit()
-    conn.close()
+    ph = get_placeholder()
+    sql = f"UPDATE jobs SET results_data = {ph} WHERE job_id = {ph}"
+    execute_sql(sql, (json.dumps(results_data), job_id))
 
 def save_flux_projetes(job_id: str, df: pd.DataFrame) -> None:
     """Save flux_projetes DataFrame to database table"""
@@ -375,15 +445,16 @@ def get_flux_projetes(job_id: str, an_eval: int = None, mois_eval: int = None) -
     conn = get_db_connection()
     try:
         # Build query with filters
-        query = "SELECT * FROM flux_projetes WHERE job_id = ?"
+        ph = get_placeholder()
+        query = f"SELECT * FROM flux_projetes WHERE job_id = {ph}"
         params = [job_id]
         
         if an_eval is not None:
-            query += " AND an_eval = ?"
+            query += f" AND an_eval = {ph}"
             params.append(an_eval)
         
         if mois_eval is not None:
-            query += " AND mois_eval = ?"
+            query += f" AND mois_eval = {ph}"
             params.append(mois_eval)
         
         query += " ORDER BY an_eval, mois_eval"
@@ -413,11 +484,12 @@ def get_vp_flux_compte(job_id: str, id_compte: int = None) -> Optional[pd.DataFr
     conn = get_db_connection()
     try:
         # Build query with filter
-        query = "SELECT * FROM vp_flux_compte WHERE job_id = ?"
+        ph = get_placeholder()
+        query = f"SELECT * FROM vp_flux_compte WHERE job_id = {ph}"
         params = [job_id]
         
         if id_compte is not None:
-            query += " AND id_compte = ?"
+            query += f" AND id_compte = {ph}"
             params.append(id_compte)
         
         query += " ORDER BY id_compte"
@@ -440,8 +512,9 @@ def get_vp_flux_total(job_id: str) -> Optional[pd.DataFrame]:
     """Retrieve vp_flux_total results for a job"""
     conn = get_db_connection()
     try:
+        ph = get_placeholder()
         df = pd.read_sql_query(
-            "SELECT * FROM vp_flux_total WHERE job_id = ?",
+            f"SELECT * FROM vp_flux_total WHERE job_id = {ph}",
             conn,
             params=(job_id,)
         )
@@ -460,12 +533,9 @@ def get_vp_flux_total(job_id: str) -> Optional[pd.DataFrame]:
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Get job details by ID"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
-    row = cursor.fetchone()
-    conn.close()
+    ph = get_placeholder()
+    sql = f"SELECT * FROM jobs WHERE job_id = {ph}"
+    row = fetch_one(sql, (job_id,))
     
     if row:
         job_data = {
@@ -501,12 +571,8 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def get_all_jobs() -> list:
     """Get all jobs ordered by creation date"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM jobs ORDER BY created_at DESC")
-    rows = cursor.fetchall()
-    conn.close()
+    sql = "SELECT * FROM jobs ORDER BY created_at DESC"
+    rows = fetch_all(sql)
     
     jobs = []
     for row in rows:
@@ -1306,12 +1372,9 @@ def clear_database():
         delete_files = request.json.get('delete_files', False) if request.is_json else request.form.get('delete_files') == 'true'
         
         # Clear database
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM jobs")
-        deleted_count = cursor.rowcount
-        conn.commit()
-        conn.close()
+        with get_db_cursor() as (cursor, conn):
+            cursor.execute("DELETE FROM jobs")
+            deleted_count = cursor.rowcount
         
         # Optionally delete uploaded and result files
         if delete_files:

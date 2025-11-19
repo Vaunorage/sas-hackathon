@@ -97,12 +97,50 @@ When deploying to RunPod, ensure these are set:
 - `PORT_HEALTH=8000` - Health check port
 - `ADMIN_PASSWORD` - Admin password for CLI operations (if needed)
 - `ENVIRONMENT=production` - Set to production
+- `USE_NEONDB=false` - Set to `true` to use PostgreSQL/NeonDB (default: SQLite)
+- `NEONDB_URL` - PostgreSQL connection string (required if USE_NEONDB=true)
 
 ### Scaling Considerations
 
 - **GPU Memory**: Each worker has 16GB GPU RAM. Adjust `--max-accounts` if needed
 - **Worker Count**: Start with 1-2 workers, scale based on demand
 - **Timeout**: Set appropriate timeout for long-running jobs (typically 3600+ seconds)
+
+## Database Configuration
+
+The application supports both SQLite (default) and PostgreSQL (via NeonDB).
+
+### SQLite (Default)
+
+No configuration needed. The app uses a local `jobs.db` file.
+
+### PostgreSQL/NeonDB
+
+To use PostgreSQL:
+
+1. **Create a `.env` file** (copy from `.env.example`):
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Edit `.env`** and set:
+   ```bash
+   USE_NEONDB=true
+   NEONDB_URL=postgresql://username:password@host/database?sslmode=require
+   ```
+
+3. **Ensure psycopg is installed** (already in dependencies):
+   ```bash
+   pip install psycopg[binary]
+   ```
+
+4. **Run the application** - it will automatically create tables on startup.
+
+**Benefits of PostgreSQL:**
+- **Scalability**: Better performance for concurrent requests
+- **Cloud-native**: Perfect for RunPod/cloud deployments
+- **Durability**: No local file storage needed
+- **Multi-worker**: Shared database across multiple API instances
 
 ## API Endpoints
 
