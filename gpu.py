@@ -1390,7 +1390,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"Data reduction: {nb_scenarios}x fewer rows (scenario-averaged)")
         use_incremental = True
         aggregated_batches = []  # List to accumulate batch DataFrames
-        merge_frequency = 50  # Merge every N batches
+        merge_frequency = 2  # Merge every 2 batches to prevent memory buildup
         merged_result = None  # Holds periodically merged data
     elif estimated_memory_gb <= memory_threshold_gb:
         print(f"\nUsing LIST-APPEND (dataset small: {estimated_rows:,} rows, ~{estimated_memory_gb:.2f} GB)")
@@ -1402,7 +1402,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"Forcing incremental aggregation to avoid memory issues")
         use_incremental = True
         aggregated_batches = []
-        merge_frequency = 50
+        merge_frequency = 2  # Merge every 2 batches to prevent memory buildup
         merged_result = None
     
     total_kernel_duration = 0
@@ -1520,60 +1520,34 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         reshape_time = (datetime.now() - reshape_start).total_seconds()
         logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s")
         
-        # PARALLEL EXTRACTION: Split work across CPU cores
+        # OPTIMIZED EXTRACTION: Single-threaded compress (faster with memory pressure)
         process = psutil.Process(os.getpid())
         mem_before = process.memory_info().rss / 1024**3
         
         extract_start = datetime.now()
         
-        # Determine number of workers (use available CPU cores)
-        n_workers = min(cpu_count(), 16)  # Cap at 16 to avoid overhead
+        # Create boolean mask
+        mask_start = datetime.now()
+        valid_mask = reshaped[:, 0] > 0
+        n_valid = np.sum(valid_mask)
+        mask_time = (datetime.now() - mask_start).total_seconds()
+        logger.info(f"    Create boolean mask: {mask_time:.3f}s")
+        logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
         
-        # Calculate chunk size (aim for ~1M rows per chunk for good parallelization)
-        rows_per_chunk = max(1000000, total_rows // (n_workers * 2))
-        n_chunks = (total_rows + rows_per_chunk - 1) // rows_per_chunk
-        n_workers = min(n_workers, n_chunks)  # Don't use more workers than chunks
-        
-        logger.info(f"    Parallel extraction: {n_chunks} chunks across {n_workers} workers")
-        
-        # Split data into chunks
-        chunk_args = []
-        for chunk_idx in range(n_chunks):
-            start_idx = chunk_idx * rows_per_chunk
-            end_idx = min(start_idx + rows_per_chunk, total_rows)
-            chunk_data = reshaped[start_idx:end_idx]
-            chunk_args.append((chunk_data, start_idx))
-        
-        split_time = (datetime.now() - extract_start).total_seconds()
-        logger.info(f"    Prepare chunks: {split_time:.3f}s")
-        
-        # Process chunks in parallel
-        parallel_start = datetime.now()
-        with Pool(processes=n_workers) as pool:
-            results = pool.map(_extract_valid_rows_chunk, chunk_args)
-        parallel_time = (datetime.now() - parallel_start).total_seconds()
-        logger.info(f"    Parallel processing: {parallel_time:.3f}s")
-        
-        # Filter out None results and concatenate
-        concat_start = datetime.now()
-        valid_chunks = [r for r in results if r is not None]
-        
-        if len(valid_chunks) > 0:
-            if len(valid_chunks) == 1:
-                valid_data = valid_chunks[0]
-            else:
-                valid_data = np.vstack(valid_chunks)
-            
-            n_valid = len(valid_data)
-            concat_time = (datetime.now() - concat_start).total_seconds()
+        if n_valid > 0:
+            # Extract using compress (single-threaded but memory efficient)
+            compress_start = datetime.now()
+            valid_data = np.compress(valid_mask, reshaped, axis=0)
+            compress_time = (datetime.now() - compress_start).total_seconds()
             mem_after_extract = process.memory_info().rss / 1024**3
             
-            logger.info(f"    Concatenate results: {concat_time:.3f}s")
-            logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
+            logger.info(f"    Extract via compress: {compress_time:.3f}s")
             logger.info(f"    Total extract: {(datetime.now() - extract_start).total_seconds():.3f}s, mem: +{mem_after_extract - mem_before:.2f} GB ({valid_data.nbytes / 1024**2:.1f} MB)")
+            
+            # Free mask immediately
+            del valid_mask
         else:
             valid_data = None
-            n_valid = 0
             logger.info(f"    No valid rows found")
         
         if valid_data is not None and n_valid > 0:
@@ -1621,12 +1595,12 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 aggregated_batches.append(batch_agg)
                 
                 agg_time = (datetime.now() - agg_start).total_seconds()
-                print(f"    Aggregated to {len(batch_agg):,} rows: {agg_time:.3f}s")
+                logger.info(f"    Aggregated to {len(batch_agg):,} rows: {agg_time:.3f}s")
                 
                 # Periodic merge to prevent dictionary/list bloat
                 if len(aggregated_batches) >= merge_frequency:
                     merge_start = datetime.now()
-                    print(f"    [PERIODIC MERGE] Merging {len(aggregated_batches)} batches...")
+                    logger.info(f"    [PERIODIC MERGE] Merging {len(aggregated_batches)} batches...")
                     
                     # Concatenate accumulated batches
                     temp_merged = pd.concat(aggregated_batches, ignore_index=True)
@@ -1644,7 +1618,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                     gc.collect()
                     
                     merge_time = (datetime.now() - merge_start).total_seconds()
-                    print(f"    [PERIODIC MERGE] Completed in {merge_time:.2f}s, now {len(merged_result):,} rows")
+                    logger.info(f"    [PERIODIC MERGE] Completed in {merge_time:.2f}s, now {len(merged_result):,} rows")
                 
                 # Free raw data immediately
                 del valid_data
