@@ -138,6 +138,8 @@ When deploying to RunPod, ensure these are set:
 - `ENVIRONMENT=production` - Set to production
 - `USE_NEONDB=false` - Set to `true` to use PostgreSQL/NeonDB (default: SQLite)
 - `NEONDB_URL` - PostgreSQL connection string (required if USE_NEONDB=true)
+- `RUNPOD_CORS=true` - Set to `true` to disable Flask-CORS (RunPod handles CORS automatically)
+- `CORS_ORIGINS=*` - Comma-separated allowed origins (only used if RUNPOD_CORS=false)
 
 ### Scaling Considerations
 

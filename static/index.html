@@ -1174,96 +1174,48 @@ input[type="password"] {
             messageDiv.innerHTML = '';
             
             try {
-                // Check if custom code is provided
-                const customCode = document.getElementById('custom_mortality_code').value;
-                const defaultCode = `# Convert annual to period rate (default)
-qx = 1.0 - (1.0 - qx) ** (1.0 / (freq_eval * AJUST_NOUV_AFFAIRES))
-
-# Add your custom adjustments below:
-# Example: Conservative adjustment for elderly
-# if age > 85:
-#     qx = qx * 1.10`;
+                // Create form data with uploaded files and parameters
+                const formData = new FormData();
                 
-                const hasCustomCode = customCode.trim() !== defaultCode.trim() && customCode.trim() !== '';
+                // Add uploaded files (if any)
+                const fileInputIds = [
+                    'POPULATION', 'MORTALITE', 'RENDEMENTS', 
+                    'DEPOTS_FUTURS', 'FRAIS_ADMIN', 'MIN_FERR',
+                    'TX_LAPSE_PART', 'TX_LAPSE_TOT', 'ACQUISITION', 
+                    'COUSSINS_ESCAP'
+                ];
                 
-                if (hasCustomCode) {
-                    // Use custom code API endpoint
-                    const nbAnProjection = document.getElementById('nb_an_projection').value;
-                    const nbScenarios = document.getElementById('nb_scenarios').value;
-                    const maxAccounts = document.getElementById('max_accounts').value;
-                    const debugAccount = document.getElementById('debug_account').value;
-                    
-                    const requestBody = {
-                        code: {
-                            mortality: customCode
-                        },
-                        parameters: {
-                            nb_an_projection: parseInt(nbAnProjection),
-                            nb_scenarios: parseInt(nbScenarios),
-                            max_accounts: maxAccounts ? parseInt(maxAccounts) : null,
-                            debug_account: debugAccount ? parseInt(debugAccount) : null
-                        }
-                    };
-                    
-                    const response = await fetch(`${API_BASE}/api/actuarial/run`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify(requestBody)
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (response.ok) {
-                        messageDiv.innerHTML = `<div class="success">✓ Job created with custom code! Job ID: ${data.job_id}</div>`;
-                        loadJobs();
-                        setTimeout(() => selectJob(data.job_id), 1000);
-                    } else {
-                        messageDiv.innerHTML = `<div class="error">✗ ${data.message || data.error || 'Failed to create job'}</div>`;
+                fileInputIds.forEach(fileId => {
+                    const fileInput = document.getElementById(fileId);
+                    if (fileInput && fileInput.files.length > 0) {
+                        formData.append(fileId, fileInput.files[0]);
                     }
+                });
+                
+                // Add parameters
+                const nbAnProjection = document.getElementById('nb_an_projection').value;
+                const nbScenarios = document.getElementById('nb_scenarios').value;
+                const maxAccounts = document.getElementById('max_accounts').value;
+                const debugAccount = document.getElementById('debug_account').value;
+                
+                formData.append('nb_an_projection', nbAnProjection);
+                formData.append('nb_scenarios', nbScenarios);
+                if (maxAccounts) formData.append('max_accounts', maxAccounts);
+                if (debugAccount) formData.append('debug_account', debugAccount);
+                
+                const response = await fetchWithToken(`${API_BASE}/jobs`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    messageDiv.innerHTML = `<div class="success">Job created successfully! Job ID: ${data.job_id}</div>`;
+                    loadJobs();
+                    setTimeout(() => selectJob(data.job_id), 1000);
                 } else {
-                    // Use standard API endpoint
-                    const formData = new FormData();
-                    
-                    // Add uploaded files (if any)
-                    const fileInputIds = [
-                        'POPULATION', 'MORTALITE', 'RENDEMENTS', 
-                        'DEPOTS_FUTURS', 'FRAIS_ADMIN', 'MIN_FERR',
-                        'TX_LAPSE_PART', 'TX_LAPSE_TOT', 'ACQUISITION', 
-                        'COUSSINS_ESCAP'
-                    ];
-                    
-                    fileInputIds.forEach(fileId => {
-                        const fileInput = document.getElementById(fileId);
-                        if (fileInput && fileInput.files.length > 0) {
-                            formData.append(fileId, fileInput.files[0]);
-                        }
-                    });
-                    
-                    // Add parameters
-                    const nbAnProjection = document.getElementById('nb_an_projection').value;
-                    const nbScenarios = document.getElementById('nb_scenarios').value;
-                    const maxAccounts = document.getElementById('max_accounts').value;
-                    const debugAccount = document.getElementById('debug_account').value;
-                    
-                    formData.append('nb_an_projection', nbAnProjection);
-                    formData.append('nb_scenarios', nbScenarios);
-                    if (maxAccounts) formData.append('max_accounts', maxAccounts);
-                    if (debugAccount) formData.append('debug_account', debugAccount);
-                    
-                    const response = await fetchWithToken(`${API_BASE}/jobs`, {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (response.ok) {
-                        messageDiv.innerHTML = `<div class="success">Job created successfully! Job ID: ${data.job_id}</div>`;
-                        loadJobs();
-                        setTimeout(() => selectJob(data.job_id), 1000);
-                    } else {
-                        messageDiv.innerHTML = `<div class="error">${data.message || 'Failed to create job'}</div>`;
-                    }
+                    messageDiv.innerHTML = `<div class="error">${data.message || 'Failed to create job'}</div>`;
                 }
             } catch (error) {
                 messageDiv.innerHTML = `<div class="error">Failed to create job: ${error.message}</div>`;
