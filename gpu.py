@@ -1321,7 +1321,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     
     # Thresholds
     incremental_threshold_accounts = 10000  # Use incremental aggregation above this
-    memory_threshold_gb = 30
+    memory_threshold_gb = 8  # Use incremental if estimated memory > 8GB (prevents accumulation issues)
     
     # Choose strategy
     if n_accounts >= incremental_threshold_accounts:
