@@ -45,6 +45,7 @@ ENV PYTHONUNBUFFERED=1
 ENV ENVIRONMENT=production
 ENV PORT=80
 ENV PORT_HEALTH=80
+ENV RUNPOD_CORS=true
 
 # Run the Flask application using gunicorn
 # Note: For RunPod load balancing, the --bind port will read from $PORT environment variable

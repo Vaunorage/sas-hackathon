@@ -46,7 +46,25 @@ except Exception as e:
 # =============================================================================
 
 app = Flask(__name__, static_folder='static')
-CORS(app)  # Enable CORS for all routes
+
+# CORS Configuration
+# Disable Flask-CORS when RUNPOD_CORS=true (RunPod handles CORS automatically)
+# This prevents duplicate Access-Control-Allow-Origin headers
+ENABLE_FLASK_CORS = os.getenv('RUNPOD_CORS', 'false').lower() != 'true'
+
+if ENABLE_FLASK_CORS:
+    # Enable CORS for local development or non-RunPod deployments
+    CORS(app, resources={
+        r"/*": {
+            "origins": os.getenv('CORS_ORIGINS', '*').split(','),
+            "methods": ["GET", "POST", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"]
+        }
+    })
+    print("✓ Flask-CORS enabled")
+else:
+    print("✓ Flask-CORS disabled (RunPod handles CORS)")
+
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max upload
 app.config['UPLOAD_FOLDER'] = HERE / 'uploads'
 app.config['RESULTS_FOLDER'] = HERE / 'results'
