@@ -46,18 +46,29 @@ def extract_csv_from_zips(zip_files, destination_folder):
                     
                     # If the file is in a subdirectory, move it to the root of destination
                     extracted_path = destination / csv_file
-                    if extracted_path.parent != destination:
-                        # Move file to destination root
-                        final_path = destination / extracted_path.name
-                        extracted_path.rename(final_path)
-                        
-                        # Clean up empty directories
-                        try:
-                            extracted_path.parent.rmdir()
-                        except OSError:
-                            pass  # Directory not empty or other issue
+                    final_path = destination / Path(csv_file).name
                     
-                    print(f"  ✓ Extracted: {csv_file}")
+                    if extracted_path != final_path:
+                        # Move file to destination root
+                        final_path.parent.mkdir(parents=True, exist_ok=True)
+                        extracted_path.rename(final_path)
+                        print(f"  ✓ Extracted and moved: {csv_file} -> {final_path.name}")
+                        
+                        # Clean up empty parent directories recursively
+                        parent = extracted_path.parent
+                        while parent != destination and parent.exists():
+                            try:
+                                # Only remove if empty
+                                if not any(parent.iterdir()):
+                                    parent.rmdir()
+                                    parent = parent.parent
+                                else:
+                                    break
+                            except (OSError, PermissionError):
+                                break
+                    else:
+                        print(f"  ✓ Extracted: {csv_file}")
+                    
                     extracted_count += 1
                     
         except zipfile.BadZipFile:
