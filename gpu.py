@@ -1444,10 +1444,20 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         cpu_proc_start = datetime.now()
         print("  Extracting valid results...")
         
+        # CRITICAL: Convert pinned memory to regular memory FIRST to avoid indexing slowdowns
+        # Pinned CUDA memory has different performance characteristics for NumPy operations
+        convert_start = datetime.now()
+        h_batch_regular = np.array(h_batch_output, copy=True)  # Force copy to regular memory
+        convert_time = (datetime.now() - convert_start).total_seconds()
+        print(f"    Convert pinned to regular memory: {convert_time:.3f}s")
+        
+        # Now free the pinned memory immediately
+        del h_batch_output
+        
         # Reshape to 2D for faster boolean indexing on contiguous memory
         reshape_start = datetime.now()
         total_rows = current_batch_size * nb_scenarios * max_timesteps
-        reshaped = h_batch_output.reshape(total_rows, n_output_fields)
+        reshaped = h_batch_regular.reshape(total_rows, n_output_fields)
         reshape_time = (datetime.now() - reshape_start).total_seconds()
         print(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s")
         
@@ -1464,38 +1474,23 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             process = psutil.Process(os.getpid())
             mem_before = process.memory_info().rss / 1024**3
             
-            # Step 1: Allocate output array
-            alloc_start = datetime.now()
-            output_array = np.empty((n_valid, n_output_fields), dtype=np.float32)
-            alloc_time = (datetime.now() - alloc_start).total_seconds()
-            mem_after_alloc = process.memory_info().rss / 1024**3
-            print(f"    Allocate output array ({n_valid:,} x {n_output_fields}): {alloc_time:.3f}s, mem: +{mem_after_alloc - mem_before:.2f} GB")
-            
-            # Step 2: Copy valid rows
-            copy_start = datetime.now()
-            valid_indices = np.where(valid_mask_1d)[0]
-            copy_time_indices = (datetime.now() - copy_start).total_seconds()
-            print(f"    Find valid indices: {copy_time_indices:.3f}s ({len(valid_indices):,} indices)")
-            
-            copy_data_start = datetime.now()
-            output_array[:] = reshaped[valid_indices]
-            copy_time_data = (datetime.now() - copy_data_start).total_seconds()
-            mem_after_copy = process.memory_info().rss / 1024**3
-            print(f"    Copy data via indexing: {copy_time_data:.3f}s, mem: +{mem_after_copy - mem_after_alloc:.2f} GB")
-            
-            valid_data = output_array
-            extract_time = alloc_time + copy_time_indices + copy_time_data
-            print(f"    Total extract: {extract_time:.3f}s ({valid_data.nbytes / 1024**2:.1f} MB)")
+            # Extract valid rows using compress (avoids fancy indexing on pinned memory)
+            extract_start = datetime.now()
+            # np.compress works directly on the boolean mask and is more efficient
+            # than fancy indexing, especially with pinned CUDA memory
+            valid_data = np.compress(valid_mask_1d, reshaped, axis=0)
+            extract_time = (datetime.now() - extract_start).total_seconds()
+            mem_after_extract = process.memory_info().rss / 1024**3
+            print(f"    Extract via compress: {extract_time:.3f}s, mem: +{mem_after_extract - mem_before:.2f} GB ({valid_data.nbytes / 1024**2:.1f} MB)")
             
             # FREE LARGE ARRAYS IMMEDIATELY to prevent fragmentation
             free_start = datetime.now()
-            del h_batch_output  # Free 4GB pinned memory NOW
+            del h_batch_regular  # Free regular memory copy
             del reshaped  # Free the view
             del valid_mask_1d  # Free the mask
-            del valid_indices
             free_time = (datetime.now() - free_start).total_seconds()
             mem_after_free = process.memory_info().rss / 1024**3
-            print(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_copy - mem_after_free:.2f} GB")
+            print(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
             
             if use_incremental:
                 # Incremental aggregation: aggregate this batch immediately
