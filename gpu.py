@@ -3,6 +3,7 @@ import numpy as np
 import gc
 import psutil
 import os
+import logging
 from pathlib import Path
 from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
@@ -11,6 +12,38 @@ from numba import cuda
 from paths import HERE
 import argparse
 from multiprocessing import Pool, cpu_count
+
+# =============================================================================
+# LOGGING SETUP
+# =============================================================================
+
+def setup_logger(name='gpu_projection', level=logging.INFO):
+    """Setup logger with timestamp formatting for debugging."""
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    
+    # Clear any existing handlers
+    logger.handlers.clear()
+    
+    # Console handler with timestamp
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    
+    # Format: [HH:MM:SS.mmm] MESSAGE
+    formatter = logging.Formatter(
+        '[%(asctime)s.%(msecs)03d] %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # Prevent propagation to root logger
+    logger.propagate = False
+    
+    return logger
+
+# Initialize global logger
+logger = setup_logger()
 
 # =============================================================================
 # CONFIGURATION
@@ -1385,8 +1418,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         process = psutil.Process(os.getpid())
         batch_mem_start = process.memory_info().rss / 1024**3
         
-        print(f"\n--- Processing Batch {i + 1}/{num_batches} (Accounts {start_idx} to {end_idx - 1}) ---")
-        print(f"  Memory at batch start: {batch_mem_start:.2f} GB")
+        logger.info(f"\n--- Processing Batch {i + 1}/{num_batches} (Accounts {start_idx} to {end_idx - 1}) ---")
+        logger.info(f"  Memory at batch start: {batch_mem_start:.2f} GB")
         
         # Report progress if callback provided
         if progress_callback:
@@ -1404,11 +1437,11 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             h_batch_output[:] = 0  # Initialize to zero
         else:
             h_batch_output = np.zeros((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
-        print(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB")
+        logger.info(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB")
 
         # 3. Copy batch data to GPU (async with stream)
         transfer_start = datetime.now()
-        print("  Copying batch data to GPU...")
+        logger.info("  Copying batch data to GPU...")
         if use_pinned_memory:
             # Use pinned memory for input too
             h_batch_input_pinned = cuda.pinned_array(batch_account_data.shape, dtype=batch_account_data.dtype)
@@ -1420,15 +1453,15 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         stream_compute.synchronize()
         transfer_end = datetime.now()
         transfer_to_gpu = (transfer_end - transfer_start).total_seconds()
-        print(f"  Transfer to GPU: {transfer_to_gpu:.2f} seconds")
+        logger.info(f"  Transfer to GPU: {transfer_to_gpu:.2f} seconds")
 
         # 4. Calculate grid dimensions for the current batch
         blocks_x = (current_batch_size + threads_per_block[0] - 1) // threads_per_block[0]
         blocks_y = (nb_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
         blocks_per_grid = (blocks_x, blocks_y)
 
-        print(f"  Launching kernel for batch:")
-        print(f"    Grid: {blocks_per_grid}, Block: {threads_per_block}")
+        logger.info(f"  Launching kernel for batch:")
+        logger.info(f"    Grid: {blocks_per_grid}, Block: {threads_per_block}")
 
         # 5. Launch kernel for the batch (using stream)
         kernel_start = datetime.now()
@@ -1454,28 +1487,28 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         kernel_end = datetime.now()
         kernel_duration = (kernel_end - kernel_start).total_seconds()
         total_kernel_duration += kernel_duration
-        print(f"  Kernel execution for batch finished in: {kernel_duration:.2f} seconds")
+        logger.info(f"  Kernel execution for batch finished in: {kernel_duration:.2f} seconds")
 
         # 6. Copy results back from GPU (async with stream)
         transfer_back_start = datetime.now()
-        print("  Copying batch results from GPU...")
+        logger.info("  Copying batch results from GPU...")
         d_batch_output.copy_to_host(h_batch_output, stream=stream_compute)
         stream_compute.synchronize()
         transfer_back_end = datetime.now()
         transfer_from_gpu = (transfer_back_end - transfer_back_start).total_seconds()
         total_transfer_duration += transfer_to_gpu + transfer_from_gpu
-        print(f"  Transfer from GPU: {transfer_from_gpu:.2f} seconds")
+        logger.info(f"  Transfer from GPU: {transfer_from_gpu:.2f} seconds")
 
         # 7. Extract valid results (OPTIMIZED - reshape + boolean mask)
         cpu_proc_start = datetime.now()
-        print("  Extracting valid results...")
+        logger.info("  Extracting valid results...")
         
         # CRITICAL: Convert pinned memory to regular memory FIRST to avoid indexing slowdowns
         # Pinned CUDA memory has different performance characteristics for NumPy operations
         convert_start = datetime.now()
         h_batch_regular = np.array(h_batch_output, copy=True)  # Force copy to regular memory
         convert_time = (datetime.now() - convert_start).total_seconds()
-        print(f"    Convert pinned to regular memory: {convert_time:.3f}s")
+        logger.info(f"    Convert pinned to regular memory: {convert_time:.3f}s")
         
         # Now free the pinned memory immediately
         del h_batch_output
@@ -1485,7 +1518,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         total_rows = current_batch_size * nb_scenarios * max_timesteps
         reshaped = h_batch_regular.reshape(total_rows, n_output_fields)
         reshape_time = (datetime.now() - reshape_start).total_seconds()
-        print(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s")
+        logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s")
         
         # PARALLEL EXTRACTION: Split work across CPU cores
         process = psutil.Process(os.getpid())
@@ -1501,7 +1534,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         n_chunks = (total_rows + rows_per_chunk - 1) // rows_per_chunk
         n_workers = min(n_workers, n_chunks)  # Don't use more workers than chunks
         
-        print(f"    Parallel extraction: {n_chunks} chunks across {n_workers} workers")
+        logger.info(f"    Parallel extraction: {n_chunks} chunks across {n_workers} workers")
         
         # Split data into chunks
         chunk_args = []
@@ -1512,14 +1545,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             chunk_args.append((chunk_data, start_idx))
         
         split_time = (datetime.now() - extract_start).total_seconds()
-        print(f"    Prepare chunks: {split_time:.3f}s")
+        logger.info(f"    Prepare chunks: {split_time:.3f}s")
         
         # Process chunks in parallel
         parallel_start = datetime.now()
         with Pool(processes=n_workers) as pool:
             results = pool.map(_extract_valid_rows_chunk, chunk_args)
         parallel_time = (datetime.now() - parallel_start).total_seconds()
-        print(f"    Parallel processing: {parallel_time:.3f}s")
+        logger.info(f"    Parallel processing: {parallel_time:.3f}s")
         
         # Filter out None results and concatenate
         concat_start = datetime.now()
@@ -1535,13 +1568,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             concat_time = (datetime.now() - concat_start).total_seconds()
             mem_after_extract = process.memory_info().rss / 1024**3
             
-            print(f"    Concatenate results: {concat_time:.3f}s")
-            print(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
-            print(f"    Total extract: {(datetime.now() - extract_start).total_seconds():.3f}s, mem: +{mem_after_extract - mem_before:.2f} GB ({valid_data.nbytes / 1024**2:.1f} MB)")
+            logger.info(f"    Concatenate results: {concat_time:.3f}s")
+            logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
+            logger.info(f"    Total extract: {(datetime.now() - extract_start).total_seconds():.3f}s, mem: +{mem_after_extract - mem_before:.2f} GB ({valid_data.nbytes / 1024**2:.1f} MB)")
         else:
             valid_data = None
             n_valid = 0
-            print(f"    No valid rows found")
+            logger.info(f"    No valid rows found")
         
         if valid_data is not None and n_valid > 0:
             
@@ -1551,7 +1584,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             del reshaped  # Free the view
             free_time = (datetime.now() - free_start).total_seconds()
             mem_after_free = process.memory_info().rss / 1024**3
-            print(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
+            logger.info(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
             
             if use_incremental:
                 # Incremental aggregation: aggregate this batch immediately
@@ -1622,11 +1655,11 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 batch_data_list.append(valid_data)
                 append_time = (datetime.now() - append_start).total_seconds()
                 total_rows_so_far = sum(arr.shape[0] for arr in batch_data_list)
-                print(f"    Appended to list: {append_time:.3f}s (total rows: {total_rows_so_far:,}, {len(batch_data_list)} batches)")
+                logger.info(f"    Appended to list: {append_time:.3f}s (total rows: {total_rows_so_far:,}, {len(batch_data_list)} batches)")
         
         cpu_proc_end = datetime.now()
         cpu_proc_time = (cpu_proc_end - cpu_proc_start).total_seconds()
-        print(f"    Total CPU processing: {cpu_proc_time:.2f}s")
+        logger.info(f"    Total CPU processing: {cpu_proc_time:.2f}s")
 
         # Cleanup remaining GPU/batch memory
         del d_batch_account_data
@@ -1647,12 +1680,12 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         gc.collect()
         gc_time = (datetime.now() - gc_start).total_seconds()
         batch_mem_end = process.memory_info().rss / 1024**3
-        print(f"  [Memory cleanup: GC in {gc_time:.3f}s, mem at end: {batch_mem_end:.2f} GB, delta: {batch_mem_end - batch_mem_start:+.2f} GB]")
+        logger.info(f"  [Memory cleanup: GC in {gc_time:.3f}s, mem at end: {batch_mem_end:.2f} GB, delta: {batch_mem_end - batch_mem_start:+.2f} GB]")
 
         batch_end_time = datetime.now()
         batch_duration = (batch_end_time - batch_start_time).total_seconds()
         cpu_processing_time = batch_duration - kernel_duration - transfer_to_gpu - transfer_from_gpu
-        print(f"  Batch {i + 1} total time: {batch_duration:.2f}s (Kernel: {kernel_duration:.2f}s, Transfer: {transfer_to_gpu + transfer_from_gpu:.2f}s, CPU: {cpu_processing_time:.2f}s)")
+        logger.info(f"  Batch {i + 1} total time: {batch_duration:.2f}s (Kernel: {kernel_duration:.2f}s, Transfer: {transfer_to_gpu + transfer_from_gpu:.2f}s, CPU: {cpu_processing_time:.2f}s)")
 
     # --- FINAL AGGREGATION ---
     print("\n" + "="*60)
