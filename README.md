@@ -50,6 +50,102 @@ Ensure all dependencies are installed:
 pip install -r requirements.txt
 ```
 
+### Running from Docker
+
+You can run the CLI from within a Docker container without installing dependencies locally.
+
+#### Build the Docker image
+
+```bash
+docker build -t gpu-actuarial-api:latest .
+```
+
+#### Run CLI commands in Docker
+
+Run CLI commands using `docker run`:
+
+```bash
+# Run a projection job
+docker run --gpus all gpu-actuarial-api:latest python cli.py run --years 100 --scenarios 100
+
+# Run asynchronously
+docker run --gpus all gpu-actuarial-api:latest python cli.py run --years 100 --scenarios 100 --async
+
+# Check job status
+docker run --gpus all gpu-actuarial-api:latest python cli.py status job_20250118_101530_123456
+
+# List all jobs
+docker run --gpus all gpu-actuarial-api:latest python cli.py list
+
+# View results
+docker run --gpus all gpu-actuarial-api:latest python cli.py results job_20250118_101530_123456 --type summary
+```
+
+#### Persist data with Docker volumes
+
+To preserve jobs and results between container runs, mount volumes:
+
+```bash
+# Run with persistent database and results
+docker run --gpus all \
+  -v $(pwd)/jobs.db:/app/jobs.db \
+  -v $(pwd)/results:/app/results \
+  gpu-actuarial-api:latest \
+  python cli.py run --years 100 --scenarios 100
+
+# Check status (data persists)
+docker run --gpus all \
+  -v $(pwd)/jobs.db:/app/jobs.db \
+  -v $(pwd)/results:/app/results \
+  gpu-actuarial-api:latest \
+  python cli.py list
+```
+
+#### Docker Compose for persistent CLI usage
+
+Create a `docker-compose.yml` for easier management:
+
+```yaml
+version: '3.8'
+
+services:
+  cli:
+    image: gpu-actuarial-api:latest
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - ADMIN_PASSWORD=admin123
+    volumes:
+      - ./jobs.db:/app/jobs.db
+      - ./results:/app/results
+      - ./uploads:/app/uploads
+    entrypoint: python cli.py
+```
+
+Then run commands:
+
+```bash
+# Run a job
+docker-compose run --rm cli run --years 100 --scenarios 100
+
+# Check status
+docker-compose run --rm cli status job_20250118_101530_123456
+
+# List jobs
+docker-compose run --rm cli list
+
+# View results
+docker-compose run --rm cli results job_20250118_101530_123456 --type summary
+```
+
+#### Important Docker considerations
+
+- **GPU Support**: Use `--gpus all` flag to enable GPU access (requires NVIDIA Docker runtime)
+- **Volume Mounts**: Mount `jobs.db` and `results/` directories to persist data across container runs
+- **Environment Variables**: Set `ADMIN_PASSWORD` via `-e` flag if needed
+- **Working Directory**: CLI runs from `/app` inside the container
+- **Data Persistence**: Without volume mounts, job data is lost when the container exits
+
 ### Basic Usage
 
 ```bash
