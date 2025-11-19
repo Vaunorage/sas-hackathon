@@ -146,6 +146,59 @@ docker-compose run --rm cli results job_20250118_101530_123456 --type summary
 - **Working Directory**: CLI runs from `/app` inside the container
 - **Data Persistence**: Without volume mounts, job data is lost when the container exits
 
+#### Troubleshooting GPU Access in Docker
+
+If the CLI crashes with CUDA errors but `nvidia-smi` works on your host:
+
+**Step 1: Install NVIDIA Container Toolkit**
+
+```bash
+# Add NVIDIA package repositories
+distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+
+# Install nvidia-container-toolkit
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+
+# Restart Docker
+sudo systemctl restart docker
+```
+
+**Step 2: Test GPU access in a test container**
+
+```bash
+# This should show your GPU (same as nvidia-smi on host)
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
+
+If this fails, the NVIDIA Container Toolkit isn't properly installed.
+
+**Step 3: Test GPU access in your container**
+
+```bash
+# Test CUDA availability
+docker run --rm --gpus all gpu-actuarial-api:latest uv run python -c "from numba import cuda; print('CUDA available:', cuda.is_available())"
+
+# Test GPU info
+docker run --rm --gpus all gpu-actuarial-api:latest uv run python -c "from numba import cuda; print(cuda.gpus)"
+```
+
+**Step 4: Run CLI with GPU**
+
+```bash
+# Make sure to use --gpus all flag
+docker run --gpus all gpu-actuarial-api:latest uv run python cli.py run --years 10 --scenarios 10 --max-accounts 5
+```
+
+**Common Issues:**
+
+- **Missing `--gpus all` flag**: Always include this flag when running the container
+- **NVIDIA Container Toolkit not installed**: Install it using the commands above
+- **Docker daemon not restarted**: Run `sudo systemctl restart docker` after installing toolkit
+- **Insufficient GPU memory**: Use `--max-accounts` to limit memory usage for testing
+
 ### Basic Usage
 
 ```bash
