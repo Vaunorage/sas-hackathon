@@ -37,13 +37,15 @@ RUN rm -rf default_data/*.zip
 # Copy web interface
 COPY static/index.html ./static/
 
-# Expose port
+# Expose port (default 80, can be overridden)
 EXPOSE 80
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV ENVIRONMENT=production
 ENV PORT=80
+ENV PORT_HEALTH=80
 
 # Run the Flask application using gunicorn
-CMD ["uv", "run", "gunicorn", "--bind", "0.0.0.0:80", "--workers", "4", "--timeout", "300", "--worker-class", "sync", "flask_app:app"]
+# Note: For RunPod load balancing, the --bind port will read from $PORT environment variable
+CMD uv run gunicorn --bind 0.0.0.0:${PORT} --workers 4 --timeout 330 --worker-class sync flask_app:app

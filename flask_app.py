@@ -63,6 +63,10 @@ APP_VERSION = "1.0.0"
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')  # Change in production!
 
+# RunPod configuration
+PORT = int(os.getenv('PORT', '80'))  # Main application port
+PORT_HEALTH = int(os.getenv('PORT_HEALTH', str(PORT)))  # Health check port (defaults to PORT)
+
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'csv'}
 
@@ -277,8 +281,20 @@ def init_db():
 # Initialize database on startup
 init_db()
 
-# Track if database is ready
-db_initialized = True
+# Application health state for RunPod load balancing
+# States: 'initializing' (204), 'healthy' (200), 'unhealthy' (503)
+app_health_state = 'initializing'
+db_initialized = False
+
+def set_app_healthy():
+    """Mark the application as healthy and ready to serve requests"""
+    global app_health_state, db_initialized
+    app_health_state = 'healthy'
+    db_initialized = True
+    print("✓ Application is healthy and ready to serve requests")
+
+# Set app as healthy after database initialization
+set_app_healthy()
 
 # Track running jobs and their threads
 job_threads = {}
@@ -866,11 +882,27 @@ def web_interface():
 
 @app.route('/ping', methods=['GET'])
 def ping():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.utcnow().isoformat()
-    })
+    """
+    Health check endpoint for RunPod load balancing
+    Returns:
+        200: Application is healthy and ready
+        204: Application is initializing
+        503: Application is unhealthy
+    """
+    if app_health_state == 'healthy':
+        return jsonify({
+            'status': 'healthy',
+            'timestamp': datetime.utcnow().isoformat(),
+            'gpu_available': GPU_AVAILABLE,
+            'database_type': DATABASE_TYPE
+        }), 200
+    elif app_health_state == 'initializing':
+        return '', 204  # No content - still initializing
+    else:
+        return jsonify({
+            'status': 'unhealthy',
+            'timestamp': datetime.utcnow().isoformat()
+        }), 503
 
 @app.route('/ready', methods=['GET'])
 def ready():
@@ -1416,19 +1448,29 @@ if __name__ == '__main__':
     print(f"Version: {APP_VERSION}")
     print(f"Environment: {ENVIRONMENT}")
     print(f"GPU Available: {GPU_AVAILABLE}")
+    print(f"Database Type: {DATABASE_TYPE}")
     print(f"Database: {app.config['DATABASE']}")
     print(f"Upload Folder: {app.config['UPLOAD_FOLDER']}")
     print(f"Results Folder: {app.config['RESULTS_FOLDER']}")
     print(f"Admin Password: {'***' if ENVIRONMENT == 'production' else ADMIN_PASSWORD}")
+    print(f"Port (Main): {PORT}")
+    if PORT_HEALTH != PORT:
+        print(f"Port (Health): {PORT_HEALTH}")
     print("=" * 60)
     if ENVIRONMENT != 'production':
         print("⚠️  WARNING: Using default admin password!")
         print("⚠️  Set ADMIN_PASSWORD environment variable for production")
         print("=" * 60)
     
+    # RunPod load balancing compatibility note
+    if PORT == 80:
+        print("ℹ️  Running in RunPod-compatible mode (PORT=80)")
+        print("ℹ️  Health check endpoint: /ping")
+        print("=" * 60)
+    
     # Run the app
     app.run(
         host='0.0.0.0',
-        port=80,
+        port=PORT,
         debug=(ENVIRONMENT == 'development')
     )

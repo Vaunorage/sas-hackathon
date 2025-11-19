@@ -28,21 +28,59 @@ docker push your-username/gpu-actuarial-api:latest
 
 ## RunPod Deployment
 
-Your application is deployed on RunPod with a load-balancing endpoint. Here's how to use it:
+This application is **fully compatible with RunPod's load balancing serverless endpoints**, enabling direct HTTP access to GPU workers without queueing infrastructure.
 
-### Understanding RunPod Setup
+### RunPod Load Balancing Overview
 
-RunPod distributes HTTP requests across available workers. Your container must:
-1. Run an HTTP server on the port specified in the `PORT` environment variable (default: 80)
-2. Have a `/ping` health check endpoint on the port specified in `PORT_HEALTH` (default: 80)
+RunPod's load balancing endpoints route incoming HTTP requests directly to available workers, bypassing traditional queue-based systems. This provides:
+- **Lower latency** through direct worker access
+- **Custom REST APIs** with your own endpoint paths
+- **Health-based routing** that only sends requests to healthy workers
+- **Automatic scaling** based on worker availability
+
+### How It Works
+
+1. Requests to `https://ENDPOINT_ID.api.runpod.ai/YOUR_PATH` are routed directly to your worker's HTTP server
+2. Workers expose a `/ping` health endpoint that returns:
+   - `200` (OK) when healthy and ready
+   - `204` (No Content) when initializing
+   - `503` (Service Unavailable) when unhealthy
+3. The load balancer only routes traffic to workers returning `200` status
+4. Workers are automatically removed from the pool if health checks fail
 
 ### Current Configuration
 
-The Flask app runs using gunicorn with the following configuration:
-- Listen on port 80 (configurable via `PORT` env var)
-- 4 worker processes for handling concurrent requests
-- Provide `/ping` endpoint for health checks
-- Handle job submissions and result retrieval
+The Flask app runs using Gunicorn with RunPod-optimized settings:
+- **Port**: Configurable via `PORT` environment variable (default: 80)
+- **Health endpoint**: `/ping` on port specified by `PORT_HEALTH` (defaults to `PORT`)
+- **Workers**: 4 Gunicorn workers for concurrent request handling
+- **Timeout**: 330 seconds (5.5 minutes) to stay within RunPod's 5.5-minute processing limit
+- **Initialization state**: Returns `204` during startup, `200` when ready
+
+### Health Check Behavior
+
+The `/ping` endpoint implements RunPod's health check protocol:
+
+```python
+# During initialization (database setup, GPU initialization)
+GET /ping → 204 No Content
+
+# When ready to serve requests
+GET /ping → 200 OK
+{
+  "status": "healthy",
+  "timestamp": "2025-01-18T10:15:30.123456",
+  "gpu_available": true,
+  "database_type": "postgresql"
+}
+
+# If application encounters errors
+GET /ping → 503 Service Unavailable
+{
+  "status": "unhealthy",
+  "timestamp": "2025-01-18T10:15:30.123456"
+}
+```
 
 ### Using Your RunPod Endpoint
 
@@ -106,6 +144,88 @@ When deploying to RunPod, ensure these are set:
 - **GPU Memory**: Each worker has 16GB GPU RAM. Adjust `--max-accounts` if needed
 - **Worker Count**: Start with 1-2 workers, scale based on demand
 - **Timeout**: Set appropriate timeout for long-running jobs (typically 3600+ seconds)
+
+### Deploying to RunPod (Step-by-Step)
+
+1. **Build and Push Docker Image**
+   ```bash
+   # Build the image
+   docker build -t your-dockerhub-username/gpu-actuarial-api:latest .
+   
+   # Push to Docker Hub
+   docker push your-dockerhub-username/gpu-actuarial-api:latest
+   ```
+
+2. **Create a RunPod Serverless Endpoint**
+   - Go to [RunPod Console](https://www.runpod.io/console/serverless)
+   - Click "New Endpoint"
+   - Select **"Load Balancing"** endpoint type (not queue-based)
+   - Configure the endpoint:
+     - **Name**: GPU Actuarial API
+     - **Container Image**: `your-dockerhub-username/gpu-actuarial-api:latest`
+     - **Container Disk**: 20 GB (minimum)
+     - **GPU Type**: RTX 4090 or higher (16GB+ VRAM)
+     - **Expose HTTP Ports**: Add port `80` (or your custom PORT value)
+     - **Active Workers**: Start with 1 minimum, scale as needed
+     - **Max Workers**: Set based on expected load (e.g., 5-10)
+
+3. **Configure Environment Variables**
+   In the RunPod endpoint settings, add these environment variables:
+   ```bash
+   PORT=80
+   PORT_HEALTH=80
+   ENVIRONMENT=production
+   ADMIN_PASSWORD=your-secure-password
+   USE_NEONDB=true  # Recommended for multi-worker deployments
+   NEONDB_URL=postgresql://user:pass@host/db?sslmode=require
+   ```
+
+4. **Test the Endpoint**
+   ```bash
+   # Get your endpoint URL from RunPod dashboard
+   ENDPOINT_URL="https://YOUR-ENDPOINT-ID.api.runpod.ai"
+   
+   # Test health check (may return 204 during cold start)
+   curl -i $ENDPOINT_URL/ping
+   
+   # Wait for 200 OK, then test API
+   curl $ENDPOINT_URL/
+   ```
+
+5. **Handle Cold Starts**
+   Workers may take 30-60 seconds to initialize. Implement retry logic:
+   ```python
+   import requests
+   import time
+   
+   def wait_for_health(endpoint_url, max_retries=10, delay=5):
+       for i in range(max_retries):
+           try:
+               resp = requests.get(f"{endpoint_url}/ping")
+               if resp.status_code == 200:
+                   return True
+               elif resp.status_code == 204:
+                   print(f"Worker initializing... ({i+1}/{max_retries})")
+           except Exception as e:
+               print(f"Connection error: {e}")
+           time.sleep(delay)
+       return False
+   
+   if wait_for_health("https://YOUR-ENDPOINT-ID.api.runpod.ai"):
+       # Submit jobs
+       pass
+   ```
+
+### RunPod vs Traditional Deployment
+
+| Feature | RunPod Load Balancing | Traditional Docker |
+|---------|---------------------|-------------------|
+| Scaling | Auto-scale workers | Manual scaling |
+| GPU Access | Pay-per-second | Always running |
+| Cold Starts | 30-60 seconds | Instant (already running) |
+| Load Distribution | Automatic | Requires load balancer setup |
+| Cost | Usage-based | Fixed cost |
+| Ideal For | Variable workloads | Constant traffic |
 
 ## Database Configuration
 
