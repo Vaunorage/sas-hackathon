@@ -1638,12 +1638,12 @@ def aggregate_vp_flux_total(df: pd.DataFrame) -> pd.DataFrame:
     # Filter for columns that actually exist in the dataframe
     existing_vp_cols = [col for col in vp_cols if col in df.columns]
 
-    # Calculate total PV of flows per account
-    df['VP_FLUX_TOT'] = df[existing_vp_cols].sum(axis=1)
+    # Calculate total PV of flows per account (don't modify input df)
+    vp_flux_tot_per_account = df[existing_vp_cols].sum(axis=1)
 
     result = pd.DataFrame({
         'CATEGORIE': ['TOTAL'],
-        'VP_FLUX_TOT': [df['VP_FLUX_TOT'].sum()]
+        'VP_FLUX_TOT': [vp_flux_tot_per_account.sum()]
     })
 
     return result
