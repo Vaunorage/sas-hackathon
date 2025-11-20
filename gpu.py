@@ -1,6 +1,5 @@
 import os
-from numba import config
-config.CUDA_ENABLE_PYNVJITLINK = 1
+# Set environment variables BEFORE importing numba/cudf
 os.environ['RAPIDS_NO_INITIALIZE'] = '1'
 os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
 
