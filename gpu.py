@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
 import math
+import duckdb
+import tempfile
 
 # Import cuDF BEFORE numba.cuda
 HAS_CUDF = False
-HAS_CUPY = False
 try:
     import cudf
     import rmm
@@ -27,15 +28,7 @@ except Exception as e:
     HAS_RMM = False
     print(f"⚠ cuDF not available ({type(e).__name__}): {e}")
     print(f"   Full exception: {repr(e)}")
-    print(f"   Trying CuPy fallback...")
-    
-    # Try CuPy as fallback for GPU operations
-    try:
-        import cupy as cp
-        HAS_CUPY = True
-        print("✓ CuPy loaded - Using GPU arrays for aggregation")
-    except Exception:
-        print("⚠ CuPy also not available. Using optimized pandas CPU aggregation.")
+    raise RuntimeError("cuDF is required for GPU processing") from e
 
 # GPU memory cleanup helper
 def force_gpu_memory_cleanup():
@@ -43,7 +36,7 @@ def force_gpu_memory_cleanup():
     gc.collect()
     
     # Try to free CuPy memory pool (used by cuDF)
-    if HAS_CUDF or HAS_CUPY:
+    if HAS_CUDF:
         try:
             import cupy
             mempool = cupy.get_default_memory_pool()
@@ -1493,47 +1486,41 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     stream_compute = cuda.stream()  # For GPU compute
     stream_transfer = cuda.stream()  # For data transfers (if needed)
     
-    # Adaptive strategy based on dataset size
+    # DuckDB-based batch storage strategy (simpler, more efficient)
     max_possible_rows = n_accounts * nb_scenarios * max_timesteps
     estimated_rows = int(max_possible_rows * 0.6)
     estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
     
-    # Thresholds
-    incremental_threshold_accounts = 10000  # Use incremental aggregation above this
-    memory_threshold_gb = 8  # Use incremental if estimated memory > 8GB (prevents accumulation issues)
+    print(f"\nUsing DUCKDB BATCH STORAGE (all dataset sizes)")
+    print(f"Estimated: {n_accounts:,} accounts, {estimated_rows:,} rows, ~{estimated_memory_gb:.1f} GB")
+    print(f"Each batch will be written to DuckDB table")
+    print(f"Final aggregation will be done with DuckDB SQL (GPU-accelerated if needed)")
     
-    # Choose strategy
-    if n_accounts >= incremental_threshold_accounts:
-        print(f"\nUsing INCREMENTAL AGGREGATION (dataset large: {n_accounts:,} accounts)")
-        print(f"Will aggregate each batch immediately, averaging across all {nb_scenarios} scenarios")
-        print(f"Expected memory: ~0.5 GB (constant) vs {estimated_memory_gb:.1f} GB for raw data")
-        print(f"Data reduction: {nb_scenarios}x fewer rows (scenario-averaged)")
-        use_incremental = True
-        aggregated_batches = []  # List to accumulate batch DataFrames
-        merge_frequency = 5  # Merge and flush to disk every 5 batches
-        merged_result = None  # Holds periodically merged data
-        disk_chunks = []  # List of parquet files written to disk
-        disk_chunk_dir = Path(output_path) / "_temp_chunks"
-        disk_chunk_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Using disk-backed storage: will flush to disk every {merge_frequency} batches OR when memory exceeds 12 GB")
-        print(f"Temp directory: {disk_chunk_dir}")
-    elif estimated_memory_gb <= memory_threshold_gb:
-        print(f"\nUsing LIST-APPEND (dataset small: {estimated_rows:,} rows, ~{estimated_memory_gb:.2f} GB)")
-        print(f"Will store batches in list, then concatenate once at end (avoids slow array growth)")
-        use_incremental = False
-        batch_data_list = []  # Store each batch's valid_data
-    else:
-        print(f"\nWARNING: Dataset too large for pre-allocation but below incremental threshold")
-        print(f"Forcing incremental aggregation to avoid memory issues")
-        use_incremental = True
-        aggregated_batches = []
-        merge_frequency = 5  # Merge and flush to disk every 5 batches
-        merged_result = None
-        disk_chunks = []  # List of parquet files written to disk
-        disk_chunk_dir = Path(output_path) / "_temp_chunks"
-        disk_chunk_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Using disk-backed storage: will flush to disk every {merge_frequency} batches OR when memory exceeds 12 GB")
-        print(f"Temp directory: {disk_chunk_dir}")
+    # Create temporary DuckDB database
+    db_temp_dir = Path(output_path) / "_temp_duckdb"
+    db_temp_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_temp_dir / "batches.duckdb"
+    
+    # Initialize DuckDB connection
+    duckdb_conn = duckdb.connect(str(db_path))
+    
+    # Define column names for the table
+    columns = [
+        'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
+        'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
+        'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
+        'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
+        'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
+        'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
+        'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+        'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
+        'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
+        'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
+        'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
+    ]
+    
+    print(f"DuckDB database: {db_path}")
+    print(f"Batch inserts will be immediate, aggregation deferred to end")
     
     total_kernel_duration = 0
     total_transfer_duration = 0
@@ -1550,58 +1537,6 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         
         logger.info(f"\n--- Processing Batch {i + 1}/{num_batches} (Accounts {start_idx} to {end_idx - 1}) ---")
         logger.info(f"  Memory at batch start: {batch_mem_start:.2f} GB")
-        
-        # PROACTIVE MEMORY CHECK: Flush accumulated batches BEFORE processing if memory is high
-        if use_incremental and batch_mem_start >= 10.0 and len(aggregated_batches) > 0:
-            logger.info(f"  [PROACTIVE FLUSH] Memory {batch_mem_start:.2f} GB >= 10.0 GB at batch start, flushing {len(aggregated_batches)} accumulated batches...")
-            merge_start = datetime.now()
-            
-            # Concatenate accumulated batches
-            temp_merged = pd.concat(aggregated_batches, ignore_index=True)
-            
-            # Group by to consolidate
-            group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
-            columns = [
-                'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
-                'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
-                'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
-                'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
-                'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
-                'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
-                'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
-                'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
-                'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
-                'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
-                'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
-            ]
-            value_cols = [col for col in columns if col not in group_cols + ['SCN_EVAL']]
-            
-            if HAS_CUDF and len(temp_merged) > 100000:
-                logger.info(f"    Using cuDF GPU groupby for proactive flush...")
-                gdf_merge = cudf.DataFrame.from_pandas(temp_merged)
-                merged_gdf = gdf_merge.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-                chunk_result = merged_gdf.to_pandas()
-                del gdf_merge, merged_gdf
-            else:
-                temp_merged.sort_values(group_cols, inplace=True)
-                chunk_result = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-            
-            # Write to disk
-            chunk_idx = len(disk_chunks)
-            chunk_file = disk_chunk_dir / f"chunk_{chunk_idx:04d}.parquet"
-            chunk_result.to_parquet(chunk_file, compression='snappy', index=False)
-            disk_chunks.append(chunk_file)
-            chunk_size_mb = chunk_file.stat().st_size / 1024**2
-            logger.info(f"    Written chunk {chunk_idx} to disk: {len(chunk_result):,} rows, {chunk_size_mb:.1f} MB")
-            
-            # Clear memory
-            aggregated_batches.clear()
-            del temp_merged, chunk_result
-            force_gpu_memory_cleanup()
-            
-            merge_time = (datetime.now() - merge_start).total_seconds()
-            mem_after_flush = process.memory_info().rss / 1024**3
-            logger.info(f"  [PROACTIVE FLUSH] Completed in {merge_time:.2f}s, freed memory (now {mem_after_flush:.2f} GB)")
         
         # Report progress if callback provided
         if progress_callback:
@@ -1729,198 +1664,32 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             mem_after_free = process.memory_info().rss / 1024**3
             logger.info(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
             
-            if use_incremental:
-                # GPU-ACCELERATED AGGREGATION using cuDF
-                agg_start = datetime.now()
-                
-                # Column names
-                columns = [
-                    'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
-                    'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
-                    'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
-                    'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
-                    'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
-                    'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
-                    'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
-                    'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
-                    'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
-                    'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
-                    'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
-                ]
-                
-                if HAS_CUDF:
-                    # Use cuDF for GPU-accelerated groupby
-                    logger.info(f"    Using cuDF GPU-accelerated groupby...")
-                    
-                    # Create cuDF DataFrame (data stays on GPU!)
-                    gdf = cudf.DataFrame(valid_data, columns=columns)
-                    
-                    # Convert ID columns to int
-                    gdf['ID_COMPTE'] = gdf['ID_COMPTE'].astype('int32')
-                    gdf['AN_EVAL'] = gdf['AN_EVAL'].astype('int32')
-                    gdf['MOIS_EVAL'] = gdf['MOIS_EVAL'].astype('int32')
-                    
-                    # Group by account and time, AVERAGE ACROSS SCENARIOS (100x reduction on GPU!)
-                    group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
-                    value_cols = [col for col in columns if col not in group_cols + ['SCN_EVAL']]
-                    batch_agg_gdf = gdf.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-                    
-                    # Convert back to pandas
-                    batch_agg = batch_agg_gdf.to_pandas()
-                    
-                    del gdf, batch_agg_gdf
-                elif HAS_CUPY:
-                    # Use CuPy for GPU-accelerated sorting, but pandas for groupby
-                    # CuPy doesn't have groupby, and custom implementation is complex
-                    import cupy as cp
-                    logger.info(f"    Using hybrid GPU/CPU aggregation (CuPy sort + pandas groupby)...")
-                    
-                    # Strategy: Use GPU to sort the data, then pandas groupby on sorted data is fast
-                    gpu_data = cp.asarray(valid_data)
-                    
-                    # Extract columns for composite key
-                    id_compte_idx = columns.index('ID_COMPTE')
-                    an_eval_idx = columns.index('AN_EVAL')
-                    mois_eval_idx = columns.index('MOIS_EVAL')
-                    
-                    # Create composite key for sorting on GPU
-                    # Scale factors: ID (billions), AN (millions), MOIS (ones)
-                    sort_keys = (gpu_data[:, id_compte_idx].astype(cp.int64) * 1000000 + 
-                                gpu_data[:, an_eval_idx].astype(cp.int64) * 1000 + 
-                                gpu_data[:, mois_eval_idx].astype(cp.int64))
-                    
-                    # GPU-accelerated sort (much faster than pandas sort for large arrays)
-                    sort_idx = cp.argsort(sort_keys)
-                    sorted_data_gpu = gpu_data[sort_idx]
-                    
-                    # Move sorted data back to CPU
-                    sorted_data = cp.asnumpy(sorted_data_gpu)
-                    
-                    # Clean up GPU memory
-                    del gpu_data, sort_keys, sort_idx, sorted_data_gpu
-                    
-                    # Create DataFrame from pre-sorted data
-                    batch_df = pd.DataFrame(sorted_data, columns=columns)
-                    del sorted_data
-                    
-                    # Convert dtypes
-                    batch_df['ID_COMPTE'] = batch_df['ID_COMPTE'].astype(np.int32)
-                    batch_df['SCN_EVAL'] = batch_df['SCN_EVAL'].astype(np.int32)
-                    batch_df['AN_EVAL'] = batch_df['AN_EVAL'].astype(np.int32)
-                    batch_df['MOIS_EVAL'] = batch_df['MOIS_EVAL'].astype(np.int32)
-                    
-                    # Pandas groupby on pre-sorted data is MUCH faster
-                    group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
-                    value_cols = [col for col in columns if col not in group_cols + ['SCN_EVAL']]
-                    batch_agg = batch_df.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-                    
-                    del batch_df
-                else:
-                    # OPTIMIZED pandas fallback (CPU but faster)
-                    logger.info(f"    Using optimized pandas groupby (cuDF not available)...")
-                    batch_df = pd.DataFrame(valid_data, columns=columns)
-                    
-                    # OPTIMIZATION 1: Convert ID columns to int32 (smaller, faster)
-                    batch_df['ID_COMPTE'] = batch_df['ID_COMPTE'].astype(np.int32)
-                    batch_df['SCN_EVAL'] = batch_df['SCN_EVAL'].astype(np.int32)
-                    batch_df['AN_EVAL'] = batch_df['AN_EVAL'].astype(np.int32)
-                    batch_df['MOIS_EVAL'] = batch_df['MOIS_EVAL'].astype(np.int32)
-                    
-                    # OPTIMIZATION 2: Sort by group columns first (makes groupby much faster)
-                    group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
-                    batch_df.sort_values(group_cols, inplace=True)
-                    
-                    # OPTIMIZATION 3: Use observed=True to skip empty groups
-                    value_cols = [col for col in columns if col not in group_cols + ['SCN_EVAL']]
-                    batch_agg = batch_df.groupby(group_cols, as_index=False, sort=False, observed=True)[value_cols].mean()
-                    
-                    del batch_df
-                
-                # Store in list (will merge periodically)
-                aggregated_batches.append(batch_agg)
-                
-                agg_time = (datetime.now() - agg_start).total_seconds()
-                if HAS_CUDF:
-                    agg_method = "cuDF (GPU) ⚡"
-                elif HAS_CUPY:
-                    agg_method = "hybrid (CuPy GPU sort + pandas groupby) 🔄"
-                else:
-                    agg_method = "pandas (CPU-optimized with pre-sort)"
-                logger.info(f"    Aggregated to {len(batch_agg):,} rows using {agg_method}: {agg_time:.3f}s")
-                
-                # Check current memory usage for adaptive flushing
-                current_mem_gb = process.memory_info().rss / 1024**3
-                memory_threshold_gb = 12.0  # Flush if memory exceeds 12 GB
-                should_flush_memory = current_mem_gb >= memory_threshold_gb
-                should_flush_count = merge_frequency is not None and len(aggregated_batches) >= merge_frequency
-                
-                # Flush to disk if memory threshold reached OR batch count reached
-                if should_flush_memory or should_flush_count:
-                    if should_flush_memory:
-                        logger.info(f"    [MEMORY THRESHOLD] Current memory {current_mem_gb:.2f} GB >= {memory_threshold_gb:.2f} GB, flushing early!")
-                    if len(aggregated_batches) > 0:
-                        merge_start = datetime.now()
-                        logger.info(f"    [PERIODIC FLUSH] Merging {len(aggregated_batches)} batches and flushing to disk...")
-                        
-                        # Concatenate accumulated batches
-                        temp_merged = pd.concat(aggregated_batches, ignore_index=True)
-                        
-                        # OPTIMIZED Group by to consolidate (handles overlapping keys)
-                        logger.info(f"      Consolidating {len(temp_merged):,} rows...")
-                        
-                        if HAS_CUDF and len(temp_merged) > 100000:
-                            # Use cuDF for large merges (GPU-accelerated)
-                            logger.info(f"      Using cuDF GPU groupby for large merge...")
-                            gdf_merge = cudf.DataFrame.from_pandas(temp_merged)
-                            # Free temp_merged immediately after conversion to GPU
-                            del temp_merged
-                            merged_gdf = gdf_merge.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-                            chunk_result = merged_gdf.to_pandas()
-                            del gdf_merge, merged_gdf
-                        else:
-                            # Optimized pandas: sort first for faster groupby
-                            temp_merged.sort_values(group_cols, inplace=True)
-                            chunk_result = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-                            del temp_merged
-                        
-                        # Write to disk as parquet (compressed, efficient)
-                        chunk_idx = len(disk_chunks)
-                        chunk_file = disk_chunk_dir / f"chunk_{chunk_idx:04d}.parquet"
-                        chunk_result.to_parquet(chunk_file, compression='snappy', index=False)
-                        disk_chunks.append(chunk_file)
-                        chunk_size_mb = chunk_file.stat().st_size / 1024**2
-                        logger.info(f"      Written chunk {chunk_idx} to disk: {len(chunk_result):,} rows, {chunk_size_mb:.1f} MB")
-                        
-                        # Clear accumulated batches and merged result to FREE MEMORY
-                        # Store count before clearing for logging
-                        num_cleared = len(aggregated_batches)
-                        aggregated_batches.clear()
-                        del chunk_result  # temp_merged already deleted above
-                        if merged_result is not None:
-                            del merged_result
-                            merged_result = None
-                        
-                        # Free aggregated batch to prevent memory accumulation after flush
-                        del batch_agg
-                        
-                        # Aggressive cleanup: run GC multiple times
-                        force_gpu_memory_cleanup()
-                        gc.collect()
-                        gc.collect()
-                        
-                        merge_time = (datetime.now() - merge_start).total_seconds()
-                        mem_after_flush = process.memory_info().rss / 1024**3
-                        logger.info(f"    [PERIODIC FLUSH] Completed in {merge_time:.2f}s, cleared {num_cleared} batches, freed memory (now {mem_after_flush:.2f} GB)")
-                
-                # Free raw data immediately
-                del valid_data
+            # Insert batch data into DuckDB (simple and efficient!)
+            insert_start = datetime.now()
+            
+            # Create DataFrame from valid_data
+            batch_df = pd.DataFrame(valid_data, columns=columns)
+            
+            # Convert ID columns to appropriate types
+            batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
+                batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
+            
+            # Insert into DuckDB (creates table on first insert)
+            if i == 0:
+                # First batch: create table
+                duckdb_conn.execute("CREATE TABLE batch_results AS SELECT * FROM batch_df")
+                logger.info(f"    Created DuckDB table with {len(batch_df):,} rows")
             else:
-                # List-append approach: O(1) append instead of O(n) array copy
-                append_start = datetime.now()
-                batch_data_list.append(valid_data)
-                append_time = (datetime.now() - append_start).total_seconds()
-                total_rows_so_far = sum(arr.shape[0] for arr in batch_data_list)
-                logger.info(f"    Appended to list: {append_time:.3f}s (total rows: {total_rows_so_far:,}, {len(batch_data_list)} batches)")
+                # Subsequent batches: append data
+                duckdb_conn.execute("INSERT INTO batch_results SELECT * FROM batch_df")
+                logger.info(f"    Inserted {len(batch_df):,} rows into DuckDB")
+            
+            insert_time = (datetime.now() - insert_start).total_seconds()
+            logger.info(f"    DuckDB insert: {insert_time:.3f}s")
+            
+            # Free batch data immediately
+            del valid_data, batch_df
+            gc.collect()
         
         cpu_proc_end = datetime.now()
         cpu_proc_time = (cpu_proc_end - cpu_proc_start).total_seconds()
@@ -1930,13 +1699,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         del d_batch_account_data
         del d_batch_output
         if 'h_batch_output' in locals():
-            del h_batch_output  # May already be freed above
+            del h_batch_output
         if 'h_batch_regular' in locals():
-            del h_batch_regular  # May already be freed above
+            del h_batch_regular
         if 'reshaped' in locals():
-            del reshaped  # May already be freed above
+            del reshaped
         if 'valid_data' in locals():
-            del valid_data  # Already in list, free reference
+            del valid_data
         if use_pinned_memory and 'h_batch_input_pinned' in locals():
             del h_batch_input_pinned
         
@@ -1952,142 +1721,81 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         cpu_processing_time = batch_duration - kernel_duration - transfer_to_gpu - transfer_from_gpu
         logger.info(f"  Batch {i + 1} total time: {batch_duration:.2f}s (Kernel: {kernel_duration:.2f}s, Transfer: {transfer_to_gpu + transfer_from_gpu:.2f}s, CPU: {cpu_processing_time:.2f}s)")
 
-    # --- FINAL AGGREGATION ---
+    # --- FINAL AGGREGATION WITH DUCKDB ---
     print("\n" + "="*60)
-    print("FINAL DATA ASSEMBLY")
+    print("FINAL DATA ASSEMBLY (DuckDB)")
     print("="*60)
     
-    if use_incremental:
-        # Final merge: combine disk chunks + any remaining in-memory batches
-        print(f"\nFinal merge: {len(disk_chunks)} disk chunks + {len(aggregated_batches)} remaining batches")
-        merge_start = datetime.now()
-        
-        # List to hold all chunk DataFrames
-        all_chunks = []
-        
-        # 1. Read all disk chunks
-        if len(disk_chunks) > 0:
-            print(f"  Reading {len(disk_chunks)} disk chunks...")
-            for chunk_file in disk_chunks:
-                chunk_df = pd.read_parquet(chunk_file)
-                all_chunks.append(chunk_df)
-                print(f"    Read {chunk_file.name}: {len(chunk_df):,} rows")
-        
-        # 2. Process any remaining in-memory batches
-        if len(aggregated_batches) > 0:
-            print(f"  Processing {len(aggregated_batches)} remaining in-memory batches...")
-            temp_merged = pd.concat(aggregated_batches, ignore_index=True)
-            
-            # Group by to consolidate
-            group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
-            value_cols = [col for col in temp_merged.columns if col not in group_cols + ['SCN_EVAL']]
-            
-            if HAS_CUDF and len(temp_merged) > 100000:
-                logger.info(f"      Using cuDF GPU groupby for final batches...")
-                gdf_merge = cudf.DataFrame.from_pandas(temp_merged)
-                merged_gdf = gdf_merge.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-                final_batch = merged_gdf.to_pandas()
-                del gdf_merge, merged_gdf
-            else:
-                temp_merged.sort_values(group_cols, inplace=True)
-                final_batch = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-            
-            all_chunks.append(final_batch)
-            del aggregated_batches, temp_merged, final_batch
-            gc.collect()
-        
-        # 3. Final merge of all chunks
-        if len(all_chunks) == 0:
-            print("  WARNING: No data to merge!")
-            calculs_sommaire = pd.DataFrame()
-        elif len(all_chunks) == 1:
-            print("  Single chunk, no merge needed")
-            calculs_sommaire = all_chunks[0]
-        else:
-            print(f"  Merging {len(all_chunks)} chunks into final result...")
-            combined = pd.concat(all_chunks, ignore_index=True)
-            print(f"  Combined to {len(combined):,} rows, performing final groupby...")
-            
-            # Final groupby to consolidate any overlapping keys across chunks
-            group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
-            value_cols = [col for col in combined.columns if col not in group_cols + ['SCN_EVAL']]
-            
-            if HAS_CUDF and len(combined) > 100000:
-                print(f"  Using cuDF GPU groupby for final merge...")
-                gdf_final = cudf.DataFrame.from_pandas(combined)
-                final_gdf = gdf_final.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-                calculs_sommaire = final_gdf.to_pandas()
-                del gdf_final, final_gdf
-            else:
-                combined.sort_values(group_cols, inplace=True)
-                calculs_sommaire = combined.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-            
-            del all_chunks, combined
-            gc.collect()
-        
-        # 4. Cleanup temp directory
-        if len(disk_chunks) > 0:
-            print(f"  Cleaning up {len(disk_chunks)} temporary disk chunks...")
-            for chunk_file in disk_chunks:
-                chunk_file.unlink()
-            disk_chunk_dir.rmdir()
-        
-        merge_time = (datetime.now() - merge_start).total_seconds()
-        print(f"  Final merged to {len(calculs_sommaire):,} rows: {merge_time:.2f}s")
-        print(f"  Size: {calculs_sommaire.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
-        
-        # Note: calculs_sommaire is already scenario-averaged, skip that aggregation step
-        all_results = calculs_sommaire
-    else:
-        # List-append: concatenate all batches into single array
-        print(f"\nConcatenating {len(batch_data_list)} batch arrays...")
-        concat_start = datetime.now()
-        if len(batch_data_list) == 0:
-            all_data = np.zeros((0, n_output_fields), dtype=np.float32)
-        elif len(batch_data_list) == 1:
-            all_data = batch_data_list[0]
-        else:
-            all_data = np.concatenate(batch_data_list, axis=0)
-        concat_time = (datetime.now() - concat_start).total_seconds()
-        print(f"  Concatenated {len(all_data):,} rows in {concat_time:.2f}s")
-        print(f"  Final size: {all_data.nbytes / 1024**3:.2f} GB")
-        print(f"  Occupancy: {len(all_data) / max_possible_rows * 100:.2f}%")
-        
-        # Free batch list
-        del batch_data_list
-        
-        # Create DataFrame
-        df_start = datetime.now()
-        print("\nCreating DataFrame from NumPy array...")
-        all_results = pd.DataFrame(
-            all_data,
-            columns=[
-                'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
-                'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
-                'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
-                'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
-                'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
-                'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
-                'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
-                'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
-                'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
-                'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
-                'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
-            ]
-        )
-        df_time = (datetime.now() - df_start).total_seconds()
-        print(f"  DataFrame created: {df_time:.2f}s")
-        
-        # Convert integer columns
-        dtype_start = datetime.now()
-        print("\nConverting integer columns to int32...")
-        all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
-            all_results[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
-        dtype_time = (datetime.now() - dtype_start).total_seconds()
-        print(f"  Data type conversion: {dtype_time:.2f}s")
-        
-        # Clean up memory
-        del all_data
+    merge_start = datetime.now()
+    
+    # Get row count from DuckDB
+    row_count = duckdb_conn.execute("SELECT COUNT(*) FROM batch_results").fetchone()[0]
+    print(f"\nTotal rows in DuckDB: {row_count:,}")
+    
+    # Perform aggregation using DuckDB SQL (averaging across scenarios)
+    print("Aggregating across scenarios using DuckDB SQL...")
+    agg_sql = """
+    SELECT 
+        ID_COMPTE,
+        AN_EVAL,
+        MOIS_EVAL,
+        AVG(PRIMES_GARANTIES) AS PRIMES_GARANTIES,
+        AVG(PREST_DECES) AS PREST_DECES,
+        AVG(PREST_ECH) AS PREST_ECH,
+        AVG(PREST_MRV) AS PREST_MRV,
+        AVG(FRAIS_ACQUIS) AS FRAIS_ACQUIS,
+        AVG(COMM_VENTE) AS COMM_VENTE,
+        AVG(PRIMES_VARIABLES) AS PRIMES_VARIABLES,
+        AVG(FRAIS_FIXES) AS FRAIS_FIXES,
+        AVG(HON_GEST) AS HON_GEST,
+        AVG(COMM_MAINTIEN) AS COMM_MAINTIEN,
+        AVG(VALEUR_MARCHANDE) AS VALEUR_MARCHANDE,
+        AVG(PASSIF_REDRESSE) AS PASSIF_REDRESSE,
+        AVG(COUSSIN_CREDIT) AS COUSSIN_CREDIT,
+        AVG(COUSSIN_MARCHE) AS COUSSIN_MARCHE,
+        AVG(COUSSIN_DEPENSE) AS COUSSIN_DEPENSE,
+        AVG(COUSSIN_DECHEANCE) AS COUSSIN_DECHEANCE,
+        AVG(COUSSIN_MORTALITE) AS COUSSIN_MORTALITE,
+        AVG(COUSSIN_DEPOT) AS COUSSIN_DEPOT,
+        AVG(VP_FRAIS_ACQUIS) AS VP_FRAIS_ACQUIS,
+        AVG(VP_COMM_VENTE) AS VP_COMM_VENTE,
+        AVG(VP_PRIMES_GARANTIES) AS VP_PRIMES_GARANTIES,
+        AVG(VP_PRIMES_VARIABLES) AS VP_PRIMES_VARIABLES,
+        AVG(VP_FRAIS_FIXES) AS VP_FRAIS_FIXES,
+        AVG(VP_HON_GEST) AS VP_HON_GEST,
+        AVG(VP_COMM_MAINTIEN) AS VP_COMM_MAINTIEN,
+        AVG(VP_PREST_ECH) AS VP_PREST_ECH,
+        AVG(VP_PREST_MRV) AS VP_PREST_MRV,
+        AVG(VP_PREST_DECES) AS VP_PREST_DECES,
+        AVG(VP_VALEUR_MARCHANDE) AS VP_VALEUR_MARCHANDE,
+        AVG(VP_PASSIF_REDRESSE) AS VP_PASSIF_REDRESSE,
+        AVG(VP_COUSSIN_CREDIT) AS VP_COUSSIN_CREDIT,
+        AVG(VP_COUSSIN_MARCHE) AS VP_COUSSIN_MARCHE,
+        AVG(VP_COUSSIN_DEPENSE) AS VP_COUSSIN_DEPENSE,
+        AVG(VP_COUSSIN_DECHEANCE) AS VP_COUSSIN_DECHEANCE,
+        AVG(VP_COUSSIN_MORTALITE) AS VP_COUSSIN_MORTALITE,
+        AVG(VP_COUSSIN_DEPOT) AS VP_COUSSIN_DEPOT
+    FROM batch_results
+    GROUP BY ID_COMPTE, AN_EVAL, MOIS_EVAL
+    ORDER BY ID_COMPTE, AN_EVAL, MOIS_EVAL
+    """
+    
+    # Execute aggregation and fetch result as pandas DataFrame
+    all_results = duckdb_conn.execute(agg_sql).df()
+    
+    merge_time = (datetime.now() - merge_start).total_seconds()
+    print(f"  Aggregated to {len(all_results):,} rows: {merge_time:.2f}s")
+    print(f"  Size: {all_results.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
+    
+    # Close DuckDB connection and cleanup
+    duckdb_conn.close()
+    print("\nCleaning up DuckDB database...")
+    try:
+        db_path.unlink()
+        db_temp_dir.rmdir()
+        print(f"  Removed temporary database: {db_path}")
+    except Exception as e:
+        print(f"  Warning: Could not remove temporary database: {e}")
 
     # Debug logging for specific account
     # Note: With scenario averaging, we show the averaged results (not individual scenarios)
@@ -2167,19 +1875,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print("AGGREGATING RESULTS")
     print("="*60)
     
-    from cpu import (aggregate_by_scenario, aggregate_flux_projetes,
-                           aggregate_vp_flux_compte, aggregate_vp_flux_total)
+    from cpu import (aggregate_flux_projetes, aggregate_vp_flux_compte, aggregate_vp_flux_total)
 
     agg_start = datetime.now()
     
-    if use_incremental:
-        # Already averaged across scenarios during batch processing
-        print("Skipping scenario averaging (already done incrementally)")
-        calculs_sommaire = all_results
-    else:
-        # Need to average across scenarios
-        print("Averaging across scenarios...")
-        calculs_sommaire = aggregate_by_scenario(all_results)
+    # Scenario averaging already done by DuckDB SQL
+    print("Scenario averaging already completed by DuckDB")
+    calculs_sommaire = all_results
     print(f"  → {len(calculs_sommaire):,} rows")
     
     print("Creating VP_FLUX_COMPTE...")
