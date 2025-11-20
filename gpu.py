@@ -18,10 +18,13 @@ HAS_CUDF = False
 HAS_CUPY = False
 try:
     import cudf
+    import rmm
     HAS_CUDF = True
+    HAS_RMM = True
     print("✓ cuDF loaded successfully - GPU-accelerated aggregation enabled!")
 except Exception as e:
     HAS_CUDF = False
+    HAS_RMM = False
     print(f"⚠ cuDF not available ({type(e).__name__}): {e}")
     print(f"   Full exception: {repr(e)}")
     print(f"   Trying CuPy fallback...")
@@ -33,6 +36,31 @@ except Exception as e:
         print("✓ CuPy loaded - Using GPU arrays for aggregation")
     except Exception:
         print("⚠ CuPy also not available. Using optimized pandas CPU aggregation.")
+
+# GPU memory cleanup helper
+def force_gpu_memory_cleanup():
+    """Force GPU memory cleanup by clearing RMM pool and running garbage collection"""
+    gc.collect()
+    
+    # Try to free CuPy memory pool (used by cuDF)
+    if HAS_CUDF or HAS_CUPY:
+        try:
+            import cupy
+            mempool = cupy.get_default_memory_pool()
+            pinned_mempool = cupy.get_default_pinned_memory_pool()
+            mempool.free_all_blocks()
+            pinned_mempool.free_all_blocks()
+        except Exception:
+            pass
+    
+    # Additional cleanup for RMM
+    if HAS_RMM:
+        try:
+            # Force RMM to release memory back to OS
+            import rmm
+            rmm.mr.get_current_device_resource().deallocate(0, 0)
+        except Exception:
+            pass
 
 # Import numba AFTER cuDF
 from numba import cuda
@@ -1523,6 +1551,58 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         logger.info(f"\n--- Processing Batch {i + 1}/{num_batches} (Accounts {start_idx} to {end_idx - 1}) ---")
         logger.info(f"  Memory at batch start: {batch_mem_start:.2f} GB")
         
+        # PROACTIVE MEMORY CHECK: Flush accumulated batches BEFORE processing if memory is high
+        if use_incremental and batch_mem_start >= 10.0 and len(aggregated_batches) > 0:
+            logger.info(f"  [PROACTIVE FLUSH] Memory {batch_mem_start:.2f} GB >= 10.0 GB at batch start, flushing {len(aggregated_batches)} accumulated batches...")
+            merge_start = datetime.now()
+            
+            # Concatenate accumulated batches
+            temp_merged = pd.concat(aggregated_batches, ignore_index=True)
+            
+            # Group by to consolidate
+            group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
+            columns = [
+                'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
+                'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
+                'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
+                'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
+                'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
+                'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
+                'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+                'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
+                'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
+                'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
+                'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
+            ]
+            value_cols = [col for col in columns if col not in group_cols + ['SCN_EVAL']]
+            
+            if HAS_CUDF and len(temp_merged) > 100000:
+                logger.info(f"    Using cuDF GPU groupby for proactive flush...")
+                gdf_merge = cudf.DataFrame.from_pandas(temp_merged)
+                merged_gdf = gdf_merge.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+                chunk_result = merged_gdf.to_pandas()
+                del gdf_merge, merged_gdf
+            else:
+                temp_merged.sort_values(group_cols, inplace=True)
+                chunk_result = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+            
+            # Write to disk
+            chunk_idx = len(disk_chunks)
+            chunk_file = disk_chunk_dir / f"chunk_{chunk_idx:04d}.parquet"
+            chunk_result.to_parquet(chunk_file, compression='snappy', index=False)
+            disk_chunks.append(chunk_file)
+            chunk_size_mb = chunk_file.stat().st_size / 1024**2
+            logger.info(f"    Written chunk {chunk_idx} to disk: {len(chunk_result):,} rows, {chunk_size_mb:.1f} MB")
+            
+            # Clear memory
+            aggregated_batches.clear()
+            del temp_merged, chunk_result
+            force_gpu_memory_cleanup()
+            
+            merge_time = (datetime.now() - merge_start).total_seconds()
+            mem_after_flush = process.memory_info().rss / 1024**3
+            logger.info(f"  [PROACTIVE FLUSH] Completed in {merge_time:.2f}s, freed memory (now {mem_after_flush:.2f} GB)")
+        
         # Report progress if callback provided
         if progress_callback:
             try:
@@ -1814,7 +1894,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                         if merged_result is not None:
                             del merged_result
                             merged_result = None
-                        gc.collect()
+                        force_gpu_memory_cleanup()
                         
                         merge_time = (datetime.now() - merge_start).total_seconds()
                         mem_after_flush = process.memory_info().rss / 1024**3
@@ -1848,12 +1928,12 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         if use_pinned_memory and 'h_batch_input_pinned' in locals():
             del h_batch_input_pinned
         
-        # Force garbage collection after EVERY batch to prevent fragmentation
+        # Force garbage collection and GPU memory cleanup after EVERY batch
         gc_start = datetime.now()
-        gc.collect()
+        force_gpu_memory_cleanup()
         gc_time = (datetime.now() - gc_start).total_seconds()
         batch_mem_end = process.memory_info().rss / 1024**3
-        logger.info(f"  [Memory cleanup: GC in {gc_time:.3f}s, mem at end: {batch_mem_end:.2f} GB, delta: {batch_mem_end - batch_mem_start:+.2f} GB]")
+        logger.info(f"  [Memory cleanup: GPU+GC in {gc_time:.3f}s, mem at end: {batch_mem_end:.2f} GB, delta: {batch_mem_end - batch_mem_start:+.2f} GB]")
 
         batch_end_time = datetime.now()
         batch_duration = (batch_end_time - batch_start_time).total_seconds()
