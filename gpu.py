@@ -1455,18 +1455,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     estimated_rows = int(max_possible_rows * 0.6)
     estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
     
-    print(f"\nUsing DUCKDB BATCH STORAGE (all dataset sizes)")
+    print(f"\nUsing PARQUET + DUCKDB BATCH STORAGE (optimized for speed)")
     print(f"Estimated: {n_accounts:,} accounts, {estimated_rows:,} rows, ~{estimated_memory_gb:.1f} GB")
-    print(f"Each batch will be written to DuckDB table")
-    print(f"Final aggregation will be done with DuckDB SQL (GPU-accelerated if needed)")
+    print(f"Each batch will be written to Parquet file (fast columnar format)")
+    print(f"Final aggregation will be done with DuckDB SQL reading Parquet files")
     
-    # Create temporary DuckDB database
-    db_temp_dir = Path(output_path) / "_temp_duckdb"
-    db_temp_dir.mkdir(parents=True, exist_ok=True)
-    db_path = db_temp_dir / "batches.duckdb"
-    
-    # Initialize DuckDB connection
-    duckdb_conn = duckdb.connect(str(db_path))
+    # Create temporary Parquet directory
+    parquet_dir = Path(output_path) / "_temp_parquet"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
     
     # Define column names for the table
     columns = [
@@ -1483,8 +1479,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
     ]
     
-    print(f"DuckDB database: {db_path}")
-    print(f"Batch inserts will be immediate, aggregation deferred to end")
+    print(f"Parquet directory: {parquet_dir}")
+    print(f"Parquet writes are ~4-5x faster than database inserts")
     
     total_kernel_duration = 0
     total_transfer_duration = 0
@@ -1628,8 +1624,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             mem_after_free = process.memory_info().rss / 1024**3
             logger.info(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
             
-            # Insert batch data into DuckDB (simple and efficient!)
-            insert_start = datetime.now()
+            # Write batch data to Parquet file (fast columnar write!)
+            write_start = datetime.now()
             
             # Create DataFrame from valid_data
             batch_df = pd.DataFrame(valid_data, columns=columns)
@@ -1638,18 +1634,18 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
                 batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
             
-            # Insert into DuckDB (creates table on first insert)
-            if i == 0:
-                # First batch: create table
-                duckdb_conn.execute("CREATE TABLE batch_results AS SELECT * FROM batch_df")
-                logger.info(f"    Created DuckDB table with {len(batch_df):,} rows")
-            else:
-                # Subsequent batches: append data
-                duckdb_conn.execute("INSERT INTO batch_results SELECT * FROM batch_df")
-                logger.info(f"    Inserted {len(batch_df):,} rows into DuckDB")
+            # Write to Parquet file with snappy compression
+            parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
+            batch_df.to_parquet(
+                parquet_path, 
+                engine='pyarrow', 
+                compression='snappy',
+                index=False
+            )
             
-            insert_time = (datetime.now() - insert_start).total_seconds()
-            logger.info(f"    DuckDB insert: {insert_time:.3f}s")
+            write_time = (datetime.now() - write_start).total_seconds()
+            file_size_mb = parquet_path.stat().st_size / 1024**2
+            logger.info(f"    Parquet write: {write_time:.3f}s ({len(batch_df):,} rows, {file_size_mb:.1f} MB)")
             
             # Free batch data immediately
             del valid_data, batch_df
@@ -1685,20 +1681,24 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         cpu_processing_time = batch_duration - kernel_duration - transfer_to_gpu - transfer_from_gpu
         logger.info(f"  Batch {i + 1} total time: {batch_duration:.2f}s (Kernel: {kernel_duration:.2f}s, Transfer: {transfer_to_gpu + transfer_from_gpu:.2f}s, CPU: {cpu_processing_time:.2f}s)")
 
-    # --- FINAL AGGREGATION WITH DUCKDB ---
+    # --- FINAL AGGREGATION WITH DUCKDB + PARQUET ---
     print("\n" + "="*60)
-    print("FINAL DATA ASSEMBLY (DuckDB)")
+    print("FINAL DATA ASSEMBLY (DuckDB reading Parquet)")
     print("="*60)
     
     merge_start = datetime.now()
     
-    # Get row count from DuckDB
-    row_count = duckdb_conn.execute("SELECT COUNT(*) FROM batch_results").fetchone()[0]
-    print(f"\nTotal rows in DuckDB: {row_count:,}")
+    # Count Parquet files
+    parquet_files = list(parquet_dir.glob("batch_*.parquet"))
+    print(f"\nFound {len(parquet_files)} Parquet files to aggregate")
+    
+    # DuckDB can read all Parquet files with wildcard pattern
+    parquet_pattern = str(parquet_dir / "batch_*.parquet")
     
     # Perform aggregation using DuckDB SQL (averaging across scenarios)
-    print("Aggregating across scenarios using DuckDB SQL...")
-    agg_sql = """
+    # DuckDB reads Parquet files in parallel for fast aggregation
+    print("Aggregating across scenarios using DuckDB SQL (parallel Parquet read)...")
+    agg_sql = f"""
     SELECT 
         ID_COMPTE,
         AN_EVAL,
@@ -1739,27 +1739,26 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         AVG(VP_COUSSIN_DECHEANCE) AS VP_COUSSIN_DECHEANCE,
         AVG(VP_COUSSIN_MORTALITE) AS VP_COUSSIN_MORTALITE,
         AVG(VP_COUSSIN_DEPOT) AS VP_COUSSIN_DEPOT
-    FROM batch_results
+    FROM read_parquet('{parquet_pattern}')
     GROUP BY ID_COMPTE, AN_EVAL, MOIS_EVAL
     ORDER BY ID_COMPTE, AN_EVAL, MOIS_EVAL
     """
     
     # Execute aggregation and fetch result as pandas DataFrame
-    all_results = duckdb_conn.execute(agg_sql).df()
+    all_results = duckdb.execute(agg_sql).df()
     
     merge_time = (datetime.now() - merge_start).total_seconds()
     print(f"  Aggregated to {len(all_results):,} rows: {merge_time:.2f}s")
     print(f"  Size: {all_results.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
     
-    # Close DuckDB connection and cleanup
-    duckdb_conn.close()
-    print("\nCleaning up DuckDB database...")
+    # Cleanup Parquet files
+    print("\nCleaning up Parquet files...")
     try:
-        db_path.unlink()
-        db_temp_dir.rmdir()
-        print(f"  Removed temporary database: {db_path}")
+        import shutil
+        shutil.rmtree(parquet_dir)
+        print(f"  Removed temporary Parquet directory: {parquet_dir}")
     except Exception as e:
-        print(f"  Warning: Could not remove temporary database: {e}")
+        print(f"  Warning: Could not remove temporary Parquet files: {e}")
 
     # Debug logging for specific account
     # Note: With scenario averaging, we show the averaged results (not individual scenarios)
