@@ -1486,7 +1486,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         merged_result = None  # Holds periodically merged data
         disk_chunks = []  # List of parquet files written to disk
         disk_chunk_dir = Path(output_path) / "_temp_chunks"
-        disk_chunk_dir.mkdir(exist_ok=True)
+        disk_chunk_dir.mkdir(parents=True, exist_ok=True)
         print(f"Using disk-backed storage: will flush to disk every {merge_frequency} batches")
         print(f"Temp directory: {disk_chunk_dir}")
     elif estimated_memory_gb <= memory_threshold_gb:
@@ -1503,7 +1503,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         merged_result = None
         disk_chunks = []  # List of parquet files written to disk
         disk_chunk_dir = Path(output_path) / "_temp_chunks"
-        disk_chunk_dir.mkdir(exist_ok=True)
+        disk_chunk_dir.mkdir(parents=True, exist_ok=True)
         print(f"Using disk-backed storage: will flush to disk every {merge_frequency} batches")
         print(f"Temp directory: {disk_chunk_dir}")
     
