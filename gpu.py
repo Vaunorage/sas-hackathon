@@ -13,6 +13,8 @@ from datetime import datetime
 import math
 import duckdb
 import tempfile
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 # GPU memory cleanup helper
 def force_gpu_memory_cleanup():
@@ -1624,31 +1626,37 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             mem_after_free = process.memory_info().rss / 1024**3
             logger.info(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
             
-            # Write batch data to Parquet file (fast columnar write!)
+            # Write batch data to Parquet file (zero-copy Arrow optimization!)
             write_start = datetime.now()
             
-            # Create DataFrame from valid_data
-            batch_df = pd.DataFrame(valid_data, columns=columns)
+            # Convert ID columns to int32 in-place (very fast on NumPy)
+            valid_data[:, 0] = valid_data[:, 0].astype(np.int32)  # ID_COMPTE
+            valid_data[:, 1] = valid_data[:, 1].astype(np.int32)  # SCN_EVAL
+            valid_data[:, 2] = valid_data[:, 2].astype(np.int32)  # AN_EVAL
+            valid_data[:, 3] = valid_data[:, 3].astype(np.int32)  # MOIS_EVAL
             
-            # Convert ID columns to appropriate types
-            batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
-                batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
+            # Create Arrow table directly from NumPy (zero-copy!)
+            # This is much faster than creating a DataFrame
+            arrow_arrays = [pa.array(valid_data[:, i]) for i in range(len(columns))]
+            arrow_table = pa.Table.from_arrays(arrow_arrays, names=columns)
             
-            # Write to Parquet file with snappy compression
+            # Write directly to Parquet (optimized for numeric data)
             parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-            batch_df.to_parquet(
-                parquet_path, 
-                engine='pyarrow', 
+            pq.write_table(
+                arrow_table,
+                parquet_path,
                 compression='snappy',
-                index=False
+                use_dictionary=False,  # Faster for numeric data
+                write_statistics=False  # Skip stats for speed
             )
             
             write_time = (datetime.now() - write_start).total_seconds()
             file_size_mb = parquet_path.stat().st_size / 1024**2
-            logger.info(f"    Parquet write: {write_time:.3f}s ({len(batch_df):,} rows, {file_size_mb:.1f} MB)")
+            num_rows = len(valid_data)
+            logger.info(f"    Parquet write (Arrow zero-copy): {write_time:.3f}s ({num_rows:,} rows, {file_size_mb:.1f} MB)")
             
             # Free batch data immediately
-            del valid_data, batch_df
+            del valid_data, arrow_arrays, arrow_table
             gc.collect()
         
         cpu_proc_end = datetime.now()
