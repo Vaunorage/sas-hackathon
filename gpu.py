@@ -13,6 +13,13 @@ from paths import HERE
 import argparse
 from multiprocessing import Pool, cpu_count
 
+try:
+    import cudf
+    HAS_CUDF = True
+except ImportError:
+    HAS_CUDF = False
+    print("Warning: cuDF not available. GPU aggregation will fall back to pandas.")
+
 # =============================================================================
 # LOGGING SETUP
 # =============================================================================
@@ -1543,103 +1550,115 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         total_transfer_duration += transfer_to_gpu + transfer_from_gpu
         logger.info(f"  Transfer from GPU: {transfer_from_gpu:.2f} seconds")
 
-        # 7. Extract valid results (OPTIMIZED - reshape + boolean mask)
+        # 7. Extract valid results
         cpu_proc_start = datetime.now()
         logger.info("  Extracting valid results...")
         
-        # CRITICAL: Convert pinned memory to regular memory FIRST to avoid indexing slowdowns
-        # Pinned CUDA memory has different performance characteristics for NumPy operations
+        process = psutil.Process(os.getpid())
+        mem_before = process.memory_info().rss / 1024**3
+        
+        # Convert pinned memory to regular memory
         convert_start = datetime.now()
-        h_batch_regular = np.array(h_batch_output, copy=True)  # Force copy to regular memory
+        h_batch_regular = np.array(h_batch_output, copy=True)
         convert_time = (datetime.now() - convert_start).total_seconds()
         logger.info(f"    Convert pinned to regular memory: {convert_time:.3f}s")
         
-        # Now free the pinned memory immediately
         del h_batch_output
         
-        # Reshape to 2D for faster boolean indexing on contiguous memory
+        # Reshape to 2D
         reshape_start = datetime.now()
         total_rows = current_batch_size * nb_scenarios * max_timesteps
         reshaped = h_batch_regular.reshape(total_rows, n_output_fields)
         reshape_time = (datetime.now() - reshape_start).total_seconds()
         logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s")
         
-        # OPTIMIZED EXTRACTION: Single-threaded compress (faster with memory pressure)
-        process = psutil.Process(os.getpid())
-        mem_before = process.memory_info().rss / 1024**3
-        
+        # Extract valid rows
         extract_start = datetime.now()
-        
-        # Create boolean mask
-        mask_start = datetime.now()
         valid_mask = reshaped[:, 0] > 0
         n_valid = np.sum(valid_mask)
-        mask_time = (datetime.now() - mask_start).total_seconds()
-        logger.info(f"    Create boolean mask: {mask_time:.3f}s")
         logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
         
         if n_valid > 0:
-            # Extract using compress (single-threaded but memory efficient)
-            compress_start = datetime.now()
             valid_data = np.compress(valid_mask, reshaped, axis=0)
-            compress_time = (datetime.now() - compress_start).total_seconds()
+            extract_time = (datetime.now() - extract_start).total_seconds()
             mem_after_extract = process.memory_info().rss / 1024**3
-            
-            logger.info(f"    Extract via compress: {compress_time:.3f}s")
-            logger.info(f"    Total extract: {(datetime.now() - extract_start).total_seconds():.3f}s, mem: +{mem_after_extract - mem_before:.2f} GB ({valid_data.nbytes / 1024**2:.1f} MB)")
-            
-            # Free mask immediately
+            logger.info(f"    Extract: {extract_time:.3f}s, mem: +{mem_after_extract - mem_before:.2f} GB")
             del valid_mask
         else:
             valid_data = None
-            logger.info(f"    No valid rows found")
         
         if valid_data is not None and n_valid > 0:
             
             # FREE LARGE ARRAYS IMMEDIATELY to prevent fragmentation
             free_start = datetime.now()
-            del h_batch_regular  # Free regular memory copy
-            del reshaped  # Free the view
+            del h_batch_regular
+            del reshaped
             free_time = (datetime.now() - free_start).total_seconds()
             mem_after_free = process.memory_info().rss / 1024**3
             logger.info(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
             
             if use_incremental:
-                # Incremental aggregation: aggregate this batch immediately
+                # GPU-ACCELERATED AGGREGATION using cuDF
                 agg_start = datetime.now()
                 
-                # Convert to DataFrame for groupby
-                batch_df = pd.DataFrame(
-                    valid_data,
-                    columns=[
-                        'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
-                        'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
-                        'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
-                        'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
-                        'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
-                        'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
-                        'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
-                        'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
-                        'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
-                        'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
-                        'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
-                    ]
-                )
+                # Column names
+                columns = [
+                    'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
+                    'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
+                    'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
+                    'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
+                    'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
+                    'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
+                    'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+                    'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
+                    'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
+                    'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
+                    'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
+                ]
                 
-                # Convert ID columns to int
-                batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
-                    batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
-                
-                # Group by account and time, AVERAGE ACROSS SCENARIOS (100x reduction!)
-                group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
-                value_cols = [col for col in batch_df.columns if col not in group_cols + ['SCN_EVAL']]
-                batch_agg = batch_df.groupby(group_cols, as_index=False)[value_cols].mean()
+                if HAS_CUDF:
+                    # Use cuDF for GPU-accelerated groupby
+                    logger.info(f"    Using cuDF GPU-accelerated groupby...")
+                    
+                    # Create cuDF DataFrame (data stays on GPU!)
+                    gdf = cudf.DataFrame(valid_data, columns=columns)
+                    
+                    # Convert ID columns to int
+                    gdf['ID_COMPTE'] = gdf['ID_COMPTE'].astype('int32')
+                    gdf['AN_EVAL'] = gdf['AN_EVAL'].astype('int32')
+                    gdf['MOIS_EVAL'] = gdf['MOIS_EVAL'].astype('int32')
+                    
+                    # Group by account and time, AVERAGE ACROSS SCENARIOS (100x reduction on GPU!)
+                    group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
+                    value_cols = [col for col in columns if col not in group_cols + ['SCN_EVAL']]
+                    batch_agg_gdf = gdf.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+                    
+                    # Convert back to pandas
+                    batch_agg = batch_agg_gdf.to_pandas()
+                    
+                    del gdf, batch_agg_gdf
+                else:
+                    # Fallback to pandas (CPU)
+                    logger.info(f"    Using pandas groupby (cuDF not available)...")
+                    batch_df = pd.DataFrame(valid_data, columns=columns)
+                    
+                    # Convert ID columns to int
+                    batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
+                        batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
+                    
+                    # Group by account and time
+                    group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
+                    value_cols = [col for col in columns if col not in group_cols + ['SCN_EVAL']]
+                    batch_agg = batch_df.groupby(group_cols, as_index=False)[value_cols].mean()
+                    
+                    del batch_df
                 
                 # Store in list (will merge periodically)
                 aggregated_batches.append(batch_agg)
                 
                 agg_time = (datetime.now() - agg_start).total_seconds()
-                logger.info(f"    Aggregated to {len(batch_agg):,} rows: {agg_time:.3f}s")
+                agg_method = "cuDF (GPU)" if HAS_CUDF else "pandas (CPU)"
+                logger.info(f"    Aggregated to {len(batch_agg):,} rows using {agg_method}: {agg_time:.3f}s")
                 
                 # Periodic merge to prevent dictionary/list bloat
                 if len(aggregated_batches) >= merge_frequency:
