@@ -9,8 +9,8 @@ from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
 import math
 
-# Set environment variable BEFORE importing cudf to avoid numba patching conflict
-os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '0'
+# Set environment variable BEFORE importing cudf/numba to enable pynvjitlink features
+os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
 
 from numba import cuda
 from paths import HERE
@@ -1692,7 +1692,6 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 
                 # Free raw data immediately
                 del valid_data
-                del batch_df
             else:
                 # List-append approach: O(1) append instead of O(n) array copy
                 append_start = datetime.now()
