@@ -1293,8 +1293,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         # Test GPU access
         gpu = cuda.get_current_device()
         print(f"GPU Device: {gpu.name.decode()}")
-        free_mem, total_mem = cuda.current_context().get_memory_info()
-        print(f"GPU Memory: {free_mem / 1024**3:.2f} GB free / {total_mem / 1024**3:.2f} GB total")
+        
+        # Try to get memory info - may not work with RMM allocator
+        try:
+            free_mem, total_mem = cuda.current_context().get_memory_info()
+            print(f"GPU Memory: {free_mem / 1024**3:.2f} GB free / {total_mem / 1024**3:.2f} GB total")
+        except NotImplementedError:
+            # RMM allocator doesn't support get_memory_info()
+            print(f"GPU Memory: Information not available (using RMM allocator)")
     except Exception as e:
         raise RuntimeError(
             f"Failed to initialize GPU: {e}\n"
