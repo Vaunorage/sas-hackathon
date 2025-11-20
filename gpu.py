@@ -1482,7 +1482,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"Data reduction: {nb_scenarios}x fewer rows (scenario-averaged)")
         use_incremental = True
         aggregated_batches = []  # List to accumulate batch DataFrames
-        merge_frequency = 3  # Merge every 5 batches to keep memory tight
+        merge_frequency = 1  # Merge after EVERY batch to prevent any accumulation
         merged_result = None  # Holds periodically merged data
     elif estimated_memory_gb <= memory_threshold_gb:
         print(f"\nUsing LIST-APPEND (dataset small: {estimated_rows:,} rows, ~{estimated_memory_gb:.2f} GB)")
@@ -1494,7 +1494,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"Forcing incremental aggregation to avoid memory issues")
         use_incremental = True
         aggregated_batches = []
-        merge_frequency = 3  # Merge every 5 batches to keep memory tight
+        merge_frequency = 1  # Merge after EVERY batch to prevent any accumulation
         merged_result = None
     
     total_kernel_duration = 0
@@ -1634,6 +1634,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             free_start = datetime.now()
             del h_batch_regular
             del reshaped
+            gc.collect()  # Immediate GC to reduce fragmentation
             free_time = (datetime.now() - free_start).total_seconds()
             mem_after_free = process.memory_info().rss / 1024**3
             logger.info(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
