@@ -1899,6 +1899,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                         merge_time = (datetime.now() - merge_start).total_seconds()
                         mem_after_flush = process.memory_info().rss / 1024**3
                         logger.info(f"    [PERIODIC FLUSH] Completed in {merge_time:.2f}s, freed memory (now {mem_after_flush:.2f} GB)")
+                        
+                        # Free aggregated batch to prevent memory accumulation after flush
+                        del batch_agg
                 
                 # Free raw data immediately
                 del valid_data
