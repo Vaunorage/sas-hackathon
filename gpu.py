@@ -1660,20 +1660,46 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                     
                     del gdf, batch_agg_gdf
                 elif HAS_CUPY:
-                    # Use CuPy for GPU-accelerated operations (simpler approach)
-                    logger.info(f"    Using CuPy GPU-accelerated aggregation...")
+                    # Use CuPy for GPU-accelerated sorting, but pandas for groupby
+                    # CuPy doesn't have groupby, and custom implementation is complex
+                    import cupy as cp
+                    logger.info(f"    Using hybrid GPU/CPU aggregation (CuPy sort + pandas groupby)...")
                     
-                    # For now, use optimized pandas but with GPU memory operations
-                    # Full CuPy groupby is complex - better to wait for cuDF
-                    batch_df = pd.DataFrame(valid_data, columns=columns)
+                    # Strategy: Use GPU to sort the data, then pandas groupby on sorted data is fast
+                    gpu_data = cp.asarray(valid_data)
                     
-                    # OPTIMIZATION: Convert ID columns and sort
+                    # Extract columns for composite key
+                    id_compte_idx = columns.index('ID_COMPTE')
+                    an_eval_idx = columns.index('AN_EVAL')
+                    mois_eval_idx = columns.index('MOIS_EVAL')
+                    
+                    # Create composite key for sorting on GPU
+                    # Scale factors: ID (billions), AN (millions), MOIS (ones)
+                    sort_keys = (gpu_data[:, id_compte_idx].astype(cp.int64) * 1000000 + 
+                                gpu_data[:, an_eval_idx].astype(cp.int64) * 1000 + 
+                                gpu_data[:, mois_eval_idx].astype(cp.int64))
+                    
+                    # GPU-accelerated sort (much faster than pandas sort for large arrays)
+                    sort_idx = cp.argsort(sort_keys)
+                    sorted_data_gpu = gpu_data[sort_idx]
+                    
+                    # Move sorted data back to CPU
+                    sorted_data = cp.asnumpy(sorted_data_gpu)
+                    
+                    # Clean up GPU memory
+                    del gpu_data, sort_keys, sort_idx, sorted_data_gpu
+                    
+                    # Create DataFrame from pre-sorted data
+                    batch_df = pd.DataFrame(sorted_data, columns=columns)
+                    del sorted_data
+                    
+                    # Convert dtypes
                     batch_df['ID_COMPTE'] = batch_df['ID_COMPTE'].astype(np.int32)
                     batch_df['SCN_EVAL'] = batch_df['SCN_EVAL'].astype(np.int32)
                     batch_df['AN_EVAL'] = batch_df['AN_EVAL'].astype(np.int32)
                     batch_df['MOIS_EVAL'] = batch_df['MOIS_EVAL'].astype(np.int32)
-                    batch_df.sort_values(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL'], inplace=True)
                     
+                    # Pandas groupby on pre-sorted data is MUCH faster
                     group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
                     value_cols = [col for col in columns if col not in group_cols + ['SCN_EVAL']]
                     batch_agg = batch_df.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
@@ -1706,6 +1732,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 agg_time = (datetime.now() - agg_start).total_seconds()
                 if HAS_CUDF:
                     agg_method = "cuDF (GPU) ⚡"
+                elif HAS_CUPY:
+                    agg_method = "hybrid (CuPy GPU sort + pandas groupby) 🔄"
                 else:
                     agg_method = "pandas (CPU-optimized with pre-sort)"
                 logger.info(f"    Aggregated to {len(batch_agg):,} rows using {agg_method}: {agg_time:.3f}s")
