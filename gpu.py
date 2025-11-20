@@ -9,10 +9,10 @@ from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
 import math
 
-# Set environment variable BEFORE importing cudf/numba to enable pynvjitlink features
-os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
+# Disable cuDF's numba patching since numba already has pynvjitlink built-in
+os.environ['RAPIDS_NO_INITIALIZE'] = '1'
 
-# Import cuDF BEFORE numba.cuda to allow cuDF to set up numba properly
+# Import cuDF BEFORE numba.cuda
 HAS_CUDF = False
 HAS_CUPY = False
 try:
