@@ -24,7 +24,9 @@ try:
     print("✓ cuDF loaded successfully - GPU-accelerated aggregation enabled!")
 except Exception as e:
     HAS_CUDF = False
-    print(f"⚠ cuDF not available ({type(e).__name__}). Trying CuPy fallback...")
+    print(f"⚠ cuDF not available ({type(e).__name__}): {e}")
+    print(f"   Full exception: {repr(e)}")
+    print(f"   Trying CuPy fallback...")
     
     # Try CuPy as fallback for GPU operations
     try:
