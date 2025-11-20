@@ -9,6 +9,9 @@ from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
 import math
 
+# Set environment variable BEFORE importing cudf/numba to enable pynvjitlink features
+os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
+
 from numba import cuda
 from paths import HERE
 import argparse
