@@ -15,20 +15,18 @@ import math
 import duckdb
 import tempfile
 
-# Import cuDF BEFORE numba.cuda
+# Optional: Import cuDF/RMM for advanced GPU memory management
 HAS_CUDF = False
+HAS_RMM = False
 try:
     import cudf
     import rmm
     HAS_CUDF = True
     HAS_RMM = True
-    print("✓ cuDF loaded successfully - GPU-accelerated aggregation enabled!")
-except Exception as e:
-    HAS_CUDF = False
-    HAS_RMM = False
-    print(f"⚠ cuDF not available ({type(e).__name__}): {e}")
-    print(f"   Full exception: {repr(e)}")
-    raise RuntimeError("cuDF is required for GPU processing") from e
+    print("✓ cuDF/RMM loaded - Advanced GPU memory management available")
+except ImportError:
+    print("ℹ cuDF/RMM not available - using basic GPU memory management (this is fine)")
+    pass
 
 # GPU memory cleanup helper
 def force_gpu_memory_cleanup():
