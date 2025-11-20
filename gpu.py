@@ -1872,6 +1872,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                             # Use cuDF for large merges (GPU-accelerated)
                             logger.info(f"      Using cuDF GPU groupby for large merge...")
                             gdf_merge = cudf.DataFrame.from_pandas(temp_merged)
+                            # Free temp_merged immediately after conversion to GPU
+                            del temp_merged
                             merged_gdf = gdf_merge.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
                             chunk_result = merged_gdf.to_pandas()
                             del gdf_merge, merged_gdf
@@ -1879,6 +1881,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                             # Optimized pandas: sort first for faster groupby
                             temp_merged.sort_values(group_cols, inplace=True)
                             chunk_result = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+                            del temp_merged
                         
                         # Write to disk as parquet (compressed, efficient)
                         chunk_idx = len(disk_chunks)
@@ -1889,8 +1892,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                         logger.info(f"      Written chunk {chunk_idx} to disk: {len(chunk_result):,} rows, {chunk_size_mb:.1f} MB")
                         
                         # Clear accumulated batches and merged result to FREE MEMORY
+                        # Store count before clearing for logging
+                        num_cleared = len(aggregated_batches)
                         aggregated_batches.clear()
-                        del temp_merged, chunk_result
+                        del chunk_result  # temp_merged already deleted above
                         if merged_result is not None:
                             del merged_result
                             merged_result = None
@@ -1898,11 +1903,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                         # Free aggregated batch to prevent memory accumulation after flush
                         del batch_agg
                         
+                        # Aggressive cleanup: run GC multiple times
                         force_gpu_memory_cleanup()
+                        gc.collect()
+                        gc.collect()
                         
                         merge_time = (datetime.now() - merge_start).total_seconds()
                         mem_after_flush = process.memory_info().rss / 1024**3
-                        logger.info(f"    [PERIODIC FLUSH] Completed in {merge_time:.2f}s, freed memory (now {mem_after_flush:.2f} GB)")
+                        logger.info(f"    [PERIODIC FLUSH] Completed in {merge_time:.2f}s, cleared {num_cleared} batches, freed memory (now {mem_after_flush:.2f} GB)")
                 
                 # Free raw data immediately
                 del valid_data
