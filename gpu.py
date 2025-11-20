@@ -1,6 +1,5 @@
 import os
-# Set environment variables BEFORE importing numba/cudf
-os.environ['RAPIDS_NO_INITIALIZE'] = '1'
+# Set environment variables BEFORE importing numba
 os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
 
 import pandas as pd
@@ -15,45 +14,12 @@ import math
 import duckdb
 import tempfile
 
-# Optional: Import cuDF/RMM for advanced GPU memory management
-HAS_CUDF = False
-HAS_RMM = False
-try:
-    import cudf
-    import rmm
-    HAS_CUDF = True
-    HAS_RMM = True
-    print("✓ cuDF/RMM loaded - Advanced GPU memory management available")
-except ImportError:
-    print("ℹ cuDF/RMM not available - using basic GPU memory management (this is fine)")
-    pass
-
 # GPU memory cleanup helper
 def force_gpu_memory_cleanup():
-    """Force GPU memory cleanup by clearing RMM pool and running garbage collection"""
+    """Force GPU memory cleanup by running garbage collection"""
     gc.collect()
-    
-    # Try to free CuPy memory pool (used by cuDF)
-    if HAS_CUDF:
-        try:
-            import cupy
-            mempool = cupy.get_default_memory_pool()
-            pinned_mempool = cupy.get_default_pinned_memory_pool()
-            mempool.free_all_blocks()
-            pinned_mempool.free_all_blocks()
-        except Exception:
-            pass
-    
-    # Additional cleanup for RMM
-    if HAS_RMM:
-        try:
-            # Force RMM to release memory back to OS
-            import rmm
-            rmm.mr.get_current_device_resource().deallocate(0, 0)
-        except Exception:
-            pass
 
-# Import numba AFTER cuDF
+# Import numba for CUDA
 from numba import cuda
 from paths import HERE
 import argparse
