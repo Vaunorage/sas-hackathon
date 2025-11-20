@@ -1487,7 +1487,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         disk_chunks = []  # List of parquet files written to disk
         disk_chunk_dir = Path(output_path) / "_temp_chunks"
         disk_chunk_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Using disk-backed storage: will flush to disk every {merge_frequency} batches")
+        print(f"Using disk-backed storage: will flush to disk every {merge_frequency} batches OR when memory exceeds 12 GB")
         print(f"Temp directory: {disk_chunk_dir}")
     elif estimated_memory_gb <= memory_threshold_gb:
         print(f"\nUsing LIST-APPEND (dataset small: {estimated_rows:,} rows, ~{estimated_memory_gb:.2f} GB)")
@@ -1504,7 +1504,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         disk_chunks = []  # List of parquet files written to disk
         disk_chunk_dir = Path(output_path) / "_temp_chunks"
         disk_chunk_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Using disk-backed storage: will flush to disk every {merge_frequency} batches")
+        print(f"Using disk-backed storage: will flush to disk every {merge_frequency} batches OR when memory exceeds 12 GB")
         print(f"Temp directory: {disk_chunk_dir}")
     
     total_kernel_duration = 0
@@ -1768,48 +1768,57 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                     agg_method = "pandas (CPU-optimized with pre-sort)"
                 logger.info(f"    Aggregated to {len(batch_agg):,} rows using {agg_method}: {agg_time:.3f}s")
                 
-                # Periodic merge to prevent dictionary/list bloat (only if enabled)
-                if merge_frequency is not None and len(aggregated_batches) >= merge_frequency:
-                    merge_start = datetime.now()
-                    logger.info(f"    [PERIODIC FLUSH] Merging {len(aggregated_batches)} batches and flushing to disk...")
-                    
-                    # Concatenate accumulated batches
-                    temp_merged = pd.concat(aggregated_batches, ignore_index=True)
-                    
-                    # OPTIMIZED Group by to consolidate (handles overlapping keys)
-                    logger.info(f"      Consolidating {len(temp_merged):,} rows...")
-                    
-                    if HAS_CUDF and len(temp_merged) > 100000:
-                        # Use cuDF for large merges (GPU-accelerated)
-                        logger.info(f"      Using cuDF GPU groupby for large merge...")
-                        gdf_merge = cudf.DataFrame.from_pandas(temp_merged)
-                        merged_gdf = gdf_merge.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-                        chunk_result = merged_gdf.to_pandas()
-                        del gdf_merge, merged_gdf
-                    else:
-                        # Optimized pandas: sort first for faster groupby
-                        temp_merged.sort_values(group_cols, inplace=True)
-                        chunk_result = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-                    
-                    # Write to disk as parquet (compressed, efficient)
-                    chunk_idx = len(disk_chunks)
-                    chunk_file = disk_chunk_dir / f"chunk_{chunk_idx:04d}.parquet"
-                    chunk_result.to_parquet(chunk_file, compression='snappy', index=False)
-                    disk_chunks.append(chunk_file)
-                    chunk_size_mb = chunk_file.stat().st_size / 1024**2
-                    logger.info(f"      Written chunk {chunk_idx} to disk: {len(chunk_result):,} rows, {chunk_size_mb:.1f} MB")
-                    
-                    # Clear accumulated batches and merged result to FREE MEMORY
-                    aggregated_batches.clear()
-                    del temp_merged, chunk_result
-                    if merged_result is not None:
-                        del merged_result
-                        merged_result = None
-                    gc.collect()
-                    
-                    merge_time = (datetime.now() - merge_start).total_seconds()
-                    mem_after_flush = process.memory_info().rss / 1024**3
-                    logger.info(f"    [PERIODIC FLUSH] Completed in {merge_time:.2f}s, freed memory (now {mem_after_flush:.2f} GB)")
+                # Check current memory usage for adaptive flushing
+                current_mem_gb = process.memory_info().rss / 1024**3
+                memory_threshold_gb = 12.0  # Flush if memory exceeds 12 GB
+                should_flush_memory = current_mem_gb >= memory_threshold_gb
+                should_flush_count = merge_frequency is not None and len(aggregated_batches) >= merge_frequency
+                
+                # Flush to disk if memory threshold reached OR batch count reached
+                if should_flush_memory or should_flush_count:
+                    if should_flush_memory:
+                        logger.info(f"    [MEMORY THRESHOLD] Current memory {current_mem_gb:.2f} GB >= {memory_threshold_gb:.2f} GB, flushing early!")
+                    if len(aggregated_batches) > 0:
+                        merge_start = datetime.now()
+                        logger.info(f"    [PERIODIC FLUSH] Merging {len(aggregated_batches)} batches and flushing to disk...")
+                        
+                        # Concatenate accumulated batches
+                        temp_merged = pd.concat(aggregated_batches, ignore_index=True)
+                        
+                        # OPTIMIZED Group by to consolidate (handles overlapping keys)
+                        logger.info(f"      Consolidating {len(temp_merged):,} rows...")
+                        
+                        if HAS_CUDF and len(temp_merged) > 100000:
+                            # Use cuDF for large merges (GPU-accelerated)
+                            logger.info(f"      Using cuDF GPU groupby for large merge...")
+                            gdf_merge = cudf.DataFrame.from_pandas(temp_merged)
+                            merged_gdf = gdf_merge.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+                            chunk_result = merged_gdf.to_pandas()
+                            del gdf_merge, merged_gdf
+                        else:
+                            # Optimized pandas: sort first for faster groupby
+                            temp_merged.sort_values(group_cols, inplace=True)
+                            chunk_result = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+                        
+                        # Write to disk as parquet (compressed, efficient)
+                        chunk_idx = len(disk_chunks)
+                        chunk_file = disk_chunk_dir / f"chunk_{chunk_idx:04d}.parquet"
+                        chunk_result.to_parquet(chunk_file, compression='snappy', index=False)
+                        disk_chunks.append(chunk_file)
+                        chunk_size_mb = chunk_file.stat().st_size / 1024**2
+                        logger.info(f"      Written chunk {chunk_idx} to disk: {len(chunk_result):,} rows, {chunk_size_mb:.1f} MB")
+                        
+                        # Clear accumulated batches and merged result to FREE MEMORY
+                        aggregated_batches.clear()
+                        del temp_merged, chunk_result
+                        if merged_result is not None:
+                            del merged_result
+                            merged_result = None
+                        gc.collect()
+                        
+                        merge_time = (datetime.now() - merge_start).total_seconds()
+                        mem_after_flush = process.memory_info().rss / 1024**3
+                        logger.info(f"    [PERIODIC FLUSH] Completed in {merge_time:.2f}s, freed memory (now {mem_after_flush:.2f} GB)")
                 
                 # Free raw data immediately
                 del valid_data
