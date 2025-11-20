@@ -1391,14 +1391,29 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
 
     static_mem_usage = sum(table.nbytes for table in lookup_tables)
     gpu = cuda.get_current_device()
-    free_mem, total_mem = cuda.current_context().get_memory_info()
-    safety_margin = 0.95
-    available_mem_for_dynamic_data = (free_mem - static_mem_usage) * safety_margin
-
-    print(f"  Total GPU Memory: {total_mem / 1024 ** 3:.2f} GB")
-    print(f"  Free GPU Memory: {free_mem / 1024 ** 3:.2f} GB")
-    print(f"  Static Lookup Tables Size: {static_mem_usage / 1024 ** 3:.2f} GB")
-    print(f"  Available Memory for Batches: {available_mem_for_dynamic_data / 1024 ** 3:.2f} GB")
+    
+    # Try to get memory info - may not work with RMM allocator
+    try:
+        free_mem, total_mem = cuda.current_context().get_memory_info()
+        safety_margin = 0.95
+        available_mem_for_dynamic_data = (free_mem - static_mem_usage) * safety_margin
+        
+        print(f"  Total GPU Memory: {total_mem / 1024 ** 3:.2f} GB")
+        print(f"  Free GPU Memory: {free_mem / 1024 ** 3:.2f} GB")
+        print(f"  Static Lookup Tables Size: {static_mem_usage / 1024 ** 3:.2f} GB")
+        print(f"  Available Memory for Batches: {available_mem_for_dynamic_data / 1024 ** 3:.2f} GB")
+    except NotImplementedError:
+        # RMM allocator doesn't support get_memory_info() - use estimated memory
+        # Assume ~16GB total memory for RTX 4000 Ada, use conservative estimate
+        estimated_total_mem = 16 * 1024**3  # 16 GB
+        estimated_free_mem = estimated_total_mem * 0.8  # Assume 80% available
+        safety_margin = 0.8  # More conservative when estimating
+        available_mem_for_dynamic_data = (estimated_free_mem - static_mem_usage) * safety_margin
+        
+        print(f"  GPU Memory: Information not available (using RMM allocator)")
+        print(f"  Estimated Total Memory: {estimated_total_mem / 1024 ** 3:.2f} GB")
+        print(f"  Static Lookup Tables Size: {static_mem_usage / 1024 ** 3:.2f} GB")
+        print(f"  Estimated Available Memory for Batches: {available_mem_for_dynamic_data / 1024 ** 3:.2f} GB")
 
     max_timesteps = (nb_an_projection + 1) * CONFIG['FREQ_EVAL']
     n_output_fields = 40
