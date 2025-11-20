@@ -1482,8 +1482,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"Data reduction: {nb_scenarios}x fewer rows (scenario-averaged)")
         use_incremental = True
         aggregated_batches = []  # List to accumulate batch DataFrames
-        merge_frequency = 1  # Merge after EVERY batch to prevent any accumulation
+        merge_frequency = 5  # Merge and flush to disk every 5 batches
         merged_result = None  # Holds periodically merged data
+        disk_chunks = []  # List of parquet files written to disk
+        disk_chunk_dir = Path(output_path) / "_temp_chunks"
+        disk_chunk_dir.mkdir(exist_ok=True)
+        print(f"Using disk-backed storage: will flush to disk every {merge_frequency} batches")
+        print(f"Temp directory: {disk_chunk_dir}")
     elif estimated_memory_gb <= memory_threshold_gb:
         print(f"\nUsing LIST-APPEND (dataset small: {estimated_rows:,} rows, ~{estimated_memory_gb:.2f} GB)")
         print(f"Will store batches in list, then concatenate once at end (avoids slow array growth)")
@@ -1494,8 +1499,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"Forcing incremental aggregation to avoid memory issues")
         use_incremental = True
         aggregated_batches = []
-        merge_frequency = 1  # Merge after EVERY batch to prevent any accumulation
+        merge_frequency = 5  # Merge and flush to disk every 5 batches
         merged_result = None
+        disk_chunks = []  # List of parquet files written to disk
+        disk_chunk_dir = Path(output_path) / "_temp_chunks"
+        disk_chunk_dir.mkdir(exist_ok=True)
+        print(f"Using disk-backed storage: will flush to disk every {merge_frequency} batches")
+        print(f"Temp directory: {disk_chunk_dir}")
     
     total_kernel_duration = 0
     total_transfer_duration = 0
@@ -1761,14 +1771,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 # Periodic merge to prevent dictionary/list bloat (only if enabled)
                 if merge_frequency is not None and len(aggregated_batches) >= merge_frequency:
                     merge_start = datetime.now()
-                    logger.info(f"    [PERIODIC MERGE] Merging {len(aggregated_batches)} batches...")
+                    logger.info(f"    [PERIODIC FLUSH] Merging {len(aggregated_batches)} batches and flushing to disk...")
                     
                     # Concatenate accumulated batches
                     temp_merged = pd.concat(aggregated_batches, ignore_index=True)
-                    
-                    # If we have previous merged data, combine with it
-                    if merged_result is not None:
-                        temp_merged = pd.concat([merged_result, temp_merged], ignore_index=True)
                     
                     # OPTIMIZED Group by to consolidate (handles overlapping keys)
                     logger.info(f"      Consolidating {len(temp_merged):,} rows...")
@@ -1778,20 +1784,32 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                         logger.info(f"      Using cuDF GPU groupby for large merge...")
                         gdf_merge = cudf.DataFrame.from_pandas(temp_merged)
                         merged_gdf = gdf_merge.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
-                        merged_result = merged_gdf.to_pandas()
+                        chunk_result = merged_gdf.to_pandas()
                         del gdf_merge, merged_gdf
                     else:
                         # Optimized pandas: sort first for faster groupby
                         temp_merged.sort_values(group_cols, inplace=True)
-                        merged_result = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+                        chunk_result = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
                     
-                    # Clear accumulated batches
+                    # Write to disk as parquet (compressed, efficient)
+                    chunk_idx = len(disk_chunks)
+                    chunk_file = disk_chunk_dir / f"chunk_{chunk_idx:04d}.parquet"
+                    chunk_result.to_parquet(chunk_file, compression='snappy', index=False)
+                    disk_chunks.append(chunk_file)
+                    chunk_size_mb = chunk_file.stat().st_size / 1024**2
+                    logger.info(f"      Written chunk {chunk_idx} to disk: {len(chunk_result):,} rows, {chunk_size_mb:.1f} MB")
+                    
+                    # Clear accumulated batches and merged result to FREE MEMORY
                     aggregated_batches.clear()
-                    del temp_merged
+                    del temp_merged, chunk_result
+                    if merged_result is not None:
+                        del merged_result
+                        merged_result = None
                     gc.collect()
                     
                     merge_time = (datetime.now() - merge_start).total_seconds()
-                    logger.info(f"    [PERIODIC MERGE] Completed in {merge_time:.2f}s, now {len(merged_result):,} rows")
+                    mem_after_flush = process.memory_info().rss / 1024**3
+                    logger.info(f"    [PERIODIC FLUSH] Completed in {merge_time:.2f}s, freed memory (now {mem_after_flush:.2f} GB)")
                 
                 # Free raw data immediately
                 del valid_data
@@ -1839,32 +1857,79 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print("="*60)
     
     if use_incremental:
-        # Final merge of any remaining batches
-        print(f"\nFinal merge: {len(aggregated_batches)} remaining batches")
+        # Final merge: combine disk chunks + any remaining in-memory batches
+        print(f"\nFinal merge: {len(disk_chunks)} disk chunks + {len(aggregated_batches)} remaining batches")
         merge_start = datetime.now()
         
+        # List to hold all chunk DataFrames
+        all_chunks = []
+        
+        # 1. Read all disk chunks
+        if len(disk_chunks) > 0:
+            print(f"  Reading {len(disk_chunks)} disk chunks...")
+            for chunk_file in disk_chunks:
+                chunk_df = pd.read_parquet(chunk_file)
+                all_chunks.append(chunk_df)
+                print(f"    Read {chunk_file.name}: {len(chunk_df):,} rows")
+        
+        # 2. Process any remaining in-memory batches
         if len(aggregated_batches) > 0:
-            # Concatenate remaining batches
+            print(f"  Processing {len(aggregated_batches)} remaining in-memory batches...")
             temp_merged = pd.concat(aggregated_batches, ignore_index=True)
             
-            # Combine with periodically merged data if it exists
-            if merged_result is not None:
-                print(f"  Combining with {len(merged_result):,} previously merged rows...")
-                temp_merged = pd.concat([merged_result, temp_merged], ignore_index=True)
-            
-            # Final groupby to consolidate (scenarios already averaged in batches)
+            # Group by to consolidate
             group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
             value_cols = [col for col in temp_merged.columns if col not in group_cols + ['SCN_EVAL']]
-            calculs_sommaire = temp_merged.groupby(group_cols, as_index=False)[value_cols].mean()
             
-            del aggregated_batches
-            del temp_merged
-            del merged_result
+            if HAS_CUDF and len(temp_merged) > 100000:
+                logger.info(f"      Using cuDF GPU groupby for final batches...")
+                gdf_merge = cudf.DataFrame.from_pandas(temp_merged)
+                merged_gdf = gdf_merge.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+                final_batch = merged_gdf.to_pandas()
+                del gdf_merge, merged_gdf
+            else:
+                temp_merged.sort_values(group_cols, inplace=True)
+                final_batch = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+            
+            all_chunks.append(final_batch)
+            del aggregated_batches, temp_merged, final_batch
             gc.collect()
+        
+        # 3. Final merge of all chunks
+        if len(all_chunks) == 0:
+            print("  WARNING: No data to merge!")
+            calculs_sommaire = pd.DataFrame()
+        elif len(all_chunks) == 1:
+            print("  Single chunk, no merge needed")
+            calculs_sommaire = all_chunks[0]
         else:
-            # No remaining batches, just use the merged result
-            calculs_sommaire = merged_result
-            del merged_result
+            print(f"  Merging {len(all_chunks)} chunks into final result...")
+            combined = pd.concat(all_chunks, ignore_index=True)
+            print(f"  Combined to {len(combined):,} rows, performing final groupby...")
+            
+            # Final groupby to consolidate any overlapping keys across chunks
+            group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
+            value_cols = [col for col in combined.columns if col not in group_cols + ['SCN_EVAL']]
+            
+            if HAS_CUDF and len(combined) > 100000:
+                print(f"  Using cuDF GPU groupby for final merge...")
+                gdf_final = cudf.DataFrame.from_pandas(combined)
+                final_gdf = gdf_final.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+                calculs_sommaire = final_gdf.to_pandas()
+                del gdf_final, final_gdf
+            else:
+                combined.sort_values(group_cols, inplace=True)
+                calculs_sommaire = combined.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+            
+            del all_chunks, combined
+            gc.collect()
+        
+        # 4. Cleanup temp directory
+        if len(disk_chunks) > 0:
+            print(f"  Cleaning up {len(disk_chunks)} temporary disk chunks...")
+            for chunk_file in disk_chunks:
+                chunk_file.unlink()
+            disk_chunk_dir.rmdir()
         
         merge_time = (datetime.now() - merge_start).total_seconds()
         print(f"  Final merged to {len(calculs_sommaire):,} rows: {merge_time:.2f}s")
