@@ -9,23 +9,30 @@ from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
 import math
 
-# Set environment variable BEFORE importing cudf/numba to enable pynvjitlink features
-os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
-
 from numba import cuda
 from paths import HERE
 import argparse
 from multiprocessing import Pool, cpu_count
 
+# Import cuDF AFTER numba.cuda to avoid patching conflicts
+HAS_CUDF = False
+HAS_CUPY = False
 try:
+    # Try to import cudf without numba patching
     import cudf
     HAS_CUDF = True
-except ImportError:
+    print("✓ cuDF loaded successfully - GPU-accelerated aggregation enabled!")
+except Exception as e:
     HAS_CUDF = False
-    print("Warning: cuDF not available. GPU aggregation will fall back to pandas.")
-except RuntimeError as e:
-    HAS_CUDF = False
-    print(f"Warning: cuDF import error: {e}. GPU aggregation will fall back to pandas.")
+    print(f"⚠ cuDF not available ({type(e).__name__}). Trying CuPy fallback...")
+    
+    # Try CuPy as fallback for GPU operations
+    try:
+        import cupy as cp
+        HAS_CUPY = True
+        print("✓ CuPy loaded - Using GPU arrays for aggregation")
+    except Exception:
+        print("⚠ CuPy also not available. Using optimized pandas CPU aggregation.")
 
 # =============================================================================
 # LOGGING SETUP
@@ -1448,7 +1455,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"Data reduction: {nb_scenarios}x fewer rows (scenario-averaged)")
         use_incremental = True
         aggregated_batches = []  # List to accumulate batch DataFrames
-        merge_frequency = 2  # Merge every 2 batches to prevent memory buildup
+        # OPTIMIZATION: Set to None to skip periodic merges (fastest, but uses more memory)
+        # Set to integer to merge every N batches
+        merge_frequency = None if n_accounts <= 300000 else 20  # Skip merges for <=300k accounts
         merged_result = None  # Holds periodically merged data
     elif estimated_memory_gb <= memory_threshold_gb:
         print(f"\nUsing LIST-APPEND (dataset small: {estimated_rows:,} rows, ~{estimated_memory_gb:.2f} GB)")
@@ -1460,7 +1469,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"Forcing incremental aggregation to avoid memory issues")
         use_incremental = True
         aggregated_batches = []
-        merge_frequency = 2  # Merge every 2 batches to prevent memory buildup
+        merge_frequency = None if n_accounts <= 300000 else 20
         merged_result = None
     
     total_kernel_duration = 0
@@ -1644,19 +1653,66 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                     batch_agg = batch_agg_gdf.to_pandas()
                     
                     del gdf, batch_agg_gdf
+                elif HAS_CUPY:
+                    # Use CuPy for GPU-accelerated aggregation (middle ground)
+                    logger.info(f"    Using CuPy GPU-accelerated aggregation...")
+                    
+                    # Move data to GPU
+                    d_data = cp.asarray(valid_data)
+                    
+                    # Extract group keys (ID_COMPTE, AN_EVAL, MOIS_EVAL) - indices 0, 2, 3
+                    group_keys = d_data[:, [0, 2, 3]].astype(cp.int32)
+                    
+                    # Use pandas for grouping logic but on smaller dataset
+                    group_df = pd.DataFrame(cp.asnumpy(group_keys), columns=['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL'])
+                    
+                    # Get unique groups and create aggregation indices
+                    unique_groups, inverse_indices = cp.unique(
+                        group_keys.view([('', group_keys.dtype)] * 3), 
+                        return_inverse=True
+                    )
+                    
+                    # Aggregate on GPU for each column
+                    n_groups = len(cp.unique(inverse_indices))
+                    n_value_cols = valid_data.shape[1] - 1  # Exclude SCN_EVAL
+                    aggregated_values = cp.zeros((n_groups, n_value_cols), dtype=cp.float32)
+                    
+                    # Simple GPU mean using reduceat
+                    for col_idx in range(valid_data.shape[1]):
+                        if col_idx == 1:  # Skip SCN_EVAL
+                            continue
+                        out_idx = col_idx if col_idx == 0 else col_idx - 1
+                        cp.add.reduceat(d_data[:, col_idx], cp.asnumpy(inverse_indices), out=aggregated_values[:, out_idx])
+                    
+                    # Convert back to CPU
+                    aggregated_cpu = cp.asnumpy(aggregated_values)
+                    unique_groups_cpu = cp.asnumpy(unique_groups)
+                    
+                    # Create DataFrame
+                    batch_agg = pd.DataFrame(
+                        np.hstack([unique_groups_cpu.view(cp.int32).reshape(-1, 3), aggregated_cpu]),
+                        columns=columns[:1] + columns[2:]  # Skip SCN_EVAL
+                    )
+                    
+                    del d_data, group_keys
                 else:
-                    # Fallback to pandas (CPU)
-                    logger.info(f"    Using pandas groupby (cuDF not available)...")
+                    # OPTIMIZED pandas fallback (CPU but faster)
+                    logger.info(f"    Using optimized pandas groupby (cuDF not available)...")
                     batch_df = pd.DataFrame(valid_data, columns=columns)
                     
-                    # Convert ID columns to int
-                    batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
-                        batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
+                    # OPTIMIZATION 1: Convert ID columns to int32 (smaller, faster)
+                    batch_df['ID_COMPTE'] = batch_df['ID_COMPTE'].astype(np.int32)
+                    batch_df['SCN_EVAL'] = batch_df['SCN_EVAL'].astype(np.int32)
+                    batch_df['AN_EVAL'] = batch_df['AN_EVAL'].astype(np.int32)
+                    batch_df['MOIS_EVAL'] = batch_df['MOIS_EVAL'].astype(np.int32)
                     
-                    # Group by account and time
+                    # OPTIMIZATION 2: Sort by group columns first (makes groupby much faster)
                     group_cols = ['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']
+                    batch_df.sort_values(group_cols, inplace=True)
+                    
+                    # OPTIMIZATION 3: Use observed=True to skip empty groups
                     value_cols = [col for col in columns if col not in group_cols + ['SCN_EVAL']]
-                    batch_agg = batch_df.groupby(group_cols, as_index=False)[value_cols].mean()
+                    batch_agg = batch_df.groupby(group_cols, as_index=False, sort=False, observed=True)[value_cols].mean()
                     
                     del batch_df
                 
@@ -1664,11 +1720,16 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 aggregated_batches.append(batch_agg)
                 
                 agg_time = (datetime.now() - agg_start).total_seconds()
-                agg_method = "cuDF (GPU)" if HAS_CUDF else "pandas (CPU)"
+                if HAS_CUDF:
+                    agg_method = "cuDF (GPU)"
+                elif HAS_CUPY:
+                    agg_method = "CuPy (GPU)"
+                else:
+                    agg_method = "pandas (CPU-optimized)"
                 logger.info(f"    Aggregated to {len(batch_agg):,} rows using {agg_method}: {agg_time:.3f}s")
                 
-                # Periodic merge to prevent dictionary/list bloat
-                if len(aggregated_batches) >= merge_frequency:
+                # Periodic merge to prevent dictionary/list bloat (only if enabled)
+                if merge_frequency is not None and len(aggregated_batches) >= merge_frequency:
                     merge_start = datetime.now()
                     logger.info(f"    [PERIODIC MERGE] Merging {len(aggregated_batches)} batches...")
                     
@@ -1679,8 +1740,20 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                     if merged_result is not None:
                         temp_merged = pd.concat([merged_result, temp_merged], ignore_index=True)
                     
-                    # Group by to consolidate (handles overlapping keys)
-                    merged_result = temp_merged.groupby(group_cols, as_index=False)[value_cols].mean()
+                    # OPTIMIZED Group by to consolidate (handles overlapping keys)
+                    logger.info(f"      Consolidating {len(temp_merged):,} rows...")
+                    
+                    if HAS_CUDF and len(temp_merged) > 100000:
+                        # Use cuDF for large merges (GPU-accelerated)
+                        logger.info(f"      Using cuDF GPU groupby for large merge...")
+                        gdf_merge = cudf.DataFrame.from_pandas(temp_merged)
+                        merged_gdf = gdf_merge.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
+                        merged_result = merged_gdf.to_pandas()
+                        del gdf_merge, merged_gdf
+                    else:
+                        # Optimized pandas: sort first for faster groupby
+                        temp_merged.sort_values(group_cols, inplace=True)
+                        merged_result = temp_merged.groupby(group_cols, as_index=False, sort=False)[value_cols].mean()
                     
                     # Clear accumulated batches
                     aggregated_batches.clear()
