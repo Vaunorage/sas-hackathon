@@ -1,5 +1,6 @@
 import os
-
+from numba import config
+config.CUDA_ENABLE_PYNVJITLINK = 1
 os.environ['RAPIDS_NO_INITIALIZE'] = '1'
 
 import pandas as pd
