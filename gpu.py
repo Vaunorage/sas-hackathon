@@ -1482,9 +1482,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"Data reduction: {nb_scenarios}x fewer rows (scenario-averaged)")
         use_incremental = True
         aggregated_batches = []  # List to accumulate batch DataFrames
-        # OPTIMIZATION: Set to None to skip periodic merges (fastest, but uses more memory)
-        # Set to integer to merge every N batches
-        merge_frequency = 10  # Merge every 10 batches to prevent memory bloat
+        merge_frequency = 3  # Merge every 5 batches to keep memory tight
         merged_result = None  # Holds periodically merged data
     elif estimated_memory_gb <= memory_threshold_gb:
         print(f"\nUsing LIST-APPEND (dataset small: {estimated_rows:,} rows, ~{estimated_memory_gb:.2f} GB)")
@@ -1496,7 +1494,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         print(f"Forcing incremental aggregation to avoid memory issues")
         use_incremental = True
         aggregated_batches = []
-        merge_frequency = 10  # Merge every 10 batches to prevent memory bloat
+        merge_frequency = 3  # Merge every 5 batches to keep memory tight
         merged_result = None
     
     total_kernel_duration = 0
