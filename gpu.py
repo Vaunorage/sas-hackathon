@@ -1,7 +1,7 @@
 import os
 # Set environment variables BEFORE importing numba/cudf
 os.environ['RAPIDS_NO_INITIALIZE'] = '1'
-# Skip pynvjitlink env var - patches already included in numba_cuda
+os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
 
 import pandas as pd
 import numpy as np
