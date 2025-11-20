@@ -12,16 +12,10 @@ import math
 # Set environment variable BEFORE importing cudf/numba to enable pynvjitlink features
 os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
 
-from numba import cuda
-from paths import HERE
-import argparse
-from multiprocessing import Pool, cpu_count
-
-# Import cuDF AFTER numba.cuda to avoid patching conflicts
+# Import cuDF BEFORE numba.cuda to allow cuDF to set up numba properly
 HAS_CUDF = False
 HAS_CUPY = False
 try:
-    # Try to import cudf without numba patching
     import cudf
     HAS_CUDF = True
     print("✓ cuDF loaded successfully - GPU-accelerated aggregation enabled!")
@@ -38,6 +32,12 @@ except Exception as e:
         print("✓ CuPy loaded - Using GPU arrays for aggregation")
     except Exception:
         print("⚠ CuPy also not available. Using optimized pandas CPU aggregation.")
+
+# Import numba AFTER cuDF
+from numba import cuda
+from paths import HERE
+import argparse
+from multiprocessing import Pool, cpu_count
 
 # =============================================================================
 # LOGGING SETUP
