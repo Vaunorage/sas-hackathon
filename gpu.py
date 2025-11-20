@@ -1,16 +1,16 @@
+import os
+
+os.environ['RAPIDS_NO_INITIALIZE'] = '1'
+
 import pandas as pd
 import numpy as np
 import gc
 import psutil
-import os
 import logging
 from pathlib import Path
 from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
 import math
-
-# Disable cuDF's numba patching since numba already has pynvjitlink built-in
-os.environ['RAPIDS_NO_INITIALIZE'] = '1'
 
 # Import cuDF BEFORE numba.cuda
 HAS_CUDF = False
