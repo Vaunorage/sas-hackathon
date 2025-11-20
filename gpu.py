@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
 import math
+
+# Set environment variable BEFORE importing cudf to avoid numba patching conflict
+os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '0'
+
 from numba import cuda
 from paths import HERE
 import argparse
@@ -19,6 +23,9 @@ try:
 except ImportError:
     HAS_CUDF = False
     print("Warning: cuDF not available. GPU aggregation will fall back to pandas.")
+except RuntimeError as e:
+    HAS_CUDF = False
+    print(f"Warning: cuDF import error: {e}. GPU aggregation will fall back to pandas.")
 
 # =============================================================================
 # LOGGING SETUP
