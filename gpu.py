@@ -1758,6 +1758,20 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             # Filter on GPU (MUCH faster than CPU!)
             filter_start = datetime.now()
             gpu_df = gpu_df[gpu_df['ID_COMPTE'] > 0]
+            
+            # OPTIMIZATION: In debug mode, filter to only the specific account ON GPU before transfer!
+            if debug_account is not None:
+                # Check if debug account is in this batch
+                batch_start_account = start_idx + 1  # Account IDs start at 1
+                batch_end_account = end_idx
+                if batch_start_account <= debug_account <= batch_end_account:
+                    logger.info(f"    Debug mode: Filtering to account {debug_account} on GPU...")
+                    gpu_df = gpu_df[gpu_df['ID_COMPTE'] == debug_account]
+                    logger.info(f"    Kept only account {debug_account} data: {len(gpu_df):,} rows")
+                else:
+                    logger.info(f"    Debug mode: Account {debug_account} not in this batch, skipping transfer...")
+                    gpu_df = gpu_df.iloc[:0]  # Empty dataframe
+            
             num_rows = len(gpu_df)
             filter_time = (datetime.now() - filter_start).total_seconds()
             logger.info(f"    Filtered on GPU to {num_rows:,} valid rows: {filter_time:.3f}s")
@@ -1827,9 +1841,19 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 del cpu_data
                 gc.collect()  # Immediate cleanup
                 
-                # OPTIMIZATION: In production mode (no debug), only keep VP columns aggregated per account
-                # This reduces data from ~600 rows per account to 1 row per account (600x reduction!)
-                if debug_account is None:
+                # OPTIMIZATION: Filter by mode
+                if debug_account is not None:
+                    # Debug mode: Only keep the specific account's data
+                    batch_start_account = start_idx + 1  # Account IDs start at 1
+                    batch_end_account = end_idx
+                    if batch_start_account <= debug_account <= batch_end_account:
+                        logger.info(f"    Debug mode: Filtering to account {debug_account}...")
+                        df = df[df['ID_COMPTE'] == debug_account]
+                        logger.info(f"    Kept only account {debug_account} data: {len(df):,} rows")
+                    else:
+                        logger.info(f"    Debug mode: Account {debug_account} not in this batch, skipping write...")
+                        df = df.iloc[:0]  # Empty dataframe
+                elif debug_account is None:
                     logger.info(f"    Production mode: Aggregating to VP-only summary (1 row per account)...")
                     vp_columns = [col for col in df.columns if col.startswith('VP_')]
                     df = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
@@ -1944,9 +1968,19 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 # Drop SCN_EVAL column (always 0 after kernel aggregation)
                 df = df.drop(columns=['SCN_EVAL'])
                 
-                # OPTIMIZATION: In production mode (no debug), only keep VP columns aggregated per account
-                # This reduces data from ~600 rows per account to 1 row per account (600x reduction!)
-                if debug_account is None:
+                # OPTIMIZATION: Filter by mode
+                if debug_account is not None:
+                    # Debug mode: Only keep the specific account's data
+                    batch_start_account = start_idx + 1  # Account IDs start at 1
+                    batch_end_account = end_idx
+                    if batch_start_account <= debug_account <= batch_end_account:
+                        logger.info(f"      Debug mode: Filtering to account {debug_account}...")
+                        df = df[df['ID_COMPTE'] == debug_account]
+                        logger.info(f"      Kept only account {debug_account} data: {len(df):,} rows")
+                    else:
+                        logger.info(f"      Debug mode: Account {debug_account} not in this batch, skipping write...")
+                        df = df.iloc[:0]  # Empty dataframe
+                elif debug_account is None:
                     logger.info(f"      Production mode: Aggregating to VP-only summary (1 row per account)...")
                     vp_columns = [col for col in df.columns if col.startswith('VP_')]
                     agg_dict = {col: 'sum' for col in vp_columns}
