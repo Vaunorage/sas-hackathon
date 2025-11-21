@@ -1710,8 +1710,15 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         divide_start = datetime.now()
         logger.info(f"  Computing scenario averages (dividing by {nb_scenarios})...")
         # Divide only value columns (4-39), not ID fields (0-3)
-        # DeviceNDArray doesn't support /=, so we use explicit assignment
-        d_batch_output[:, :, 4:] = d_batch_output[:, :, 4:] / nb_scenarios
+        # Convert to CuPy array for element-wise operations (zero-copy via __cuda_array_interface__)
+        if CUDF_AVAILABLE:
+            cupy_batch = cp.asarray(d_batch_output)
+            cupy_batch[:, :, 4:] = cupy_batch[:, :, 4:] / float(nb_scenarios)
+            # cupy_batch and d_batch_output share the same memory - no copy needed!
+            del cupy_batch
+        else:
+            # CPU fallback: will divide after transfer
+            pass
         cuda.synchronize()
         divide_time = (datetime.now() - divide_start).total_seconds()
         logger.info(f"    Division complete: {divide_time:.3f}s")
@@ -1872,6 +1879,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             transfer_from_gpu = (transfer_back_end - transfer_back_start).total_seconds()
             total_transfer_duration += transfer_to_gpu + transfer_from_gpu
             logger.info(f"  Transfer from GPU: {transfer_from_gpu:.2f} seconds")
+            
+            # Divide by n_scenarios on CPU (since we skipped it on GPU for CPU path)
+            logger.info(f"  Computing scenario averages (dividing by {nb_scenarios})...")
+            h_batch_output[:, :, 4:] = h_batch_output[:, :, 4:] / float(nb_scenarios)
             
             logger.info("  Extracting valid results...")
             
