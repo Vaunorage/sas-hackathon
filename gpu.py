@@ -1654,7 +1654,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 h_batch_output = np.zeros((current_batch_size, max_timesteps, n_output_fields), dtype=np.float32)
         else:
             h_batch_output = np.zeros((current_batch_size, max_timesteps, n_output_fields), dtype=np.float32)
-        logger.info(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB (100x smaller - scenarios aggregated in kernel!)")
+        logger.info(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB ")
 
         # 3. Copy batch data to GPU (async with stream)
         transfer_start = datetime.now()
