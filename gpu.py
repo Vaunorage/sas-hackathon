@@ -16,12 +16,21 @@ import tempfile
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+# Try to import cuDF for GPU-accelerated DataFrame operations
+try:
+    import cudf
+    CUDF_AVAILABLE = True
+    print("✓ CuDF available - using GPU-accelerated DataFrame operations")
+except ImportError:
+    CUDF_AVAILABLE = False
+    print("⚠ CuDF not available - falling back to pandas (CPU). Install with: pip install cudf-cu12")
+
 # GPU memory cleanup helper
 def force_gpu_memory_cleanup():
     """Force GPU memory cleanup by running garbage collection"""
     gc.collect()
 
-# Async parquet writer
+# Async parquet writer (Arrow version - kept for compatibility)
 def write_parquet_async(arrow_table, parquet_path, batch_num, num_rows):
     """Write parquet file asynchronously with optimized settings.
     
@@ -41,6 +50,53 @@ def write_parquet_async(arrow_table, parquet_path, batch_num, num_rows):
         compression='lz4',  # Faster than snappy
         use_dictionary=False,
         write_statistics=False
+    )
+    write_time = (datetime.now() - write_start).total_seconds()
+    file_size_mb = parquet_path.stat().st_size / 1024**2
+    return batch_num, file_size_mb, num_rows, write_time
+
+# Async parquet writer (pandas version - MUCH faster for NumPy arrays)
+def write_parquet_async_pandas(df, parquet_path, batch_num, num_rows):
+    """Write parquet file from pandas DataFrame asynchronously.
+    
+    Args:
+        df: Pandas DataFrame to write
+        parquet_path: Path to output file
+        batch_num: Batch number for logging
+        num_rows: Number of rows for logging
+        
+    Returns:
+        Tuple of (batch_num, file_size_mb, num_rows, write_time)
+    """
+    write_start = datetime.now()
+    df.to_parquet(
+        parquet_path,
+        engine='pyarrow',
+        compression='lz4',
+        index=False
+    )
+    write_time = (datetime.now() - write_start).total_seconds()
+    file_size_mb = parquet_path.stat().st_size / 1024**2
+    return batch_num, file_size_mb, num_rows, write_time
+
+# Async parquet writer (cuDF version - GPU-accelerated, FASTEST!)
+def write_parquet_async_cudf(gpu_df, parquet_path, batch_num, num_rows):
+    """Write parquet file from cuDF DataFrame asynchronously.
+    
+    Args:
+        gpu_df: cuDF GPU DataFrame to write
+        parquet_path: Path to output file
+        batch_num: Batch number for logging
+        num_rows: Number of rows for logging
+        
+    Returns:
+        Tuple of (batch_num, file_size_mb, num_rows, write_time)
+    """
+    write_start = datetime.now()
+    gpu_df.to_parquet(
+        parquet_path,
+        compression='lz4',
+        index=False
     )
     write_time = (datetime.now() - write_start).total_seconds()
     file_size_mb = parquet_path.stat().st_size / 1024**2
@@ -1508,7 +1564,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     ]
     
     print(f"Parquet directory: {parquet_dir}")
-    print(f"Parquet writes with LZ4 compression + async I/O (optimized)")
+    if CUDF_AVAILABLE:
+        print(f"Using cuDF (GPU) DataFrame + LZ4 compression + async I/O (MAXIMUM SPEED)")
+    else:
+        print(f"Using pandas (CPU) DataFrame + LZ4 compression + async I/O (ultra-optimized)")
     
     # Create thread pool for async parquet writes
     parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -1598,121 +1657,152 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         total_kernel_duration += kernel_duration
         logger.info(f"  Kernel execution for batch finished in: {kernel_duration:.2f} seconds")
 
-        # 6. Copy results back from GPU (async with stream)
-        transfer_back_start = datetime.now()
-        logger.info("  Copying batch results from GPU...")
-        d_batch_output.copy_to_host(h_batch_output, stream=stream_compute)
-        stream_compute.synchronize()
-        transfer_back_end = datetime.now()
-        transfer_from_gpu = (transfer_back_end - transfer_back_start).total_seconds()
-        total_transfer_duration += transfer_to_gpu + transfer_from_gpu
-        logger.info(f"  Transfer from GPU: {transfer_from_gpu:.2f} seconds")
-
-        # 7. Extract valid results
+        # 6. Process results - GPU path (cuDF) or CPU path (pandas)
         cpu_proc_start = datetime.now()
-        logger.info("  Extracting valid results...")
-        
         process = psutil.Process(os.getpid())
-        mem_before = process.memory_info().rss / 1024**3
         
-        # Reshape directly from pinned memory (no copy needed!)
-        # Pinned memory arrays are already NumPy-compatible
-        reshape_start = datetime.now()
-        total_rows = current_batch_size * nb_scenarios * max_timesteps
-        reshaped = h_batch_output.reshape(total_rows, n_output_fields)
-        reshape_time = (datetime.now() - reshape_start).total_seconds()
-        logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s (zero-copy from pinned memory)")
-        
-        # Extract valid rows - OPTIMIZED with boolean indexing
-        extract_start = datetime.now()
-        logger.info(f"    Creating valid mask for {total_rows:,} rows...")
-        valid_mask = reshaped[:, 0] > 0
-        mask_time = (datetime.now() - extract_start).total_seconds()
-        logger.info(f"    Mask created: {mask_time:.3f}s")
-        
-        n_valid = np.sum(valid_mask)
-        logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
-        
-        if n_valid > 0:
-            logger.info(f"    Extracting {n_valid:,} valid rows...")
-            compress_start = datetime.now()
-            # Use boolean indexing instead of compress - much faster!
-            valid_data = reshaped[valid_mask]
-            compress_time = (datetime.now() - compress_start).total_seconds()
-            extract_time = (datetime.now() - extract_start).total_seconds()
-            mem_after_extract = process.memory_info().rss / 1024**3
-            logger.info(f"    Extract: {extract_time:.3f}s (compress: {compress_time:.3f}s), mem: +{mem_after_extract - mem_before:.2f} GB")
-            del valid_mask
-        else:
-            valid_data = None
-        
-        # Free the large reshaped array and pinned memory as soon as possible
-        # (keep valid_data for Arrow processing)
-        if n_valid > 0:
-            # FREE LARGE ARRAYS IMMEDIATELY to prevent fragmentation
-            free_start = datetime.now()
-            del h_batch_output  # Free pinned memory
-            del reshaped
-            gc.collect()  # Immediate GC to reduce fragmentation
-            free_time = (datetime.now() - free_start).total_seconds()
-            mem_after_free = process.memory_info().rss / 1024**3
-            logger.info(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
-        else:
-            # No valid data - just clean up
-            del h_batch_output
-            del reshaped
-        
-        if valid_data is not None and n_valid > 0:
+        if CUDF_AVAILABLE:
+            # ===== GPU-ACCELERATED PATH (cuDF) =====
+            logger.info("  Processing results on GPU with cuDF...")
             
-            # Prepare Arrow table with optimized zero-copy and explicit types
+            # Reshape GPU array directly (stays on GPU!)
+            reshape_start = datetime.now()
+            total_rows = current_batch_size * nb_scenarios * max_timesteps
+            d_batch_reshaped = d_batch_output.reshape(total_rows, n_output_fields)
+            reshape_time = (datetime.now() - reshape_start).total_seconds()
+            logger.info(f"    Reshape on GPU: {reshape_time:.3f}s")
+            
+            # Create cuDF DataFrame directly from GPU memory (NO CPU TRANSFER!)
             prep_start = datetime.now()
-            num_rows = len(valid_data)
-            logger.info(f"    Preparing Arrow table for {num_rows:,} rows...")
+            logger.info(f"    Creating cuDF DataFrame from GPU array...")
             
-            # Convert ID columns to int32 in-place (very fast on NumPy)
+            # Convert device array to cuDF DataFrame column by column
+            gpu_data = {}
+            for col_idx, col_name in enumerate(columns):
+                gpu_data[col_name] = cudf.Series(d_batch_reshaped[:, col_idx])
+            
+            gpu_df = cudf.DataFrame(gpu_data)
+            df_create_time = (datetime.now() - prep_start).total_seconds()
+            logger.info(f"    cuDF DataFrame created on GPU: {df_create_time:.3f}s")
+            
+            # Filter on GPU (MUCH faster than CPU!)
+            filter_start = datetime.now()
+            gpu_df = gpu_df[gpu_df['ID_COMPTE'] > 0]
+            num_rows = len(gpu_df)
+            filter_time = (datetime.now() - filter_start).total_seconds()
+            logger.info(f"    Filtered on GPU to {num_rows:,} valid rows: {filter_time:.3f}s")
+            
+            # Convert ID columns to int32 on GPU
             type_start = datetime.now()
-            valid_data[:, 0] = valid_data[:, 0].astype(np.int32)  # ID_COMPTE
-            valid_data[:, 1] = valid_data[:, 1].astype(np.int32)  # SCN_EVAL
-            valid_data[:, 2] = valid_data[:, 2].astype(np.int32)  # AN_EVAL
-            valid_data[:, 3] = valid_data[:, 3].astype(np.int32)  # MOIS_EVAL
+            gpu_df['ID_COMPTE'] = gpu_df['ID_COMPTE'].astype('int32')
+            gpu_df['SCN_EVAL'] = gpu_df['SCN_EVAL'].astype('int32')
+            gpu_df['AN_EVAL'] = gpu_df['AN_EVAL'].astype('int32')
+            gpu_df['MOIS_EVAL'] = gpu_df['MOIS_EVAL'].astype('int32')
             type_time = (datetime.now() - type_start).total_seconds()
-            logger.info(f"    Type conversion: {type_time:.3f}s")
-            
-            # Create Arrow arrays - use contiguous arrays for zero-copy
-            arrow_start = datetime.now()
-            arrow_arrays = []
-            for col_idx in range(len(columns)):
-                # Make contiguous copy of column (required for zero-copy to Arrow)
-                if col_idx < 4:
-                    col_data = np.ascontiguousarray(valid_data[:, col_idx], dtype=np.int32)
-                else:
-                    col_data = np.ascontiguousarray(valid_data[:, col_idx], dtype=np.float32)
-                arrow_arrays.append(pa.array(col_data))
-            arrow_time = (datetime.now() - arrow_start).total_seconds()
-            logger.info(f"    Arrow arrays created: {arrow_time:.3f}s")
-            
-            table_start = datetime.now()
-            arrow_table = pa.Table.from_arrays(arrow_arrays, names=columns)
-            table_time = (datetime.now() - table_start).total_seconds()
             
             prep_time = (datetime.now() - prep_start).total_seconds()
-            logger.info(f"    Arrow table prep total: {prep_time:.3f}s (type:{type_time:.3f}s, arrays:{arrow_time:.3f}s, table:{table_time:.3f}s)")
+            logger.info(f"    cuDF prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
             
-            # Submit async write to thread pool (LZ4 compression)
-            parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-            future = parquet_writer_pool.submit(
-                write_parquet_async,
-                arrow_table,
-                parquet_path,
-                i,
-                num_rows
-            )
-            write_futures.append(future)
-            logger.info(f"    Parquet write submitted to async pool (batch {i})")
+            if num_rows > 0:
+                # Submit async write (cuDF transfers to CPU only during write)
+                parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
+                future = parquet_writer_pool.submit(
+                    write_parquet_async_cudf,
+                    gpu_df,
+                    parquet_path,
+                    i,
+                    num_rows
+                )
+                write_futures.append(future)
+                logger.info(f"    Parquet write submitted to async pool (batch {i})")
+                
+                # Free GPU DataFrame
+                del gpu_df, gpu_data
+            else:
+                logger.info(f"    No valid rows in batch - skipping write")
             
-            # Free batch data immediately (don't wait for write to complete)
-            del valid_data, arrow_arrays, arrow_table
-            gc.collect()
+            # No need for h_batch_output in GPU path
+            total_transfer_duration += transfer_to_gpu  # Only count upload, not download
+            
+        else:
+            # ===== CPU PATH (pandas) =====
+            transfer_back_start = datetime.now()
+            logger.info("  Copying batch results from GPU...")
+            d_batch_output.copy_to_host(h_batch_output, stream=stream_compute)
+            stream_compute.synchronize()
+            transfer_back_end = datetime.now()
+            transfer_from_gpu = (transfer_back_end - transfer_back_start).total_seconds()
+            total_transfer_duration += transfer_to_gpu + transfer_from_gpu
+            logger.info(f"  Transfer from GPU: {transfer_from_gpu:.2f} seconds")
+            
+            logger.info("  Extracting valid results...")
+            
+            # Reshape directly from pinned memory (no copy needed!)
+            reshape_start = datetime.now()
+            total_rows = current_batch_size * nb_scenarios * max_timesteps
+            reshaped = h_batch_output.reshape(total_rows, n_output_fields)
+            reshape_time = (datetime.now() - reshape_start).total_seconds()
+            logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s (zero-copy from pinned memory)")
+            
+            # Use pandas DataFrame (optimized for columnar operations)
+            extract_start = datetime.now()
+            logger.info(f"    Creating valid mask for {total_rows:,} rows...")
+            valid_mask = reshaped[:, 0] > 0
+            n_valid = np.sum(valid_mask)
+            mask_time = (datetime.now() - extract_start).total_seconds()
+            logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy) in {mask_time:.3f}s")
+            
+            if n_valid > 0:
+                # Convert to pandas DataFrame
+                prep_start = datetime.now()
+                logger.info(f"    Creating DataFrame directly from NumPy array...")
+                
+                # Create DataFrame from full reshaped array (fast - uses views where possible)
+                df = pd.DataFrame(reshaped, columns=columns)
+                df_create_time = (datetime.now() - prep_start).total_seconds()
+                logger.info(f"    DataFrame created: {df_create_time:.3f}s")
+                
+                # Filter to valid rows (pandas is highly optimized for this)
+                filter_start = datetime.now()
+                df = df[df['ID_COMPTE'] > 0]
+                num_rows = len(df)
+                filter_time = (datetime.now() - filter_start).total_seconds()
+                logger.info(f"    Filtered to {num_rows:,} valid rows: {filter_time:.3f}s")
+                
+                # Convert ID columns to int32 for smaller file size
+                type_start = datetime.now()
+                df['ID_COMPTE'] = df['ID_COMPTE'].astype(np.int32)
+                df['SCN_EVAL'] = df['SCN_EVAL'].astype(np.int32)
+                df['AN_EVAL'] = df['AN_EVAL'].astype(np.int32)
+                df['MOIS_EVAL'] = df['MOIS_EVAL'].astype(np.int32)
+                type_time = (datetime.now() - type_start).total_seconds()
+                
+                prep_time = (datetime.now() - prep_start).total_seconds()
+                logger.info(f"    DataFrame prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
+                
+                # Free large arrays immediately (before async write)
+                del h_batch_output, reshaped, valid_mask
+                gc.collect()
+                
+                # Submit async write to thread pool
+                parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
+                future = parquet_writer_pool.submit(
+                    write_parquet_async_pandas,
+                    df,
+                    parquet_path,
+                    i,
+                    num_rows
+                )
+                write_futures.append(future)
+                logger.info(f"    Parquet write submitted to async pool (batch {i})")
+                
+                # Free DataFrame immediately
+                del df
+                gc.collect()
+            else:
+                # No valid data - just clean up
+                del h_batch_output, reshaped, valid_mask
+                logger.info(f"    No valid rows in batch - skipping write")
         
         cpu_proc_end = datetime.now()
         cpu_proc_time = (cpu_proc_end - cpu_proc_start).total_seconds()
@@ -1721,13 +1811,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         # Cleanup remaining GPU/batch memory
         del d_batch_account_data
         del d_batch_output
-        # h_batch_output already deleted in the valid data processing
-        # if 'h_batch_output' in locals():
-        #     del h_batch_output
-        if 'reshaped' in locals():
-            del reshaped
-        if 'valid_data' in locals():
-            del valid_data
+        # h_batch_output, reshaped, valid_mask, df already deleted above
         if use_pinned_memory and 'h_batch_input_pinned' in locals():
             del h_batch_input_pinned
         
