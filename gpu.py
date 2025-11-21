@@ -1572,10 +1572,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     
     print(f"Parquet directory: {parquet_dir}")
     if CUDF_AVAILABLE:
-        print(f"Using cuDF (GPU) filtering + CuPy fast transfer + PyArrow write (hybrid optimized)")
+        print(f"Using cuDF (GPU) filtering + CuPy fast transfer + fastparquet write (hybrid optimized)")
     else:
-        print(f"Using PyArrow direct write (CPU) + LZ4 compression (OPTIMIZED FOR SPEED)")
-        print(f"   PyArrow zero-copy from NumPy → Parquet (no DataFrame overhead)")
+        print(f"Using fastparquet (CPU) + LZ4 compression (OPTIMIZED FOR SPEED)")
+        print(f"   pandas DataFrame from dict (columnar, fast) → fastparquet write")
     
     # Create thread pool for async parquet writes
     parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -1838,67 +1838,58 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 
                 num_rows = n_valid
                 
-                # FASTEST APPROACH: Skip DataFrames entirely, write directly to Parquet with PyArrow
-                # CRITICAL: Force copy to avoid PyArrow holding references to source arrays
+                # OPTIMIZED APPROACH: Create pandas DataFrame efficiently, write with fastparquet
+                # Fastparquet requires DataFrame but we can make it fast with dict-of-arrays approach
                 write_start = datetime.now()
                 parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                logger.info(f"    Writing parquet directly with PyArrow (with memory copy)...")
+                logger.info(f"    Writing parquet with fastparquet (pandas from dict)...")
                 
-                # Define schema with optimal types (int32 for IDs, float32 for values)
-                schema_fields = []
-                for col_idx, col_name in enumerate(columns):
-                    if col_idx < 4:  # ID_COMPTE, SCN_EVAL, AN_EVAL, MOIS_EVAL
-                        schema_fields.append(pa.field(col_name, pa.int32()))
-                    else:
-                        schema_fields.append(pa.field(col_name, pa.float32()))
-                schema = pa.schema(schema_fields)
-                
-                # Create PyArrow arrays with EXPLICIT COPY to avoid memory leaks
-                # Zero-copy causes PyArrow to hold references, preventing GC
-                arrow_arrays = []
+                # Create dict of columns with proper types (fast, no row iteration)
+                data_dict = {}
                 for col_idx, col_name in enumerate(columns):
                     col_data = valid_data[:, col_idx]
-                    if col_idx < 4:  # Integer columns
-                        # Make a copy to break references
-                        col_copy = col_data.astype(np.int32).copy()
-                        arrow_arrays.append(pa.array(col_copy, type=pa.int32()))
-                        del col_copy
-                    else:  # Float columns (already float32)
-                        # Make a copy to break references
-                        col_copy = col_data.copy()
-                        arrow_arrays.append(pa.array(col_copy, type=pa.float32()))
-                        del col_copy
+                    if col_idx < 4:  # ID columns: convert to int32
+                        data_dict[col_name] = col_data.astype(np.int32)
+                    else:  # Already float32, just copy to break references
+                        data_dict[col_name] = col_data.copy()
                 
-                # Free source data NOW (before creating table)
+                # Free source data NOW
                 del valid_data
                 gc.collect()
                 
-                # Create PyArrow table from copied arrays
-                arrow_table = pa.table(arrow_arrays, schema=schema)
+                # Create pandas DataFrame from dict (FAST - columnar, no row iteration)
+                df_start = datetime.now()
+                df = pd.DataFrame(data_dict)
+                df_time = (datetime.now() - df_start).total_seconds()
+                logger.info(f"      DataFrame created: {df_time:.3f}s")
                 
-                # Free arrow arrays
-                del arrow_arrays
+                # Free the dict
+                del data_dict
                 gc.collect()
                 
-                # Write directly to Parquet (optimized settings for speed)
-                pq.write_table(
-                    arrow_table,
-                    parquet_path,
-                    compression='lz4',  # Fastest compression
-                    use_dictionary=False,  # Skip dictionary encoding (faster write)
-                    write_statistics=False,  # Skip statistics (faster write)
-                    row_group_size=1000000  # 1M rows per row group
+                # Write with fastparquet (optimized for speed)
+                fp_start = datetime.now()
+                fastparquet_write(
+                    str(parquet_path),
+                    df,
+                    compression='LZ4',  # Fastest compression
+                    row_group_offsets=1000000,  # 1M rows per group
+                    file_scheme='simple',  # Single file (no partitioning)
+                    write_index=False,
+                    stats=False  # Skip statistics for speed
                 )
+                fp_time = (datetime.now() - fp_start).total_seconds()
                 
                 write_time = (datetime.now() - write_start).total_seconds()
                 file_size_mb = parquet_path.stat().st_size / 1024**2
                 logger.info(f"    Written {file_size_mb:.1f} MB in {write_time:.3f}s ({file_size_mb/write_time:.1f} MB/s)")
+                logger.info(f"      (df:{df_time:.3f}s, write:{fp_time:.3f}s)")
                 
                 # Track stats (synchronous write, already complete)
                 write_futures.append((i, file_size_mb, num_rows, write_time))
                 
-                # CRITICAL: Free Arrow table and force memory release
-                del arrow_table
+                # CRITICAL: Free DataFrame and force memory release
+                del df
                 # Force Python GC to release memory immediately
                 gc.collect()
                 gc.collect()  # Run twice to catch circular references
