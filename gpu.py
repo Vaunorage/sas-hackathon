@@ -2023,7 +2023,6 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     # Cleanup Parquet files
     print("\nCleaning up Parquet files...")
     try:
-        import shutil
         shutil.rmtree(parquet_dir)
         print(f"  Removed temporary Parquet directory: {parquet_dir}")
     except Exception as e:
