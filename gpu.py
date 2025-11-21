@@ -1721,13 +1721,16 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 write_futures.append(future)
                 logger.info(f"    Parquet write submitted to async pool (batch {i})")
                 
-                # Free GPU DataFrame
-                del gpu_df, gpu_data
+                # Free GPU DataFrame and CuPy array
+                del gpu_df, gpu_data, cupy_array
             else:
                 logger.info(f"    No valid rows in batch - skipping write")
+                del cupy_array
             
-            # No need for h_batch_output in GPU path
+            # No need for h_batch_output in GPU path - data stays on GPU!
+            transfer_from_gpu = 0.0  # No GPU→CPU transfer needed
             total_transfer_duration += transfer_to_gpu  # Only count upload, not download
+            logger.info(f"  ✓ Skipped GPU→CPU transfer (data processed on GPU)")
             
         else:
             # ===== CPU PATH (pandas) =====
