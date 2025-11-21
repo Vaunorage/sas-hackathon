@@ -1566,9 +1566,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     
     print(f"Parquet directory: {parquet_dir}")
     if CUDF_AVAILABLE:
-        print(f"Using cuDF (GPU) DataFrame + LZ4 compression + async I/O (MAXIMUM SPEED)")
+        print(f"Using cuDF (GPU) DataFrame + LZ4 compression + synchronous writes (GPU-optimized)")
     else:
-        print(f"Using pandas (CPU) DataFrame + LZ4 compression + async I/O (ultra-optimized)")
+        print(f"Using pandas (CPU) DataFrame + LZ4 compression + async I/O (CPU-optimized)")
     
     # Create thread pool for async parquet writes
     parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -1709,41 +1709,37 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             logger.info(f"    cuDF prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
             
             if num_rows > 0:
-                # CRITICAL: Convert to pandas immediately to free GPU memory!
-                # If we submit cuDF to async pool, it stays in GPU RAM while queued
-                transfer_start = datetime.now()
-                logger.info(f"    Converting cuDF → pandas (GPU→CPU transfer)...")
-                df = gpu_df.to_pandas()
-                transfer_time = (datetime.now() - transfer_start).total_seconds()
-                logger.info(f"    Transferred to CPU: {transfer_time:.3f}s")
+                # Write SYNCHRONOUSLY from GPU - frees GPU memory immediately!
+                # Async writes caused GPU memory accumulation (thread pool holds references)
+                # cuDF→pandas is extremely slow (200s!), so write directly from GPU
+                write_start = datetime.now()
+                parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
+                logger.info(f"    Writing parquet directly from GPU (synchronous)...")
                 
-                # Free GPU memory immediately!
+                gpu_df.to_parquet(
+                    parquet_path,
+                    compression='lz4',
+                    index=False
+                )
+                
+                write_time = (datetime.now() - write_start).total_seconds()
+                file_size_mb = parquet_path.stat().st_size / 1024**2
+                logger.info(f"    Written {file_size_mb:.1f} MB in {write_time:.3f}s ({file_size_mb/write_time:.1f} MB/s)")
+                
+                # Free GPU memory immediately (no async queue holding references)
                 del gpu_df, gpu_data, cupy_array
                 gc.collect()
                 
-                # Submit pandas DataFrame to async write (now on CPU)
-                parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                future = parquet_writer_pool.submit(
-                    write_parquet_async_pandas,  # Use pandas writer, not cuDF
-                    df,
-                    parquet_path,
-                    i,
-                    num_rows
-                )
-                write_futures.append(future)
-                logger.info(f"    Parquet write submitted to async pool (batch {i})")
-                
-                # Free pandas DataFrame
-                del df
-                gc.collect()
+                # Track stats (tuple, not future - write already complete)
+                write_futures.append((i, file_size_mb, num_rows, write_time))
             else:
                 logger.info(f"    No valid rows in batch - skipping write")
                 del cupy_array, gpu_data
             
-            # Transfer only filtered data from GPU (much smaller than full batch)
-            transfer_from_gpu = 0.0  # Counted separately in cuDF→pandas conversion above
+            # Synchronous write completed, GPU memory freed
+            transfer_from_gpu = 0.0  # Write happens directly from GPU
             total_transfer_duration += transfer_to_gpu  # Upload only
-            logger.info(f"  ✓ GPU-accelerated filtering (only filtered data transferred to CPU)")
+            logger.info(f"  ✓ GPU-accelerated filtering + synchronous write (GPU memory freed)")
             
         else:
             # ===== CPU PATH (pandas) =====
@@ -1848,9 +1844,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         cpu_processing_time = batch_duration - kernel_duration - transfer_to_gpu - transfer_from_gpu
         logger.info(f"  Batch {i + 1} total time: {batch_duration:.2f}s (Kernel: {kernel_duration:.2f}s, Transfer: {transfer_to_gpu + transfer_from_gpu:.2f}s, CPU: {cpu_processing_time:.2f}s)")
 
-    # --- WAIT FOR ALL ASYNC WRITES TO COMPLETE ---
+    # --- SUMMARIZE WRITES (synchronous with cuDF, async with pandas) ---
     print("\n" + "="*60)
-    print("WAITING FOR ASYNC PARQUET WRITES TO COMPLETE")
+    print("PARQUET WRITE SUMMARY")
     print("="*60)
     
     wait_start = datetime.now()
@@ -1858,12 +1854,24 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     total_file_size_mb = 0
     total_rows_written = 0
     
-    print(f"\nWaiting for {len(write_futures)} async write operations...")
-    for future in concurrent.futures.as_completed(write_futures):
-        batch_num, file_size_mb, num_rows, write_time = future.result()
-        total_write_time += write_time
-        total_file_size_mb += file_size_mb
-        total_rows_written += num_rows
+    # Handle mixed futures (tuples for cuDF sync writes, futures for pandas async)
+    if len(write_futures) > 0:
+        # Check if first item is a future or tuple
+        if hasattr(write_futures[0], 'result'):
+            # Async pandas writes - wait for completion
+            print(f"\nWaiting for {len(write_futures)} async write operations...")
+            for future in concurrent.futures.as_completed(write_futures):
+                batch_num, file_size_mb, num_rows, write_time = future.result()
+                total_write_time += write_time
+                total_file_size_mb += file_size_mb
+                total_rows_written += num_rows
+        else:
+            # Synchronous cuDF writes - already complete, just sum up
+            print(f"\nAll {len(write_futures)} writes completed synchronously (cuDF GPU path)")
+            for batch_num, file_size_mb, num_rows, write_time in write_futures:
+                total_write_time += write_time
+                total_file_size_mb += file_size_mb
+                total_rows_written += num_rows
     
     # Shutdown thread pool
     parquet_writer_pool.shutdown(wait=True)
@@ -1871,9 +1879,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     wait_duration = (datetime.now() - wait_start).total_seconds()
     avg_write_time = total_write_time / len(write_futures) if write_futures else 0
     
-    print(f"\nAll async writes completed:")
-    print(f"  Total wait time: {wait_duration:.2f}s")
-    print(f"  Total write time (sum of all threads): {total_write_time:.2f}s")
+    print(f"\nWrite statistics:")
+    print(f"  Processing time: {wait_duration:.2f}s")
+    print(f"  Total write time: {total_write_time:.2f}s")
     print(f"  Average write time per batch: {avg_write_time:.3f}s")
     print(f"  Total data written: {total_file_size_mb:.1f} MB ({total_rows_written:,} rows)")
     print(f"  Effective speedup from parallelism: {total_write_time/wait_duration:.1f}x")
