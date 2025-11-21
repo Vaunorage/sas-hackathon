@@ -3,6 +3,7 @@ import os
 import tempfile
 from pathlib import Path
 import pandas as pd
+import gzip
 import gpu # Import the main gpu projection script
 
 def handler(job):
@@ -25,9 +26,6 @@ def handler(job):
     except (ValueError, TypeError) as e:
         return {'error': f"Invalid input parameter: {e}"}
 
-    if not data_files_b64:
-        return {'error': 'No data files provided in the job input.'}
-
     # --- 2. Create temporary directories for input and output ---
     with tempfile.TemporaryDirectory() as tmpdir:
         data_path = Path(tmpdir) / 'data_in'
@@ -35,19 +33,48 @@ def handler(job):
         data_path.mkdir()
         output_path.mkdir()
 
-        # --- 3. Decode and write data files to the temp directory ---
+        # --- 3. Decode and write uploaded files, use defaults for the rest ---
         file_paths = {}
+        default_data_path = Path('/app/data_in')  # Default CSVs baked into Docker image
+        
+        required_files = [
+            'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv', 'DEPOTS_FUTURS.csv',
+            'FRAIS_ADMIN.csv', 'MIN_FERR.csv', 'TX_LAPSE_PART.csv', 'TX_LAPSE_TOT.csv',
+            'ACQUISITION.csv', 'COUSSINS_ESCAP.csv'
+        ]
+        
         try:
-            for filename, content_b64 in data_files_b64.items():
-                file_path = data_path / filename
-                with open(file_path, 'wb') as f:
-                    import base64
-                    f.write(base64.b64decode(content_b64))
-                # Store the path with a key that matches the argument names in run_projection_gpu
+            import base64
+            import shutil
+            
+            for filename in required_files:
                 arg_name = f"{filename.split('.')[0].lower()}_path"
-                file_paths[arg_name] = file_path
+                
+                if filename in data_files_b64:
+                    # Use uploaded file
+                    file_path = data_path / filename
+                    with open(file_path, 'wb') as f:
+                        # Decode from base64
+                        compressed_bytes = base64.b64decode(data_files_b64[filename])
+                        # Decompress with gzip
+                        decompressed_bytes = gzip.decompress(compressed_bytes)
+                        f.write(decompressed_bytes)
+                    file_paths[arg_name] = file_path
+                    print(f"  Using uploaded: {filename}")
+                else:
+                    # Use default file from Docker image
+                    default_file = default_data_path / filename
+                    if default_file.exists():
+                        # Copy default to temp directory
+                        dest_file = data_path / filename
+                        shutil.copy(default_file, dest_file)
+                        file_paths[arg_name] = dest_file
+                        print(f"  Using default: {filename}")
+                    else:
+                        return {'error': f"Required file not found: {filename} (not uploaded and no default available)"}
+                        
         except Exception as e:
-            return {'error': f"Failed to decode or write data file: {e}"}
+            return {'error': f"Failed to process data files: {e}"}
 
         # --- 4. Run the GPU projection ---
         try:

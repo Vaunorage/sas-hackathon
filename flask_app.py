@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 import runpod
 import requests
 import base64
+import gzip
 
 from paths import HERE
 
@@ -662,22 +663,24 @@ def trigger_runpod_job(job_id: str):
         ]
 
         print(f"Preparing CSV files for RunPod worker (job {job_id})...")
-        for filename in required_files:
-            # Check if file was uploaded, otherwise use default
-            if filename in uploaded_files:
+        # Only send uploaded files - defaults are baked into the RunPod worker image
+        for filename in uploaded_files:
+            if filename in required_files:
                 file_path = upload_folder / filename
-                source = 'uploaded'
-            else:
-                file_path = default_data_path / filename
-                source = 'default'
-            
-            if file_path.exists():
-                with open(file_path, 'rb') as f:
-                    content_bytes = f.read()
-                    data_files_b64[filename] = base64.b64encode(content_bytes).decode('utf-8')
-                print(f"  ✓ {filename} ({source}): {len(content_bytes)} bytes")
-            else:
-                raise FileNotFoundError(f"Required data file not found: {filename} ({source})")
+                
+                if file_path.exists():
+                    with open(file_path, 'rb') as f:
+                        content_bytes = f.read()
+                        # Compress with gzip before base64 encoding (reduces size by ~80%)
+                        compressed_bytes = gzip.compress(content_bytes, compresslevel=6)
+                        data_files_b64[filename] = base64.b64encode(compressed_bytes).decode('utf-8')
+                    compression_ratio = (1 - len(compressed_bytes) / len(content_bytes)) * 100
+                    print(f"  ✓ {filename} (uploaded): {len(content_bytes)} bytes → {len(compressed_bytes)} bytes ({compression_ratio:.1f}% smaller)")
+                else:
+                    raise FileNotFoundError(f"Uploaded file not found: {filename}")
+        
+        if not uploaded_files:
+            print("  Using all default CSVs from worker image (no uploads)")
 
         # --- Trigger RunPod job ---
         runpod_input = {
@@ -689,8 +692,10 @@ def trigger_runpod_job(job_id: str):
         }
 
         print(f"Triggering RunPod job for endpoint {RUNPOD_ENDPOINT_ID}...")
+        print(f"  Payload size: ~{sum(len(v) for v in data_files_b64.values()) / 1024 / 1024:.1f} MB (base64 encoded)")
         endpoint = runpod.Endpoint(RUNPOD_ENDPOINT_ID)
-        run_request = endpoint.run(runpod_input)
+        # Increase timeout for large file uploads (default is 30s)
+        run_request = endpoint.run(runpod_input, timeout=300)
 
         # Store the RunPod job ID for tracking
         ph = get_placeholder()
