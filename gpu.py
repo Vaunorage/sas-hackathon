@@ -1599,6 +1599,17 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
     write_futures = []
     
+    # Calculate dynamic memory threshold for proactive cleanup (SCALES WITH SYSTEM RAM)
+    # This ensures the code works efficiently on machines with 16GB, 32GB, 64GB+ RAM
+    total_system_ram_gb = psutil.virtual_memory().total / 1024**3
+    # Set threshold at 60% of total RAM (conservative to prevent swapping)
+    # Examples: 16GB RAM → 9.6GB threshold, 32GB RAM → 19.2GB threshold, 64GB RAM → 38.4GB threshold
+    memory_cleanup_threshold_gb = total_system_ram_gb * 0.60
+    print(f"\nMemory Management (Auto-scales with hardware):")
+    print(f"  Total System RAM: {total_system_ram_gb:.1f} GB")
+    print(f"  Proactive cleanup threshold: {memory_cleanup_threshold_gb:.1f} GB (60% of RAM)")
+    print(f"  Aggressive cleanup interval: every 4 batches")
+    
     total_kernel_duration = 0
     total_transfer_duration = 0
 
@@ -1788,10 +1799,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                     logger.info(f"    GPU memory freed (Python GC only)")
                     pass
                 
-                # Proactive memory check before DataFrame creation
+                # Proactive memory check before DataFrame creation (uses dynamic threshold)
                 batch_mem_current = process.memory_info().rss / 1024**3
-                if batch_mem_current > 15.0:  # Memory threshold: 15 GB
-                    logger.info(f"    [Proactive cleanup triggered at {batch_mem_current:.2f} GB]")
+                if batch_mem_current > memory_cleanup_threshold_gb:
+                    logger.info(f"    [Proactive cleanup triggered at {batch_mem_current:.2f} GB (threshold: {memory_cleanup_threshold_gb:.1f} GB)]")
                     gc.collect(2)  # Aggressive collection
                     force_gpu_memory_cleanup(aggressive=True)
                     batch_mem_after = process.memory_info().rss / 1024**3
@@ -2000,7 +2011,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             del h_batch_output
         
         # Force garbage collection and GPU memory cleanup after EVERY batch
-        # Use aggressive cleanup every 4 batches to prevent memory fragmentation
+        # Use aggressive cleanup every 4 batches to prevent cumulative memory fragmentation
+        # Aggressive mode: full GC + RMM pool reset (slower but defragments memory)
+        # Standard mode: quick GC (fast, handles immediate cleanup)
         gc_start = datetime.now()
         is_periodic_aggressive = (i + 1) % 4 == 0
         force_gpu_memory_cleanup(aggressive=is_periodic_aggressive)
