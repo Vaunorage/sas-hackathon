@@ -1710,7 +1710,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         divide_start = datetime.now()
         logger.info(f"  Computing scenario averages (dividing by {nb_scenarios})...")
         # Divide only value columns (4-39), not ID fields (0-3)
-        d_batch_output[:, :, 4:] /= nb_scenarios
+        # DeviceNDArray doesn't support /=, so we use explicit assignment
+        d_batch_output[:, :, 4:] = d_batch_output[:, :, 4:] / nb_scenarios
         cuda.synchronize()
         divide_time = (datetime.now() - divide_start).total_seconds()
         logger.info(f"    Division complete: {divide_time:.3f}s")
