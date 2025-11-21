@@ -1709,11 +1709,23 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             logger.info(f"    cuDF prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
             
             if num_rows > 0:
-                # Submit async write (cuDF transfers to CPU only during write)
+                # CRITICAL: Convert to pandas immediately to free GPU memory!
+                # If we submit cuDF to async pool, it stays in GPU RAM while queued
+                transfer_start = datetime.now()
+                logger.info(f"    Converting cuDF → pandas (GPU→CPU transfer)...")
+                df = gpu_df.to_pandas()
+                transfer_time = (datetime.now() - transfer_start).total_seconds()
+                logger.info(f"    Transferred to CPU: {transfer_time:.3f}s")
+                
+                # Free GPU memory immediately!
+                del gpu_df, gpu_data, cupy_array
+                gc.collect()
+                
+                # Submit pandas DataFrame to async write (now on CPU)
                 parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
                 future = parquet_writer_pool.submit(
-                    write_parquet_async_cudf,
-                    gpu_df,
+                    write_parquet_async_pandas,  # Use pandas writer, not cuDF
+                    df,
                     parquet_path,
                     i,
                     num_rows
@@ -1721,16 +1733,17 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 write_futures.append(future)
                 logger.info(f"    Parquet write submitted to async pool (batch {i})")
                 
-                # Free GPU DataFrame and CuPy array
-                del gpu_df, gpu_data, cupy_array
+                # Free pandas DataFrame
+                del df
+                gc.collect()
             else:
                 logger.info(f"    No valid rows in batch - skipping write")
-                del cupy_array
+                del cupy_array, gpu_data
             
-            # No need for h_batch_output in GPU path - data stays on GPU!
-            transfer_from_gpu = 0.0  # No GPU→CPU transfer needed
-            total_transfer_duration += transfer_to_gpu  # Only count upload, not download
-            logger.info(f"  ✓ Skipped GPU→CPU transfer (data processed on GPU)")
+            # Transfer only filtered data from GPU (much smaller than full batch)
+            transfer_from_gpu = 0.0  # Counted separately in cuDF→pandas conversion above
+            total_transfer_duration += transfer_to_gpu  # Upload only
+            logger.info(f"  ✓ GPU-accelerated filtering (only filtered data transferred to CPU)")
             
         else:
             # ===== CPU PATH (pandas) =====
