@@ -1615,20 +1615,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         process = psutil.Process(os.getpid())
         mem_before = process.memory_info().rss / 1024**3
         
-        # Convert pinned memory to regular memory
-        convert_start = datetime.now()
-        h_batch_regular = np.array(h_batch_output, copy=True)
-        convert_time = (datetime.now() - convert_start).total_seconds()
-        logger.info(f"    Convert pinned to regular memory: {convert_time:.3f}s")
-        
-        del h_batch_output
-        
-        # Reshape to 2D
+        # Reshape directly from pinned memory (no copy needed!)
+        # Pinned memory arrays are already NumPy-compatible
         reshape_start = datetime.now()
         total_rows = current_batch_size * nb_scenarios * max_timesteps
-        reshaped = h_batch_regular.reshape(total_rows, n_output_fields)
+        reshaped = h_batch_output.reshape(total_rows, n_output_fields)
         reshape_time = (datetime.now() - reshape_start).total_seconds()
-        logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s")
+        logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s (zero-copy from pinned memory)")
         
         # Extract valid rows - OPTIMIZED with boolean indexing
         extract_start = datetime.now()
@@ -1653,16 +1646,23 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         else:
             valid_data = None
         
-        if valid_data is not None and n_valid > 0:
-            
+        # Free the large reshaped array and pinned memory as soon as possible
+        # (keep valid_data for Arrow processing)
+        if n_valid > 0:
             # FREE LARGE ARRAYS IMMEDIATELY to prevent fragmentation
             free_start = datetime.now()
-            del h_batch_regular
+            del h_batch_output  # Free pinned memory
             del reshaped
             gc.collect()  # Immediate GC to reduce fragmentation
             free_time = (datetime.now() - free_start).total_seconds()
             mem_after_free = process.memory_info().rss / 1024**3
             logger.info(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
+        else:
+            # No valid data - just clean up
+            del h_batch_output
+            del reshaped
+        
+        if valid_data is not None and n_valid > 0:
             
             # Prepare Arrow table with optimized zero-copy and explicit types
             prep_start = datetime.now()
@@ -1721,10 +1721,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         # Cleanup remaining GPU/batch memory
         del d_batch_account_data
         del d_batch_output
-        if 'h_batch_output' in locals():
-            del h_batch_output
-        if 'h_batch_regular' in locals():
-            del h_batch_regular
+        # h_batch_output already deleted in the valid data processing
+        # if 'h_batch_output' in locals():
+        #     del h_batch_output
         if 'reshaped' in locals():
             del reshaped
         if 'valid_data' in locals():
