@@ -1604,7 +1604,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     total_system_ram_gb = psutil.virtual_memory().total / 1024**3
     # Set threshold at 60% of total RAM (conservative to prevent swapping)
     # Examples: 16GB RAM → 9.6GB threshold, 32GB RAM → 19.2GB threshold, 64GB RAM → 38.4GB threshold
-    memory_cleanup_threshold_gb = total_system_ram_gb * 0.60
+    memory_cleanup_threshold_gb = total_system_ram_gb * 0.80
     print(f"\nMemory Management (Auto-scales with hardware):")
     print(f"  Total System RAM: {total_system_ram_gb:.1f} GB")
     print(f"  Proactive cleanup threshold: {memory_cleanup_threshold_gb:.1f} GB (60% of RAM)")
