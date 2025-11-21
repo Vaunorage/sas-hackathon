@@ -1786,7 +1786,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 fastparquet_write(
                     str(parquet_path),
                     df,
-                    compression='LZ4',
+                    compression='snappy',
                     row_group_offsets=100000,
                     file_scheme='simple',
                     write_index=False,
@@ -1933,7 +1933,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 fastparquet_write(
                     str(parquet_path),
                     df,
-                    compression='LZ4',
+                    compression='snappy',
                     row_group_offsets=100000,
                     file_scheme='simple',
                     write_index=False,
