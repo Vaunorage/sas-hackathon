@@ -2251,7 +2251,7 @@ if __name__ == "__main__":
             output_path=OUTPUT_PATH,
             nb_an_projection=100,
             nb_scenarios=100,
-            max_accounts=20000,
+            max_accounts=200000,
             threads_per_block=(32, 8),  # (accounts_per_block, scenarios_per_block) - 256 threads per block
             debug_account=args.debug_account,
             debug_scenario=args.debug_scenario
