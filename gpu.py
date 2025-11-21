@@ -1709,15 +1709,40 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             logger.info(f"    cuDF prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
             
             if num_rows > 0:
-                # Write SYNCHRONOUSLY from GPU - frees GPU memory immediately!
-                # Async writes caused GPU memory accumulation (thread pool holds references)
-                # cuDF→pandas is extremely slow (200s!), so write directly from GPU
+                # Transfer to CPU efficiently using CuPy (MUCH faster than to_pandas)
+                # cuDF.to_parquet() needs 3x GPU memory for compression buffers → OOM
+                # cuDF.to_pandas() is extremely slow (201s!) → Bad
+                # Solution: Use CuPy arrays directly (fast transfer)
+                transfer_start = datetime.now()
+                logger.info(f"    Transferring filtered data to CPU (CuPy → NumPy)...")
+                
+                # Convert cuDF columns to CuPy, then to NumPy (much faster than to_pandas)
+                cpu_data = {}
+                for col in columns:
+                    # Get CuPy array from cuDF column, then transfer to CPU
+                    cpu_data[col] = cp.asnumpy(gpu_df[col].values)
+                
+                transfer_time = (datetime.now() - transfer_start).total_seconds()
+                logger.info(f"    Transferred {num_rows:,} rows to CPU: {transfer_time:.3f}s")
+                
+                # Free GPU memory immediately!
+                del gpu_df, gpu_data, cupy_array
+                gc.collect()
+                
+                # Create pandas DataFrame from NumPy arrays (fast on CPU)
+                df_start = datetime.now()
+                df = pd.DataFrame(cpu_data)
+                df_time = (datetime.now() - df_start).total_seconds()
+                logger.info(f"    Created pandas DataFrame: {df_time:.3f}s")
+                
+                del cpu_data
+                
+                # Write from CPU (pandas is memory-efficient for parquet writes)
                 write_start = datetime.now()
                 parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                logger.info(f"    Writing parquet directly from GPU (synchronous)...")
-                
-                gpu_df.to_parquet(
+                df.to_parquet(
                     parquet_path,
+                    engine='pyarrow',
                     compression='lz4',
                     index=False
                 )
@@ -1726,12 +1751,12 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 file_size_mb = parquet_path.stat().st_size / 1024**2
                 logger.info(f"    Written {file_size_mb:.1f} MB in {write_time:.3f}s ({file_size_mb/write_time:.1f} MB/s)")
                 
-                # Free GPU memory immediately (no async queue holding references)
-                del gpu_df, gpu_data, cupy_array
+                # Free CPU DataFrame
+                del df
                 gc.collect()
                 
-                # Track stats (tuple, not future - write already complete)
-                write_futures.append((i, file_size_mb, num_rows, write_time))
+                # Track stats
+                write_futures.append((i, file_size_mb, num_rows, transfer_time + write_time))
             else:
                 logger.info(f"    No valid rows in batch - skipping write")
                 del cupy_array, gpu_data
