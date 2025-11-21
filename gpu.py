@@ -8,6 +8,7 @@ import polars as pl
 import gc
 import psutil
 import logging
+import shutil
 from pathlib import Path
 from typing import Dict, Tuple, Any, Optional
 from datetime import datetime
@@ -1547,8 +1548,11 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print(f"Each batch will be written to Parquet file (fast columnar format)")
     print(f"Final aggregation will be done with DuckDB SQL reading Parquet files")
     
-    # Create temporary Parquet directory
+    # Create temporary Parquet directory (clean up any previous run first)
     parquet_dir = Path(output_path) / "_temp_parquet"
+    if parquet_dir.exists():
+        shutil.rmtree(parquet_dir)
+        print(f"Cleaned up existing parquet directory")
     parquet_dir.mkdir(parents=True, exist_ok=True)
     
     # Define column names for the table
