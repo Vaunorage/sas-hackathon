@@ -23,9 +23,7 @@ from fastparquet import write as fastparquet_write
 try:
     import cudf
     import cupy as cp
-    CUDF_AVAILABLE = False  # DISABLED - cuDF causes GPU memory leaks and slow DataFrame creation
-    print("⚠ CuDF disabled - using optimized pandas (CPU) path for stability")
-    print("   (cuDF caused 86s DataFrame creation vs 2s with pandas)")
+    CUDF_AVAILABLE = True  # DISABLED - cuDF causes GPU memory leaks and slow DataFrame creation
 except ImportError:
     CUDF_AVAILABLE = False
     print("⚠ CuDF not available - falling back to pandas (CPU). Install with: pip install cudf-cu12")
