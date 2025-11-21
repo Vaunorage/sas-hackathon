@@ -640,6 +640,7 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
 def trigger_runpod_job(job_id: str):
     """
     Triggers a job on a RunPod serverless worker.
+    Sends uploaded CSVs (or defaults) to the worker as base64-encoded data.
     """
     try:
         update_job_status(job_id, 'running')
@@ -648,7 +649,9 @@ def trigger_runpod_job(job_id: str):
             raise Exception(f"Job {job_id} not found")
 
         params = job['parameters']
-        data_path = app.config['DEFAULT_DATA_FOLDER']
+        default_data_path = app.config['DEFAULT_DATA_FOLDER']
+        upload_folder = get_job_upload_folder(job_id)
+        uploaded_files = job.get('uploaded_files', [])
 
         # --- Prepare data files ---
         data_files_b64 = {}
@@ -658,14 +661,23 @@ def trigger_runpod_job(job_id: str):
             'ACQUISITION.csv', 'COUSSINS_ESCAP.csv'
         ]
 
+        print(f"Preparing CSV files for RunPod worker (job {job_id})...")
         for filename in required_files:
-            file_path = data_path / filename
+            # Check if file was uploaded, otherwise use default
+            if filename in uploaded_files:
+                file_path = upload_folder / filename
+                source = 'uploaded'
+            else:
+                file_path = default_data_path / filename
+                source = 'default'
+            
             if file_path.exists():
                 with open(file_path, 'rb') as f:
                     content_bytes = f.read()
                     data_files_b64[filename] = base64.b64encode(content_bytes).decode('utf-8')
+                print(f"  ✓ {filename} ({source}): {len(content_bytes)} bytes")
             else:
-                raise FileNotFoundError(f"Required data file not found: {filename}")
+                raise FileNotFoundError(f"Required data file not found: {filename} ({source})")
 
         # --- Trigger RunPod job ---
         runpod_input = {
@@ -687,7 +699,7 @@ def trigger_runpod_job(job_id: str):
         execute_sql(sql, (json.dumps(params), job_id))
 
         print(f"RunPod job started with ID: {run_request.id}")
-        # The job status will remain 'running'. A separate process/endpoint would be needed
+        # Note: The job status will remain 'running'. A separate process/endpoint would be needed
         # to check the status with run_request.status() and retrieve the results.
 
     except Exception as e:
@@ -1096,20 +1108,7 @@ def create_job_endpoint():
             'nb_an_projection': int(request.form.get('nb_an_projection', 100)),
             'nb_scenarios': int(request.form.get('nb_scenarios', 100)),
             'max_accounts': int(request.form.get('max_accounts')) if request.form.get('max_accounts') else None,
-            'debug_account': int(request.form.get('debug_account')) if request.form.get('debug_account') else None,
-            'use_default_files': request.form.get('use_default_files') == 'true',
-            'use_custom_paths': request.form.get('use_custom_paths') == 'true',
-            # Custom file paths (optional)
-            'population_path': request.form.get('population_path'),
-            'mortalite_path': request.form.get('mortalite_path'),
-            'rendements_path': request.form.get('rendements_path'),
-            'depots_futurs_path': request.form.get('depots_futurs_path'),
-            'frais_admin_path': request.form.get('frais_admin_path'),
-            'min_ferr_path': request.form.get('min_ferr_path'),
-            'tx_lapse_part_path': request.form.get('tx_lapse_part_path'),
-            'tx_lapse_tot_path': request.form.get('tx_lapse_tot_path'),
-            'acquisition_path': request.form.get('acquisition_path'),
-            'coussins_escap_path': request.form.get('coussins_escap_path')
+            'debug_account': int(request.form.get('debug_account')) if request.form.get('debug_account') else None
         }
         
         # Handle file uploads
@@ -1144,34 +1143,26 @@ def create_job_endpoint():
                     file.save(filepath)
                     uploaded_files.append(expected_filename)
         
-        # Check if we have either uploaded files, custom paths mode, or use default files
-        use_custom_paths = parameters.get('use_custom_paths', False)
-        use_default_files = parameters.get('use_default_files', False)
-        
-        # Allow job creation if we have files OR will use defaults
-        # (We always use defaults for unspecified files now)
-        if not uploaded_files and not use_custom_paths and not use_default_files:
-            # Actually, it's OK to have no files - we'll use defaults
-            pass
+        # Validate RunPod configuration
+        if not RUNPOD_ENDPOINT_ID or not RUNPOD_API_KEY:
+            return jsonify({
+                'error': 'RunPod worker not configured',
+                'message': 'RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY must be set in environment variables'
+            }), 500
         
         # Create job in database
         create_job(job_id, parameters, uploaded_files)
         
-        # Initialize cancellation flag
-        job_cancellation_flags[job_id] = False
-        
-        # Start processing in background thread
-        thread = threading.Thread(target=process_job, args=(job_id,))
+        # Start RunPod worker job in background thread
+        thread = threading.Thread(target=trigger_runpod_job, args=(job_id,))
         thread.daemon = True
         thread.start()
-        
-        # Track the thread
         job_threads[job_id] = thread
         
         return jsonify({
             'job_id': job_id,
             'status': 'pending',
-            'message': 'Job created and started',
+            'message': 'Job created and sent to RunPod worker',
             'parameters': parameters,
             'uploaded_files': uploaded_files
         }), 201
