@@ -611,11 +611,12 @@ def projection_kernel(
         cous_base_decheance, cous_tx_decheance, cous_base_mortalite, cous_tx_mortalite,
         cous_base_depot, cous_tx_depot, cous_facteur_80, cous_facteur_90,
         # Output arrays
-        output_results  # Shape: (n_accounts, n_scenarios, max_timesteps, n_output_fields)
+        output_results  # Shape: (n_accounts, max_timesteps, n_output_fields) - AGGREGATED ACROSS SCENARIOS!
 ):
     """
     Main CUDA kernel - processes one account-scenario combination per thread.
     Each thread loops through all timesteps sequentially (state dependency).
+    Results are atomically aggregated across scenarios within the kernel (100x data reduction!).
     """
     # Get global thread ID
     account_idx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
@@ -1228,52 +1229,56 @@ def projection_kernel(
                 coussin_depot = tx_depot * base_amount_depot_c * age_factor * TX_SURVIE
                 vp_coussin_depot = coussin_depot * TX_ACTUALISATION / freq_eval
 
-            # ============= STEP 15: STORE RESULTS =============
-            # Store results in output array
-            if output_idx < output_results.shape[2]:
-                output_results[account_idx, scenario_idx, output_idx, 0] = ID_COMPTE
-                output_results[account_idx, scenario_idx, output_idx, 1] = scn_eval
-                output_results[account_idx, scenario_idx, output_idx, 2] = an_eval
-                output_results[account_idx, scenario_idx, output_idx, 3] = mois_eval
-                output_results[account_idx, scenario_idx, output_idx, 4] = primes_garanties
-                output_results[account_idx, scenario_idx, output_idx, 5] = prest_deces
-                output_results[account_idx, scenario_idx, output_idx, 6] = prest_ech
-                output_results[account_idx, scenario_idx, output_idx, 7] = prest_mrv
-                output_results[account_idx, scenario_idx, output_idx, 8] = frais_acquis
-                output_results[account_idx, scenario_idx, output_idx, 9] = comm_vente
-                output_results[account_idx, scenario_idx, output_idx, 10] = primes_variables
-                output_results[account_idx, scenario_idx, output_idx, 11] = frais_fixes
-                output_results[account_idx, scenario_idx, output_idx, 12] = hon_gest
-                output_results[account_idx, scenario_idx, output_idx, 13] = comm_maintien
-                output_results[account_idx, scenario_idx, output_idx, 14] = valeur_marchande
+            # ============= STEP 15: STORE RESULTS (ATOMIC AGGREGATION) =============
+            # Atomically aggregate results across scenarios within kernel (100x data reduction!)
+            if output_idx < output_results.shape[1]:
+                # Write ID fields only once (same across all scenarios)
+                if scenario_idx == 0:
+                    output_results[account_idx, output_idx, 0] = float(ID_COMPTE)
+                    output_results[account_idx, output_idx, 1] = 0.0  # SCN_EVAL removed (aggregated)
+                    output_results[account_idx, output_idx, 2] = float(an_eval)
+                    output_results[account_idx, output_idx, 3] = float(mois_eval)
+                
+                # Atomically accumulate value fields across scenarios
+                cuda.atomic.add(output_results, (account_idx, output_idx, 4), primes_garanties)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 5), prest_deces)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 6), prest_ech)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 7), prest_mrv)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 8), frais_acquis)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 9), comm_vente)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 10), primes_variables)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 11), frais_fixes)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 12), hon_gest)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 13), comm_maintien)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 14), valeur_marchande)
                 # Cushions
-                output_results[account_idx, scenario_idx, output_idx, 15] = passif_redresse
-                output_results[account_idx, scenario_idx, output_idx, 16] = coussin_credit
-                output_results[account_idx, scenario_idx, output_idx, 17] = coussin_marche
-                output_results[account_idx, scenario_idx, output_idx, 18] = coussin_depense
-                output_results[account_idx, scenario_idx, output_idx, 19] = coussin_decheance
-                output_results[account_idx, scenario_idx, output_idx, 20] = coussin_mortalite
-                output_results[account_idx, scenario_idx, output_idx, 21] = coussin_depot
+                cuda.atomic.add(output_results, (account_idx, output_idx, 15), passif_redresse)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 16), coussin_credit)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 17), coussin_marche)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 18), coussin_depense)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 19), coussin_decheance)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 20), coussin_mortalite)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 21), coussin_depot)
                 # VP values
-                output_results[account_idx, scenario_idx, output_idx, 22] = vp_frais_acquis
-                output_results[account_idx, scenario_idx, output_idx, 23] = vp_comm_vente
-                output_results[account_idx, scenario_idx, output_idx, 24] = vp_primes_garanties
-                output_results[account_idx, scenario_idx, output_idx, 25] = vp_primes_variables
-                output_results[account_idx, scenario_idx, output_idx, 26] = vp_frais_fixes
-                output_results[account_idx, scenario_idx, output_idx, 27] = vp_hon_gest
-                output_results[account_idx, scenario_idx, output_idx, 28] = vp_comm_maintien
-                output_results[account_idx, scenario_idx, output_idx, 29] = vp_prest_ech
-                output_results[account_idx, scenario_idx, output_idx, 30] = vp_prest_mrv
-                output_results[account_idx, scenario_idx, output_idx, 31] = vp_prest_deces
-                output_results[account_idx, scenario_idx, output_idx, 32] = vp_valeur_marchande
+                cuda.atomic.add(output_results, (account_idx, output_idx, 22), vp_frais_acquis)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 23), vp_comm_vente)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 24), vp_primes_garanties)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 25), vp_primes_variables)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 26), vp_frais_fixes)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 27), vp_hon_gest)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 28), vp_comm_maintien)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 29), vp_prest_ech)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 30), vp_prest_mrv)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 31), vp_prest_deces)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 32), vp_valeur_marchande)
                 # VP Cushions
-                output_results[account_idx, scenario_idx, output_idx, 33] = vp_passif_redresse
-                output_results[account_idx, scenario_idx, output_idx, 34] = vp_coussin_credit
-                output_results[account_idx, scenario_idx, output_idx, 35] = vp_coussin_marche
-                output_results[account_idx, scenario_idx, output_idx, 36] = vp_coussin_depense
-                output_results[account_idx, scenario_idx, output_idx, 37] = vp_coussin_decheance
-                output_results[account_idx, scenario_idx, output_idx, 38] = vp_coussin_mortalite
-                output_results[account_idx, scenario_idx, output_idx, 39] = vp_coussin_depot
+                cuda.atomic.add(output_results, (account_idx, output_idx, 33), vp_passif_redresse)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 34), vp_coussin_credit)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 35), vp_coussin_marche)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 36), vp_coussin_depense)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 37), vp_coussin_decheance)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 38), vp_coussin_mortalite)
+                cuda.atomic.add(output_results, (account_idx, output_idx, 39), vp_coussin_depot)
 
                 output_idx += 1
 
@@ -1509,7 +1514,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     n_output_fields = 40
 
     mem_per_account_input = all_account_data.shape[1] * all_account_data.dtype.itemsize
-    mem_per_account_output = nb_scenarios * max_timesteps * n_output_fields * np.dtype(np.float32).itemsize
+    # Output no longer has scenario dimension (aggregated in kernel with atomics!)
+    mem_per_account_output = max_timesteps * n_output_fields * np.dtype(np.float32).itemsize
     total_mem_per_account = mem_per_account_input + mem_per_account_output
 
     print(f"  Memory per account (Input + Output): {total_mem_per_account / 1024 ** 2:.2f} MB")
@@ -1556,13 +1562,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     stream_transfer = cuda.stream()  # For data transfers (if needed)
     
     # DuckDB-based batch storage strategy (simpler, more efficient)
-    max_possible_rows = n_accounts * nb_scenarios * max_timesteps
+    # No scenario dimension - aggregated atomically in kernel!
+    max_possible_rows = n_accounts * max_timesteps
     estimated_rows = int(max_possible_rows * 0.6)
     estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
     
-    print(f"\nUsing CUDF PRE-AGGREGATION + PARQUET STORAGE (optimized for speed & size)")
+    print(f"\nUsing ATOMIC IN-KERNEL AGGREGATION + PARQUET STORAGE (100x memory reduction!)")
     print(f"Estimated: {n_accounts:,} accounts, {estimated_rows:,} rows, ~{estimated_memory_gb:.1f} GB")
-    print(f"Each batch will aggregate scenarios (100x reduction) then write to Parquet")
+    print(f"Scenarios aggregated atomically inside GPU kernel (eliminates 840s CPU bottleneck!)")
     print(f"Final assembly will concatenate pre-aggregated batches (no re-aggregation needed)")
     
     # Create temporary Parquet directory (clean up any previous run first)
@@ -1636,18 +1643,18 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         # 1. Prepare batch-specific data
         batch_account_data = np.ascontiguousarray(all_account_data[start_idx:end_idx])
 
-        # 2. Allocate batch-specific output array on CPU (use pinned memory if enabled)
+        # 2. Allocate batch-specific output array on CPU (NO SCENARIO DIM - aggregated in kernel!)
         if use_pinned_memory:
             try:
-                h_batch_output = cuda.pinned_array((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
+                h_batch_output = cuda.pinned_array((current_batch_size, max_timesteps, n_output_fields), dtype=np.float32)
                 h_batch_output[:] = 0  # Initialize to zero
             except Exception as e:
                 logger.warning(f"  Pinned memory allocation failed ({e}), falling back to regular memory")
                 use_pinned_memory = False  # Disable for remaining batches
-                h_batch_output = np.zeros((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
+                h_batch_output = np.zeros((current_batch_size, max_timesteps, n_output_fields), dtype=np.float32)
         else:
-            h_batch_output = np.zeros((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
-        logger.info(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB")
+            h_batch_output = np.zeros((current_batch_size, max_timesteps, n_output_fields), dtype=np.float32)
+        logger.info(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB (100x smaller - scenarios aggregated in kernel!)")
 
         # 3. Copy batch data to GPU (async with stream)
         transfer_start = datetime.now()
@@ -1698,8 +1705,17 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         kernel_duration = (kernel_end - kernel_start).total_seconds()
         total_kernel_duration += kernel_duration
         logger.info(f"  Kernel execution for batch finished in: {kernel_duration:.2f} seconds")
+        
+        # 6.5. Divide by n_scenarios to get the mean (scenarios were atomically summed in kernel)
+        divide_start = datetime.now()
+        logger.info(f"  Computing scenario averages (dividing by {nb_scenarios})...")
+        # Divide only value columns (4-39), not ID fields (0-3)
+        d_batch_output[:, :, 4:] /= nb_scenarios
+        cuda.synchronize()
+        divide_time = (datetime.now() - divide_start).total_seconds()
+        logger.info(f"    Division complete: {divide_time:.3f}s")
 
-        # 6. Process results - GPU path (cuDF) or CPU path (pandas)
+        # 7. Process results - GPU path (cuDF) or CPU path (pandas)
         cpu_proc_start = datetime.now()
         process = psutil.Process(os.getpid())
         
@@ -1707,9 +1723,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             # ===== GPU-ACCELERATED PATH (cuDF) =====
             logger.info("  Processing results on GPU with cuDF...")
             
-            # Reshape GPU array directly (stays on GPU!)
+            # Reshape GPU array directly (stays on GPU! No scenario dim - already aggregated!)
             reshape_start = datetime.now()
-            total_rows = current_batch_size * nb_scenarios * max_timesteps
+            total_rows = current_batch_size * max_timesteps
             d_batch_reshaped = d_batch_output.reshape(total_rows, n_output_fields)
             reshape_time = (datetime.now() - reshape_start).total_seconds()
             logger.info(f"    Reshape on GPU: {reshape_time:.3f}s")
@@ -1741,7 +1757,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             # Convert ID columns to int32 on GPU
             type_start = datetime.now()
             gpu_df['ID_COMPTE'] = gpu_df['ID_COMPTE'].astype('int32')
-            gpu_df['SCN_EVAL'] = gpu_df['SCN_EVAL'].astype('int32')
+            # SCN_EVAL is now always 0 (scenarios aggregated in kernel)
             gpu_df['AN_EVAL'] = gpu_df['AN_EVAL'].astype('int32')
             gpu_df['MOIS_EVAL'] = gpu_df['MOIS_EVAL'].astype('int32')
             type_time = (datetime.now() - type_start).total_seconds()
@@ -1750,26 +1766,15 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             logger.info(f"    cuDF prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
             
             if num_rows > 0:
-                # AGGREGATE SCENARIOS ON GPU (100x data reduction!)
-                agg_start = datetime.now()
-                logger.info(f"    Aggregating {num_rows:,} rows across scenarios (GPU groupby)...")
+                # NO AGGREGATION NEEDED - Scenarios already aggregated in kernel!
+                logger.info(f"    Scenarios already averaged in kernel - skipping aggregation step")
                 
-                # Group by account/year/month and average across scenarios (GPU-accelerated!)
-                # This reduces from ~12M rows to ~120k rows (100x reduction)
-                agg_gpu_df = gpu_df.groupby(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL'], as_index=False).mean()
-                del gpu_df
-                gc.collect()
+                # Drop SCN_EVAL column (always 0 after kernel aggregation)
+                gpu_df = gpu_df.drop(columns=['SCN_EVAL'])
                 
-                # Drop SCN_EVAL column (no longer needed after averaging)
-                agg_gpu_df = agg_gpu_df.drop(columns=['SCN_EVAL'])
-                
-                agg_time = (datetime.now() - agg_start).total_seconds()
-                aggregated_rows = len(agg_gpu_df)
-                logger.info(f"      Aggregated {num_rows:,} rows → {aggregated_rows:,} rows in {agg_time:.3f}s (GPU)")
-                
-                # Transfer aggregated data to CPU (MUCH smaller now!)
+                # Transfer data to CPU (already at final size!)
                 transfer_start = datetime.now()
-                logger.info(f"    Transferring aggregated data to CPU (CuPy → NumPy)...")
+                logger.info(f"    Transferring {num_rows:,} pre-aggregated rows to CPU (CuPy → NumPy)...")
                 
                 # Get column list without SCN_EVAL
                 final_columns = [col for col in columns if col != 'SCN_EVAL']
@@ -1777,13 +1782,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 # Convert cuDF columns to NumPy
                 cpu_data = {}
                 for col in final_columns:
-                    cpu_data[col] = cp.asnumpy(agg_gpu_df[col].values)
+                    cpu_data[col] = cp.asnumpy(gpu_df[col].values)
                 
                 transfer_time = (datetime.now() - transfer_start).total_seconds()
-                logger.info(f"    Transferred {aggregated_rows:,} rows to CPU: {transfer_time:.3f}s")
+                logger.info(f"    Transferred {num_rows:,} rows to CPU: {transfer_time:.3f}s")
                 
                 # Free GPU memory AND unused CPU pinned memory immediately!
-                del agg_gpu_df, gpu_data, cupy_array, d_batch_reshaped
+                del gpu_df, gpu_data, cupy_array, d_batch_reshaped
                 # CRITICAL: Delete the unused h_batch_output pinned array (4GB per batch!)
                 if 'h_batch_output' in locals():
                     del h_batch_output
@@ -1832,16 +1837,16 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 
                 write_time = (datetime.now() - write_start).total_seconds()
                 file_size_mb = parquet_path.stat().st_size / 1024**2
-                total_time = agg_time + transfer_time + df_time + write_time
+                total_time = transfer_time + df_time + write_time
                 logger.info(f"    Written {file_size_mb:.1f} MB in {total_time:.3f}s ({file_size_mb/total_time:.1f} MB/s)")
-                logger.info(f"      (agg:{agg_time:.3f}s, transfer:{transfer_time:.3f}s, df:{df_time:.3f}s, write:{write_time:.3f}s)")
+                logger.info(f"      (transfer:{transfer_time:.3f}s, df:{df_time:.3f}s, write:{write_time:.3f}s)")
                 
                 # Free CPU DataFrame
                 del df
                 gc.collect()
                 
                 # Track stats
-                write_futures.append((i, file_size_mb, aggregated_rows, total_time))
+                write_futures.append((i, file_size_mb, num_rows, total_time))
             else:
                 logger.info(f"    No valid rows in batch - skipping write")
                 del cupy_array, gpu_data, d_batch_reshaped
@@ -1854,7 +1859,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             # Write completed, GPU memory freed
             transfer_from_gpu = 0.0  # Aggregated data transferred via CuPy
             total_transfer_duration += transfer_to_gpu  # Upload only
-            logger.info(f"  ✓ GPU-accelerated filtering + aggregation + fast transfer (100x data reduction, GPU memory freed)")
+            logger.info(f"  ✓ GPU-accelerated filtering + fast transfer (scenarios aggregated in kernel, GPU memory freed)")
             
         else:
             # ===== CPU PATH (pandas) =====
@@ -1869,12 +1874,12 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             
             logger.info("  Extracting valid results...")
             
-            # Reshape directly from pinned memory (no copy needed!)
+            # Reshape directly from pinned memory (no copy needed! No scenario dim!)
             reshape_start = datetime.now()
-            total_rows = current_batch_size * nb_scenarios * max_timesteps
+            total_rows = current_batch_size * max_timesteps
             reshaped = h_batch_output.reshape(total_rows, n_output_fields)
             reshape_time = (datetime.now() - reshape_start).total_seconds()
-            logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s (zero-copy from pinned memory)")
+            logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s (zero-copy, scenarios pre-aggregated)")
             
             # Use pandas DataFrame (optimized for columnar operations)
             extract_start = datetime.now()
@@ -1900,72 +1905,30 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 
                 num_rows = n_valid
                 
-                # OPTIMIZED: Aggregate scenarios using cuDF BEFORE saving (100x data reduction!)
+                # NO AGGREGATION NEEDED - Scenarios already aggregated in kernel!
                 write_start = datetime.now()
                 parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                logger.info(f"    Aggregating scenarios with cuDF (GPU)...")
+                logger.info(f"    Creating DataFrame from pre-aggregated data...")
                 
-                if CUDF_AVAILABLE:
-                    # Use cuDF for GPU-accelerated aggregation
-                    agg_start = datetime.now()
-                    
-                    # Create cuDF DataFrame directly from NumPy array (fast GPU transfer)
-                    gdf = cudf.DataFrame(valid_data, columns=columns)
-                    del valid_data
-                    gc.collect()
-                    
-                    # Convert ID columns to int32
-                    gdf['ID_COMPTE'] = gdf['ID_COMPTE'].astype('int32')
-                    gdf['SCN_EVAL'] = gdf['SCN_EVAL'].astype('int32')
-                    gdf['AN_EVAL'] = gdf['AN_EVAL'].astype('int32')
-                    gdf['MOIS_EVAL'] = gdf['MOIS_EVAL'].astype('int32')
-                    
-                    # Group by account/year/month and average across scenarios (GPU-accelerated!)
-                    # This reduces from ~12M rows to ~120k rows (100x reduction)
-                    agg_gdf = gdf.groupby(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL'], as_index=False).mean()
-                    del gdf
-                    gc.collect()
-                    
-                    # Drop SCN_EVAL column (no longer needed after averaging)
-                    agg_gdf = agg_gdf.drop(columns=['SCN_EVAL'])
-                    
-                    agg_time = (datetime.now() - agg_start).total_seconds()
-                    aggregated_rows = len(agg_gdf)
-                    logger.info(f"      Aggregated {n_valid:,} rows → {aggregated_rows:,} rows in {agg_time:.3f}s (GPU)")
-                    
-                    # Convert to pandas for parquet write
-                    df = agg_gdf.to_pandas()
-                    del agg_gdf
-                    gc.collect()
-                else:
-                    # Fallback to pandas (CPU)
-                    agg_start = datetime.now()
-                    df = pd.DataFrame(valid_data, columns=columns)
-                    del valid_data
-                    gc.collect()
-                    
-                    # Convert ID columns to int32
-                    df['ID_COMPTE'] = df['ID_COMPTE'].astype('int32')
-                    df['SCN_EVAL'] = df['SCN_EVAL'].astype('int32')
-                    df['AN_EVAL'] = df['AN_EVAL'].astype('int32')
-                    df['MOIS_EVAL'] = df['MOIS_EVAL'].astype('int32')
-                    
-                    # Group and average
-                    agg_df = df.groupby(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL'], as_index=False).mean()
-                    del df
-                    gc.collect()
-                    
-                    # Drop SCN_EVAL
-                    df = agg_df.drop(columns=['SCN_EVAL'])
-                    del agg_df
-                    gc.collect()
-                    
-                    agg_time = (datetime.now() - agg_start).total_seconds()
-                    aggregated_rows = len(df)
-                    logger.info(f"      Aggregated {n_valid:,} rows → {aggregated_rows:,} rows in {agg_time:.3f}s (CPU)")
+                # Create DataFrame directly (no aggregation needed!)
+                df_start = datetime.now()
+                df = pd.DataFrame(valid_data, columns=columns)
+                del valid_data
+                gc.collect()
                 
-                # Write aggregated data to parquet (much smaller now!)
-                logger.info(f"    Writing aggregated data to parquet...")
+                # Convert ID columns to int32
+                df['ID_COMPTE'] = df['ID_COMPTE'].astype('int32')
+                df['AN_EVAL'] = df['AN_EVAL'].astype('int32')
+                df['MOIS_EVAL'] = df['MOIS_EVAL'].astype('int32')
+                
+                # Drop SCN_EVAL column (always 0 after kernel aggregation)
+                df = df.drop(columns=['SCN_EVAL'])
+                
+                df_time = (datetime.now() - df_start).total_seconds()
+                logger.info(f"      Created DataFrame with {len(df):,} pre-aggregated rows in {df_time:.3f}s")
+                
+                # Write pre-aggregated data to parquet
+                logger.info(f"    Writing pre-aggregated data to parquet...")
                 write_start_time = datetime.now()
                 fastparquet_write(
                     str(parquet_path),
@@ -1981,10 +1944,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 total_time = (datetime.now() - write_start).total_seconds()
                 file_size_mb = parquet_path.stat().st_size / 1024**2
                 logger.info(f"    Written {file_size_mb:.1f} MB in {total_time:.3f}s ({file_size_mb/total_time:.1f} MB/s)")
-                logger.info(f"      (agg:{agg_time:.3f}s, write:{write_time:.3f}s)")
+                logger.info(f"      (df:{df_time:.3f}s, write:{write_time:.3f}s)")
                 
                 # Track stats
-                write_futures.append((i, file_size_mb, aggregated_rows, total_time))
+                write_futures.append((i, file_size_mb, num_rows, total_time))
                 
                 # Free DataFrame
                 del df
