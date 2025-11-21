@@ -411,9 +411,6 @@ input[type="password"] {
                 </div>
             </div>
             <div class="status">
-                <button class="btn" onclick="openTokenModal()" style="margin-right: 10px; padding: 5px 10px;" title="Configure API Token">
-                    🔑 Token
-                </button>
                 <span id="api-status" class="status-badge">Checking...</span>
                 <span id="gpu-status" class="status-badge">GPU: Unknown</span>
             </div>
@@ -530,30 +527,6 @@ input[type="password"] {
 
     </div>
 
-    <!-- Token Setup Modal -->
-    <div id="token-modal" class="modal" style="display: none;">
-        <div class="modal-content" style="max-width: 500px;">
-            <div class="modal-header">
-                <h2>🔑 API Token Setup</h2>
-            </div>
-            <div class="modal-body">
-                <p>Enter your RunPod API endpoint token to access the service:</p>
-                <form id="token-form">
-                    <div class="form-group">
-                        <label for="api-token">API Token:</label>
-                        <input type="password" id="api-token" name="api-token" placeholder="Enter your RunPod token" required style="width: 95%;">
-                    </div>
-                    <button type="submit" class="btn btn-primary">Save Token</button>
-                    <button type="button" class="btn btn-secondary" onclick="skipToken()">Skip (Use Default)</button>
-                </form>
-                <div id="token-message"></div>
-                <div style="margin-top: 15px; padding: 10px; background: #ffffcc; border: 1px solid #000; font-size: 12px;">
-                    <strong>Note:</strong> Your token will be stored locally in your browser. You can change it later by clicking the 🔑 icon in the header.
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- Admin Actions Modal -->
     <div id="admin-modal" class="modal">
         <div class="modal-content">
@@ -604,61 +577,12 @@ input[type="password"] {
     </div>
 
     <script>
-        // RunPod endpoint URL
+        // API endpoint URL
         const API_BASE = 'https://dmbnzrujidzodv.api.runpod.ai';
         let selectedJobId = null;
         
-        // Token Management
-        function getApiToken() {
-            return localStorage.getItem('api_token') || '';
-        }
-        
-        function setApiToken(token) {
-            localStorage.setItem('api_token', token);
-            localStorage.setItem('token_set_at', new Date().toISOString());
-        }
-        
-        function hasTokenBeenSet() {
-            return localStorage.getItem('token_set_at') !== null;
-        }
-        
-        function openTokenModal() {
-            document.getElementById('token-modal').style.display = 'block';
-            document.getElementById('api-token').value = getApiToken();
-        }
-        
-        function closeTokenModal() {
-            document.getElementById('token-modal').style.display = 'none';
-        }
-        
-        function skipToken() {
-            setApiToken('');
-            closeTokenModal();
-        }
-        
-        // Handle token form submission
-        document.getElementById('token-form').addEventListener('submit', (e) => {
-            e.preventDefault();
-            const token = document.getElementById('api-token').value;
-            setApiToken(token);
-            document.getElementById('token-message').innerHTML = '<div class="success">✓ Token saved successfully!</div>';
-            setTimeout(() => {
-                closeTokenModal();
-                document.getElementById('token-message').innerHTML = '';
-                // Refresh health check with new token
-                checkHealth();
-            }, 1000);
-        });
-        
-        // Helper function to make API requests with token
+        // Helper function to make API requests
         async function fetchWithToken(url, options = {}) {
-            const token = getApiToken();
-            if (!options.headers) {
-                options.headers = {};
-            }
-            if (token) {
-                options.headers['Authorization'] = `Bearer ${token}`;
-            }
             return fetch(url, options);
         }
 
@@ -1229,13 +1153,8 @@ input[type="password"] {
         setInterval(loadJobs, 10000);
 
         // Initialize
-        // Check if token modal should be shown on first visit
-        if (!hasTokenBeenSet()) {
-            openTokenModal();
-        } else {
-            checkHealth();
-            loadJobs();
-        }
+        checkHealth();
+        loadJobs();
     </script>
 </body>
 </html>
