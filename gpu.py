@@ -1814,21 +1814,22 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy) in {mask_time:.3f}s")
             
             if n_valid > 0:
-                # Use POLARS - much faster than pandas for DataFrame creation
+                # CRITICAL OPTIMIZATION: Extract valid rows with NumPy BEFORE creating DataFrame!
                 prep_start = datetime.now()
-                logger.info(f"    Creating Polars DataFrame from NumPy array...")
+                logger.info(f"    Extracting {n_valid:,} valid rows with NumPy (fast)...")
                 
-                # Create Polars DataFrame from full reshaped array (MUCH faster than pandas!)
-                pl_df = pl.DataFrame(reshaped, schema=columns, orient="row")
-                df_create_time = (datetime.now() - prep_start).total_seconds()
-                logger.info(f"    Polars DataFrame created: {df_create_time:.3f}s")
+                # Use NumPy boolean indexing to extract only valid rows (MUCH faster than DataFrame filter!)
+                valid_data = reshaped[valid_mask]
+                extract_time = (datetime.now() - prep_start).total_seconds()
+                logger.info(f"    Extracted valid data: {extract_time:.3f}s")
                 
-                # Filter to valid rows (Polars is optimized for this)
-                filter_start = datetime.now()
-                pl_df = pl_df.filter(pl.col('ID_COMPTE') > 0)
+                # Now create Polars DataFrame from ONLY valid rows (half the data = much faster!)
+                df_start = datetime.now()
+                pl_df = pl.DataFrame(valid_data, schema=columns, orient="row")
+                df_create_time = (datetime.now() - df_start).total_seconds()
+                logger.info(f"    Polars DataFrame created from {n_valid:,} rows: {df_create_time:.3f}s")
+                
                 num_rows = len(pl_df)
-                filter_time = (datetime.now() - filter_start).total_seconds()
-                logger.info(f"    Filtered to {num_rows:,} valid rows: {filter_time:.3f}s")
                 
                 # Convert ID columns to int32 for smaller file size
                 type_start = datetime.now()
@@ -1841,10 +1842,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 type_time = (datetime.now() - type_start).total_seconds()
                 
                 prep_time = (datetime.now() - prep_start).total_seconds()
-                logger.info(f"    Polars prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
+                logger.info(f"    Polars prep total: {prep_time:.3f}s (extract:{extract_time:.3f}s, create:{df_create_time:.3f}s, types:{type_time:.3f}s)")
                 
                 # Free large arrays immediately (before write)
-                del h_batch_output, reshaped, valid_mask
+                del h_batch_output, reshaped, valid_mask, valid_data
                 gc.collect()
                 
                 # Write with Polars (optimized parquet writer - faster than pandas)
