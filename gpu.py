@@ -30,9 +30,26 @@ except ImportError:
     print("⚠ CuDF not available - falling back to pandas (CPU). Install with: pip install cudf-cu12")
 
 # GPU memory cleanup helper
-def force_gpu_memory_cleanup():
-    """Force GPU memory cleanup by running garbage collection"""
-    gc.collect()
+def force_gpu_memory_cleanup(aggressive=False):
+    """Force GPU memory cleanup by running garbage collection
+    
+    Args:
+        aggressive: If True, performs full generational GC and RMM pool reset
+    """
+    if aggressive:
+        gc.collect(2)  # Full collection (generation 2)
+        # Try to reset RMM pool to defragment GPU memory
+        if CUDF_AVAILABLE:
+            try:
+                import rmm
+                # Get current pool statistics
+                mr = rmm.mr.get_current_device_resource()
+                if hasattr(mr, 'release'):
+                    mr.release()  # Release unused memory back to OS
+            except:
+                pass
+    else:
+        gc.collect()
 
 # Async parquet writer (Arrow version - kept for compatibility)
 def write_parquet_async(arrow_table, parquet_path, batch_num, num_rows):
@@ -1771,6 +1788,15 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                     logger.info(f"    GPU memory freed (Python GC only)")
                     pass
                 
+                # Proactive memory check before DataFrame creation
+                batch_mem_current = process.memory_info().rss / 1024**3
+                if batch_mem_current > 15.0:  # Memory threshold: 15 GB
+                    logger.info(f"    [Proactive cleanup triggered at {batch_mem_current:.2f} GB]")
+                    gc.collect(2)  # Aggressive collection
+                    force_gpu_memory_cleanup(aggressive=True)
+                    batch_mem_after = process.memory_info().rss / 1024**3
+                    logger.info(f"    [Memory reduced to {batch_mem_after:.2f} GB]")
+                
                 # Create pandas DataFrame from NumPy arrays (fast on CPU)
                 df_start = datetime.now()
                 df = pd.DataFrame(cpu_data)
@@ -1778,7 +1804,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 logger.info(f"    Created pandas DataFrame: {df_time:.3f}s")
                 
                 del cpu_data
-                gc.collect()
+                gc.collect()  # Immediate cleanup
                 
                 # Write aggregated data to parquet
                 write_start = datetime.now()
@@ -1787,7 +1813,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                     str(parquet_path),
                     df,
                     compression='snappy',
-                    row_group_offsets=100000,
+                    row_group_offsets=50000,  # Smaller row groups for better memory efficiency
                     file_scheme='simple',
                     write_index=False,
                     stats=False
@@ -1974,11 +2000,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             del h_batch_output
         
         # Force garbage collection and GPU memory cleanup after EVERY batch
+        # Use aggressive cleanup every 4 batches to prevent memory fragmentation
         gc_start = datetime.now()
-        force_gpu_memory_cleanup()
+        is_periodic_aggressive = (i + 1) % 4 == 0
+        force_gpu_memory_cleanup(aggressive=is_periodic_aggressive)
         gc_time = (datetime.now() - gc_start).total_seconds()
         batch_mem_end = process.memory_info().rss / 1024**3
-        logger.info(f"  [Memory cleanup: GPU+GC in {gc_time:.3f}s, mem at end: {batch_mem_end:.2f} GB, delta: {batch_mem_end - batch_mem_start:+.2f} GB]")
+        cleanup_type = "AGGRESSIVE" if is_periodic_aggressive else "standard"
+        logger.info(f"  [Memory cleanup ({cleanup_type}): GPU+GC in {gc_time:.3f}s, mem at end: {batch_mem_end:.2f} GB, delta: {batch_mem_end - batch_mem_start:+.2f} GB]")
 
         batch_end_time = datetime.now()
         batch_duration = (batch_end_time - batch_start_time).total_seconds()
