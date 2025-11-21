@@ -577,8 +577,8 @@ input[type="password"] {
     </div>
 
     <script>
-        // API endpoint URL
-        const API_BASE = 'https://dmbnzrujidzodv.api.runpod.ai';
+        // API endpoint URL - points to Flask app (same origin)
+        const API_BASE = window.location.origin;
         let selectedJobId = null;
         
         // Helper function to make API requests
