@@ -2033,9 +2033,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print(f"  Total data written: {total_file_size_mb:.1f} MB ({total_rows_written:,} rows)")
     print(f"  Effective speedup from parallelism: {total_write_time/wait_duration:.1f}x")
     
-    # --- FINAL DATA ASSEMBLY (Simple concatenation, scenarios already aggregated) ---
+    # --- FINAL DATA ASSEMBLY (Optimized for minimal memory usage) ---
     print("\n" + "="*60)
-    print("FINAL DATA ASSEMBLY (Concatenating pre-aggregated batches)")
+    print("FINAL DATA ASSEMBLY (Optimized aggregation)")
     print("="*60)
     
     merge_start = datetime.now()
@@ -2043,42 +2043,40 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     # Count Parquet files
     parquet_files = sorted(parquet_dir.glob("batch_*.parquet"))
     print(f"\nFound {len(parquet_files)} Parquet files to concatenate")
-    
-    # Use DuckDB for fast concatenation (no aggregation needed - already done per batch!)
-    print("Concatenating all batches with DuckDB...")
     parquet_pattern = str(parquet_dir / "batch_*.parquet")
     
-    concat_sql = f"""
-    SELECT *
-    FROM read_parquet('{parquet_pattern}')
-    ORDER BY ID_COMPTE, AN_EVAL, MOIS_EVAL
-    """
+    # OPTIMIZATION: Only load detailed data when debugging a specific account
+    # Otherwise, compute VP_FLUX_TOTAL directly from parquet files using DuckDB aggregation
+    all_results = None
     
-    all_results = duckdb.execute(concat_sql).df()
-    
-    merge_time = (datetime.now() - merge_start).total_seconds()
-    print(f"  Concatenated to {len(all_results):,} rows in {merge_time:.2f}s")
-    print(f"  Size: {all_results.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
-    
-    # Cleanup Parquet files
-    print("\nCleaning up Parquet files...")
-    try:
-        shutil.rmtree(parquet_dir)
-        print(f"  Removed temporary Parquet directory: {parquet_dir}")
-    except Exception as e:
-        print(f"  Warning: Could not remove temporary Parquet files: {e}")
+    if debug_account is not None:
+        # Debug mode: Load only the specific account's data
+        print(f"Debug mode: Loading data for account {debug_account} only...")
+        debug_sql = f"""
+        SELECT *
+        FROM read_parquet('{parquet_pattern}')
+        WHERE ID_COMPTE = {debug_account}
+        ORDER BY AN_EVAL, MOIS_EVAL
+        """
+        all_results = duckdb.execute(debug_sql).df()
+        merge_time = (datetime.now() - merge_start).total_seconds()
+        print(f"  Loaded {len(all_results):,} rows for account {debug_account} in {merge_time:.2f}s")
+        print(f"  Size: {all_results.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
+    else:
+        # Production mode: Don't load all data, just compute the essential VP_FLUX_TOTAL
+        print("Production mode: Computing VP_FLUX_TOTAL directly from parquet files (no full data load)...")
+        merge_time = 0  # Will be computed below
 
     # Debug logging for specific account
     # Note: With scenario averaging, we show the averaged results (not individual scenarios)
-    if debug_account is not None:
+    if debug_account is not None and all_results is not None:
         print("\n" + "="*60)
         print(f"DEBUG: DETAILED RESULTS FOR ACCOUNT {debug_account}")
         print(f"(Showing scenario-averaged results across all {nb_scenarios} scenarios)")
         print("="*60)
         
-        # Filter for the specific account (scenarios are already averaged)
-        debug_mask = all_results['ID_COMPTE'] == debug_account
-        debug_data = all_results[debug_mask].copy()
+        # Data is already filtered for the specific account
+        debug_data = all_results.copy()
         
         if len(debug_data) > 0:
             # Sort by year and month
@@ -2150,34 +2148,91 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
 
     agg_start = datetime.now()
     
-    # Scenario averaging already done by DuckDB SQL
-    print("Scenario averaging already completed by DuckDB")
-    calculs_sommaire = all_results
-    print(f"  → {len(calculs_sommaire):,} rows")
-    
-    print("Creating VP_FLUX_COMPTE...")
-    vp_flux_compte = aggregate_vp_flux_compte(calculs_sommaire)
-    print(f"  → {len(vp_flux_compte):,} accounts")
-    
-    print("Creating VP_FLUX_TOTAL...")
-    vp_flux_total = aggregate_vp_flux_total(vp_flux_compte)
-    
-    print("Creating FLUX_PROJETES...")
-    flux_projetes = aggregate_flux_projetes(calculs_sommaire)
-    print(f"  → {len(flux_projetes):,} time periods")
-    
-    agg_time = (datetime.now() - agg_start).total_seconds()
-    print(f"\nTotal aggregation time: {agg_time:.2f}s")
+    # OPTIMIZATION: Compute VP_FLUX_TOTAL directly from parquet files using DuckDB
+    # This avoids loading all data into memory
+    if debug_account is None:
+        # Production mode: Compute VP_FLUX_TOTAL efficiently without loading all data
+        print("Computing VP_FLUX_TOTAL directly from parquet files (ultra-fast, low memory)...")
+        
+        # Get all VP columns by reading schema from first parquet file
+        sample_df = pd.read_parquet(parquet_files[0], nrows=1)
+        vp_columns = [col for col in sample_df.columns if col.startswith('VP_')]
+        
+        # Build SQL query to sum all VP columns across all accounts
+        vp_sum_expressions = [f"SUM({col}) as {col}" for col in vp_columns]
+        vp_sum_sql = ", ".join(vp_sum_expressions)
+        
+        total_vp_sql = f"""
+        SELECT 
+            {vp_sum_sql}
+        FROM read_parquet('{parquet_pattern}')
+        """
+        
+        vp_totals = duckdb.execute(total_vp_sql).df()
+        
+        # Calculate total VP (sum of all VP columns)
+        total_vp = vp_totals.sum(axis=1).iloc[0]
+        
+        # Create VP_FLUX_TOTAL dataframe
+        vp_flux_total = pd.DataFrame({
+            'CATEGORIE': ['TOTAL'],
+            'VP_FLUX_TOT': [total_vp]
+        })
+        
+        print(f"  ✓ VP_FLUX_TOTAL computed: ${total_vp:,.2f}")
+        
+        # Set empty dataframes for the other outputs (not needed in production mode)
+        vp_flux_compte = None
+        flux_projetes = None
+        
+        merge_time = (datetime.now() - agg_start).total_seconds()
+        agg_time = merge_time
+        print(f"\nTotal aggregation time: {agg_time:.2f}s (optimized - no full data load!)")
+        
+    else:
+        # Debug mode: Load and aggregate all data for the specific account
+        print("Scenario averaging already completed by DuckDB")
+        calculs_sommaire = all_results
+        print(f"  → {len(calculs_sommaire):,} rows (account {debug_account} only)")
+        
+        print("Creating VP_FLUX_COMPTE...")
+        vp_flux_compte = aggregate_vp_flux_compte(calculs_sommaire)
+        print(f"  → {len(vp_flux_compte):,} accounts")
+        
+        print("Creating VP_FLUX_TOTAL...")
+        vp_flux_total = aggregate_vp_flux_total(vp_flux_compte)
+        
+        print("Creating FLUX_PROJETES...")
+        flux_projetes = aggregate_flux_projetes(calculs_sommaire)
+        print(f"  → {len(flux_projetes):,} time periods")
+        
+        agg_time = (datetime.now() - agg_start).total_seconds()
+        print(f"\nTotal aggregation time: {agg_time:.2f}s")
 
     # Save outputs
     print("\nSaving outputs...")
     output_path.mkdir(parents=True, exist_ok=True)
-    flux_projetes.to_csv(output_path.joinpath("FLUX_PROJETES_GPU.csv"), index=False, sep=';')
-    vp_flux_compte.to_csv(output_path.joinpath("VP_FLUX_COMPTE_GPU.csv"), index=False, sep=';')
+    
+    # Always save VP_FLUX_TOTAL
     vp_flux_total.to_csv(output_path.joinpath("VP_FLUX_TOTAL_GPU.csv"), index=False, sep=';')
-    print(f"  ✓ Saved {output_path}/FLUX_PROJETES_GPU.csv")
-    print(f"  ✓ Saved {output_path}/VP_FLUX_COMPTE_GPU.csv")
     print(f"  ✓ Saved {output_path}/VP_FLUX_TOTAL_GPU.csv")
+    
+    # Only save detailed outputs in debug mode
+    if debug_account is not None and flux_projetes is not None and vp_flux_compte is not None:
+        flux_projetes.to_csv(output_path.joinpath("FLUX_PROJETES_GPU.csv"), index=False, sep=';')
+        vp_flux_compte.to_csv(output_path.joinpath("VP_FLUX_COMPTE_GPU.csv"), index=False, sep=';')
+        print(f"  ✓ Saved {output_path}/FLUX_PROJETES_GPU.csv")
+        print(f"  ✓ Saved {output_path}/VP_FLUX_COMPTE_GPU.csv")
+    else:
+        print(f"  ℹ Skipped FLUX_PROJETES and VP_FLUX_COMPTE (not in debug mode)")
+    
+    # Cleanup Parquet files after aggregation is complete
+    print("\nCleaning up Parquet files...")
+    try:
+        shutil.rmtree(parquet_dir)
+        print(f"  Removed temporary Parquet directory: {parquet_dir}")
+    except Exception as e:
+        print(f"  Warning: Could not remove temporary Parquet files: {e}")
 
     # Print summary
     end_time = datetime.now()
@@ -2201,7 +2256,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print(f"  Total batches: {num_batches}")
     print(f"  Scenarios per account: {nb_scenarios}")
     print(f"  Average time per batch: {total_duration/num_batches:.2f}s")
-    print(f"  Total rows generated: {len(all_results):,}")
+    if all_results is not None:
+        print(f"  Total rows loaded: {len(all_results):,}")
+    else:
+        print(f"  Total rows loaded: 0 (optimized mode - data not loaded)")
     print(f"\nResults:")
     print(f"  Total PV of flows: ${vp_flux_total['VP_FLUX_TOT'].iloc[0]:,.2f}")
     print("=" * 60)
@@ -2253,8 +2311,8 @@ if __name__ == "__main__":
             nb_scenarios=100,
             max_accounts=200000,
             threads_per_block=(32, 8),  # (accounts_per_block, scenarios_per_block) - 256 threads per block
-            debug_account=args.debug_account,
-            debug_scenario=args.debug_scenario
+            debug_account=3,
+            debug_scenario=2
         )
 
         if results:
@@ -2263,10 +2321,14 @@ if __name__ == "__main__":
             print("=" * 60)
             print("\nVP_FLUX_TOTAL:")
             print(results['vp_flux_total'])
-            print("\nVP_FLUX_COMPTE (first 5 accounts):")
-            print(results['vp_flux_compte'].head())
-            print("\nFLUX_PROJETES (first 10 periods):")
-            print(results['flux_projetes'].head(10))
+            
+            if results['vp_flux_compte'] is not None:
+                print("\nVP_FLUX_COMPTE (first 5 accounts):")
+                print(results['vp_flux_compte'].head())
+            
+            if results['flux_projetes'] is not None:
+                print("\nFLUX_PROJETES (first 10 periods):")
+                print(results['flux_projetes'].head(10))
 
     except Exception as e:
         print(f"\nAn error occurred: {e}")
