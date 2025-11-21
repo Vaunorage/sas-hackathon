@@ -18,13 +18,13 @@ import tempfile
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pyarrow.compute as pc
-# from fastparquet import write as fastparquet_write  # Not needed for NPY format
+from fastparquet import write as fastparquet_write
 
 # Try to import cuDF for GPU-accelerated DataFrame operations
 try:
     import cudf
     import cupy as cp
-    CUDF_AVAILABLE = False  # DISABLED - cuDF causes GPU memory leaks and slow DataFrame creation
+    CUDF_AVAILABLE = True  # ENABLED for batch-level aggregation before saving
 except ImportError:
     CUDF_AVAILABLE = False
     print("⚠ CuDF not available - falling back to pandas (CPU). Install with: pip install cudf-cu12")
@@ -1543,16 +1543,16 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     estimated_rows = int(max_possible_rows * 0.6)
     estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
     
-    print(f"\nUsing NUMPY NPY BATCH STORAGE (optimized for maximum speed)")
+    print(f"\nUsing CUDF PRE-AGGREGATION + PARQUET STORAGE (optimized for speed & size)")
     print(f"Estimated: {n_accounts:,} accounts, {estimated_rows:,} rows, ~{estimated_memory_gb:.1f} GB")
-    print(f"Each batch will be written to NPY file (raw binary, zero conversion overhead)")
-    print(f"Final aggregation will be done with pandas groupby after loading all NPY files")
+    print(f"Each batch will aggregate scenarios (100x reduction) then write to Parquet")
+    print(f"Final assembly will concatenate pre-aggregated batches (no re-aggregation needed)")
     
-    # Create temporary NPY directory (clean up any previous run first)
+    # Create temporary Parquet directory (clean up any previous run first)
     parquet_dir = Path(output_path) / "_temp_parquet"
     if parquet_dir.exists():
         shutil.rmtree(parquet_dir)
-        print(f"Cleaned up existing npy directory")
+        print(f"Cleaned up existing parquet directory")
     parquet_dir.mkdir(parents=True, exist_ok=True)
     
     # Define column names for the table
@@ -1570,9 +1570,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
     ]
     
-    print(f"NPY directory: {parquet_dir}")
-    print(f"Using NumPy binary format (ZERO OVERHEAD - MAXIMUM SPEED)")
-    print(f"   Direct NumPy array save → no conversion, no compression overhead")
+    print(f"Parquet directory: {parquet_dir}")
+    if CUDF_AVAILABLE:
+        print(f"Using cuDF (GPU) for scenario aggregation + fastparquet write")
+        print(f"   GPU kernel → cuDF groupby (GPU) → pandas → fastparquet (100x data reduction)")
+    else:
+        print(f"Using pandas (CPU) for scenario aggregation + fastparquet write")
+        print(f"   GPU kernel → pandas groupby (CPU) → fastparquet (100x data reduction)")
     
     # Create thread pool for async parquet writes
     parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -1835,37 +1839,96 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 
                 num_rows = n_valid
                 
-                # ULTRA-FAST: Write raw NumPy array directly to disk (no pandas overhead!)
+                # OPTIMIZED: Aggregate scenarios using cuDF BEFORE saving (100x data reduction!)
                 write_start = datetime.now()
-                npy_path = parquet_dir / f"batch_{i:04d}.npy"
-                logger.info(f"    Writing raw NumPy array (NPY format - FASTEST)...")
+                parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
+                logger.info(f"    Aggregating scenarios with cuDF (GPU)...")
                 
-                # Convert ID columns to int32 for space savings
-                # Make a copy to avoid modifying original
-                output_data = valid_data.copy()
-                output_data[:, 0:4] = output_data[:, 0:4].astype(np.int32)
+                if CUDF_AVAILABLE:
+                    # Use cuDF for GPU-accelerated aggregation
+                    agg_start = datetime.now()
+                    
+                    # Create cuDF DataFrame directly from NumPy array (fast GPU transfer)
+                    gdf = cudf.DataFrame(valid_data, columns=columns)
+                    del valid_data
+                    gc.collect()
+                    
+                    # Convert ID columns to int32
+                    gdf['ID_COMPTE'] = gdf['ID_COMPTE'].astype('int32')
+                    gdf['SCN_EVAL'] = gdf['SCN_EVAL'].astype('int32')
+                    gdf['AN_EVAL'] = gdf['AN_EVAL'].astype('int32')
+                    gdf['MOIS_EVAL'] = gdf['MOIS_EVAL'].astype('int32')
+                    
+                    # Group by account/year/month and average across scenarios (GPU-accelerated!)
+                    # This reduces from ~12M rows to ~120k rows (100x reduction)
+                    agg_gdf = gdf.groupby(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL'], as_index=False).mean()
+                    del gdf
+                    gc.collect()
+                    
+                    # Drop SCN_EVAL column (no longer needed after averaging)
+                    agg_gdf = agg_gdf.drop(columns=['SCN_EVAL'])
+                    
+                    agg_time = (datetime.now() - agg_start).total_seconds()
+                    aggregated_rows = len(agg_gdf)
+                    logger.info(f"      Aggregated {n_valid:,} rows → {aggregated_rows:,} rows in {agg_time:.3f}s (GPU)")
+                    
+                    # Convert to pandas for parquet write
+                    df = agg_gdf.to_pandas()
+                    del agg_gdf
+                    gc.collect()
+                else:
+                    # Fallback to pandas (CPU)
+                    agg_start = datetime.now()
+                    df = pd.DataFrame(valid_data, columns=columns)
+                    del valid_data
+                    gc.collect()
+                    
+                    # Convert ID columns to int32
+                    df['ID_COMPTE'] = df['ID_COMPTE'].astype('int32')
+                    df['SCN_EVAL'] = df['SCN_EVAL'].astype('int32')
+                    df['AN_EVAL'] = df['AN_EVAL'].astype('int32')
+                    df['MOIS_EVAL'] = df['MOIS_EVAL'].astype('int32')
+                    
+                    # Group and average
+                    agg_df = df.groupby(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL'], as_index=False).mean()
+                    del df
+                    gc.collect()
+                    
+                    # Drop SCN_EVAL
+                    df = agg_df.drop(columns=['SCN_EVAL'])
+                    del agg_df
+                    gc.collect()
+                    
+                    agg_time = (datetime.now() - agg_start).total_seconds()
+                    aggregated_rows = len(df)
+                    logger.info(f"      Aggregated {n_valid:,} rows → {aggregated_rows:,} rows in {agg_time:.3f}s (CPU)")
                 
-                # Free source data NOW
-                del valid_data
+                # Write aggregated data to parquet (much smaller now!)
+                logger.info(f"    Writing aggregated data to parquet...")
+                write_start_time = datetime.now()
+                fastparquet_write(
+                    str(parquet_path),
+                    df,
+                    compression='LZ4',
+                    row_group_offsets=100000,
+                    file_scheme='simple',
+                    write_index=False,
+                    stats=False
+                )
+                write_time = (datetime.now() - write_start_time).total_seconds()
+                
+                total_time = (datetime.now() - write_start).total_seconds()
+                file_size_mb = parquet_path.stat().st_size / 1024**2
+                logger.info(f"    Written {file_size_mb:.1f} MB in {total_time:.3f}s ({file_size_mb/total_time:.1f} MB/s)")
+                logger.info(f"      (agg:{agg_time:.3f}s, write:{write_time:.3f}s)")
+                
+                # Track stats
+                write_futures.append((i, file_size_mb, aggregated_rows, total_time))
+                
+                # Free DataFrame
+                del df
                 gc.collect()
-                
-                # Write directly to disk with np.save (optimized binary format)
-                npy_start = datetime.now()
-                np.save(str(npy_path), output_data)
-                npy_time = (datetime.now() - npy_start).total_seconds()
-                
-                write_time = (datetime.now() - npy_start).total_seconds()
-                file_size_mb = npy_path.stat().st_size / 1024**2
-                logger.info(f"    Written {file_size_mb:.1f} MB in {write_time:.3f}s ({file_size_mb/write_time:.1f} MB/s)")
-                
-                # Track stats (synchronous write, already complete)
-                write_futures.append((i, file_size_mb, num_rows, write_time))
-                
-                # CRITICAL: Free array and force memory release
-                del output_data
-                # Force Python GC to release memory immediately
                 gc.collect()
-                gc.collect()  # Run twice to catch circular references
             else:
                 # No valid data - just clean up
                 del h_batch_output, reshaped, valid_mask
@@ -1896,7 +1959,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
 
     # --- SUMMARIZE WRITES ---
     print("\n" + "="*60)
-    print("NPY WRITE SUMMARY")
+    print("PARQUET WRITE SUMMARY (Pre-aggregated data)")
     print("="*60)
     
     wait_start = datetime.now()
@@ -1904,9 +1967,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     total_file_size_mb = 0
     total_rows_written = 0
     
-    # All writes are synchronous with NPY - just sum up
+    # All writes are synchronous - just sum up
     if len(write_futures) > 0:
-        print(f"\nAll {len(write_futures)} writes completed synchronously (NPY binary format)")
+        print(f"\nAll {len(write_futures)} writes completed synchronously")
         for batch_num, file_size_mb, num_rows, write_time in write_futures:
             total_write_time += write_time
             total_file_size_mb += file_size_mb
@@ -1925,63 +1988,40 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print(f"  Total data written: {total_file_size_mb:.1f} MB ({total_rows_written:,} rows)")
     print(f"  Effective speedup from parallelism: {total_write_time/wait_duration:.1f}x")
     
-    # --- FINAL AGGREGATION WITH NUMPY (ULTRA-FAST) ---
+    # --- FINAL DATA ASSEMBLY (Simple concatenation, scenarios already aggregated) ---
     print("\n" + "="*60)
-    print("FINAL DATA ASSEMBLY (NumPy array aggregation)")
+    print("FINAL DATA ASSEMBLY (Concatenating pre-aggregated batches)")
     print("="*60)
     
     merge_start = datetime.now()
     
-    # Count NPY files
-    npy_files = sorted(parquet_dir.glob("batch_*.npy"))
-    print(f"\nFound {len(npy_files)} NPY files to aggregate")
+    # Count Parquet files
+    parquet_files = sorted(parquet_dir.glob("batch_*.parquet"))
+    print(f"\nFound {len(parquet_files)} Parquet files to concatenate")
     
-    # Load all data into single array
-    print("Loading all NPY files...")
-    load_start = datetime.now()
-    all_data_chunks = []
-    for npy_file in npy_files:
-        chunk = np.load(str(npy_file))
-        all_data_chunks.append(chunk)
+    # Use DuckDB for fast concatenation (no aggregation needed - already done per batch!)
+    print("Concatenating all batches with DuckDB...")
+    parquet_pattern = str(parquet_dir / "batch_*.parquet")
     
-    all_data = np.vstack(all_data_chunks)
-    del all_data_chunks
-    gc.collect()
-    load_time = (datetime.now() - load_start).total_seconds()
-    print(f"  Loaded {len(all_data):,} rows in {load_time:.2f}s")
+    concat_sql = f"""
+    SELECT *
+    FROM read_parquet('{parquet_pattern}')
+    ORDER BY ID_COMPTE, AN_EVAL, MOIS_EVAL
+    """
     
-    # Aggregate across scenarios using pandas groupby (fast for this operation)
-    print("Aggregating across scenarios...")
-    agg_start = datetime.now()
+    all_results = duckdb.execute(concat_sql).df()
     
-    # Convert to DataFrame for aggregation (now we only do this once for ALL data)
-    df = pd.DataFrame(all_data, columns=columns)
-    del all_data
-    gc.collect()
-    
-    # Group by account, year, month and average
-    grouped = df.groupby(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL'], as_index=False).mean()
-    del df
-    gc.collect()
-    
-    # Sort by account, year, month
-    all_results = grouped.sort_values(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']).reset_index(drop=True)
-    del grouped
-    gc.collect()
-    
-    agg_time = (datetime.now() - agg_start).total_seconds()
     merge_time = (datetime.now() - merge_start).total_seconds()
-    print(f"  Aggregated to {len(all_results):,} rows in {agg_time:.2f}s")
-    print(f"  Total merge time: {merge_time:.2f}s")
+    print(f"  Concatenated to {len(all_results):,} rows in {merge_time:.2f}s")
     print(f"  Size: {all_results.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
     
-    # Cleanup NPY files
-    print("\nCleaning up NPY files...")
+    # Cleanup Parquet files
+    print("\nCleaning up Parquet files...")
     try:
         shutil.rmtree(parquet_dir)
-        print(f"  Removed temporary NPY directory: {parquet_dir}")
+        print(f"  Removed temporary Parquet directory: {parquet_dir}")
     except Exception as e:
-        print(f"  Warning: Could not remove temporary NPY files: {e}")
+        print(f"  Warning: Could not remove temporary Parquet files: {e}")
 
     # Debug logging for specific account
     # Note: With scenario averaging, we show the averaged results (not individual scenarios)
