@@ -959,8 +959,6 @@ def create_runpod_job_endpoint():
     job_threads[job_id] = thread
 
     return jsonify({'job_id': job_id, 'status': 'pending'}), 202
-        if job_id in job_progress:
-            del job_progress[job_id]
 
 # =============================================================================
 # API ROUTES - HEALTH & STATUS
