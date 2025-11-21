@@ -20,8 +20,6 @@ from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 import runpod
 import requests
-import base64
-import gzip
 
 from paths import HERE
 
@@ -655,7 +653,6 @@ def trigger_runpod_job(job_id: str):
         uploaded_files = job.get('uploaded_files', [])
 
         # --- Prepare data files ---
-        data_files_b64 = {}
         required_files = [
             'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv', 'DEPOTS_FUTURS.csv',
             'FRAIS_ADMIN.csv', 'MIN_FERR.csv', 'TX_LAPSE_PART.csv', 'TX_LAPSE_TOT.csv',
@@ -663,23 +660,44 @@ def trigger_runpod_job(job_id: str):
         ]
 
         print(f"Preparing CSV files for RunPod worker (job {job_id})...")
-        # Only send uploaded files - defaults are baked into the RunPod worker image
-        for filename in uploaded_files:
-            if filename in required_files:
-                file_path = upload_folder / filename
-                
-                if file_path.exists():
-                    with open(file_path, 'rb') as f:
-                        content_bytes = f.read()
-                        # Compress with gzip before base64 encoding (reduces size by ~80%)
-                        compressed_bytes = gzip.compress(content_bytes, compresslevel=6)
-                        data_files_b64[filename] = base64.b64encode(compressed_bytes).decode('utf-8')
-                    compression_ratio = (1 - len(compressed_bytes) / len(content_bytes)) * 100
-                    print(f"  ✓ {filename} (uploaded): {len(content_bytes)} bytes → {len(compressed_bytes)} bytes ({compression_ratio:.1f}% smaller)")
-                else:
-                    raise FileNotFoundError(f"Uploaded file not found: {filename}")
+        # Upload files to tmpfiles.org and get URLs
+        data_file_urls = {}
         
-        if not uploaded_files:
+        if uploaded_files:
+            print("  Uploading files to temporary hosting...")
+            for filename in uploaded_files:
+                if filename in required_files:
+                    file_path = upload_folder / filename
+                    
+                    if file_path.exists():
+                        try:
+                            # Upload to tmpfiles.org
+                            with open(file_path, 'rb') as f:
+                                files = {'file': (filename, f, 'text/csv')}
+                                response = requests.post(
+                                    'https://tmpfiles.org/api/v1/upload',
+                                    files=files,
+                                    timeout=60
+                                )
+                                response.raise_for_status()
+                                result = response.json()
+                                
+                                # Extract URL from response
+                                if result.get('status') == 'success' and result.get('data', {}).get('url'):
+                                    temp_url = result['data']['url']
+                                    # Convert tmpfiles.org URL to direct download URL
+                                    # https://tmpfiles.org/12345/file.csv -> https://tmpfiles.org/dl/12345/file.csv
+                                    download_url = temp_url.replace('tmpfiles.org/', 'tmpfiles.org/dl/')
+                                    data_file_urls[filename] = download_url
+                                    print(f"  ✓ {filename}: uploaded ({file_path.stat().st_size} bytes)")
+                                else:
+                                    raise Exception(f"Upload failed: {result}")
+                        except Exception as e:
+                            raise Exception(f"Failed to upload {filename}: {str(e)}")
+                    else:
+                        raise FileNotFoundError(f"Uploaded file not found: {filename}")
+            print(f"  Successfully uploaded {len(data_file_urls)} files")
+        else:
             print("  Using all default CSVs from worker image (no uploads)")
 
         # --- Trigger RunPod job ---
@@ -687,15 +705,15 @@ def trigger_runpod_job(job_id: str):
             'input': {
                 'nb_an_projection': params.get('nb_an_projection', 10),
                 'nb_scenarios': params.get('nb_scenarios', 100),
-                'data_files': data_files_b64
+                'data_file_urls': data_file_urls  # Send URLs instead of file data
             }
         }
 
         print(f"Triggering RunPod job for endpoint {RUNPOD_ENDPOINT_ID}...")
-        print(f"  Payload size: ~{sum(len(v) for v in data_files_b64.values()) / 1024 / 1024:.1f} MB (base64 encoded)")
+        print(f"  Payload: {len(data_file_urls)} file URLs (lightweight)")
         endpoint = runpod.Endpoint(RUNPOD_ENDPOINT_ID)
-        # Increase timeout for large file uploads (default is 30s)
-        run_request = endpoint.run(runpod_input, timeout=300)
+        # Quick timeout since payload is tiny now
+        run_request = endpoint.run(runpod_input, timeout=60)
 
         # Store the RunPod job ID for tracking
         ph = get_placeholder()

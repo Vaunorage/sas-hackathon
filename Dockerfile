@@ -14,6 +14,12 @@ COPY pyproject.toml uv.lock README.md ./
 # Use uv sync to install packages from lockfile
 RUN uv sync --frozen
 
+RUN uv pip install --extra-index-url=https://pypi.nvidia.com \
+    "cudf-cu12==25.10.*" "dask-cudf-cu12==25.10.*" "cuml-cu12==25.10.*" \
+    "cugraph-cu12==25.10.*" "nx-cugraph-cu12==25.10.*" "cuxfilter-cu12==25.10.*" \
+    "cucim-cu12==25.10.*" "pylibraft-cu12==25.10.*" "raft-dask-cu12==25.10.*" \
+    "cuvs-cu12==25.10.*" "nx-cugraph-cu12==25.10.*"
+
 # Copy application files
 COPY flask_app.py .
 COPY cli.py .

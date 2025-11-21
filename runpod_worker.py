@@ -3,7 +3,7 @@ import os
 import tempfile
 from pathlib import Path
 import pandas as pd
-import gzip
+import requests
 import gpu # Import the main gpu projection script
 
 def handler(job):
@@ -13,8 +13,8 @@ def handler(job):
     The job input is expected to be a dictionary containing:
     - 'nb_an_projection': Number of years for the projection.
     - 'nb_scenarios': Number of economic scenarios.
-    - 'data_files': A dictionary where keys are file names (e.g., 'POPULATION.csv')
-                    and values are the file contents as base64 encoded strings.
+    - 'data_file_urls': A dictionary where keys are file names (e.g., 'POPULATION.csv')
+                        and values are temporary download URLs (from tmpfiles.org).
     """
     job_input = job['input']
 
@@ -22,7 +22,7 @@ def handler(job):
     try:
         nb_an_projection = int(job_input.get('nb_an_projection', 10))
         nb_scenarios = int(job_input.get('nb_scenarios', 100))
-        data_files_b64 = job_input.get('data_files', {})
+        data_file_urls = job_input.get('data_file_urls', {})
     except (ValueError, TypeError) as e:
         return {'error': f"Invalid input parameter: {e}"}
 
@@ -33,7 +33,7 @@ def handler(job):
         data_path.mkdir()
         output_path.mkdir()
 
-        # --- 3. Decode and write uploaded files, use defaults for the rest ---
+        # --- 3. Download uploaded files from URLs, use defaults for the rest ---
         file_paths = {}
         default_data_path = Path('/app/data_in')  # Default CSVs baked into Docker image
         
@@ -44,23 +44,25 @@ def handler(job):
         ]
         
         try:
-            import base64
             import shutil
             
             for filename in required_files:
                 arg_name = f"{filename.split('.')[0].lower()}_path"
                 
-                if filename in data_files_b64:
-                    # Use uploaded file
+                if filename in data_file_urls:
+                    # Download uploaded file from URL
                     file_path = data_path / filename
+                    url = data_file_urls[filename]
+                    
+                    print(f"  Downloading {filename} from tmpfiles.org...")
+                    response = requests.get(url, timeout=120)
+                    response.raise_for_status()
+                    
                     with open(file_path, 'wb') as f:
-                        # Decode from base64
-                        compressed_bytes = base64.b64decode(data_files_b64[filename])
-                        # Decompress with gzip
-                        decompressed_bytes = gzip.decompress(compressed_bytes)
-                        f.write(decompressed_bytes)
+                        f.write(response.content)
+                    
                     file_paths[arg_name] = file_path
-                    print(f"  Using uploaded: {filename}")
+                    print(f"  ✓ Downloaded: {filename} ({len(response.content)} bytes)")
                 else:
                     # Use default file from Docker image
                     default_file = default_data_path / filename
@@ -69,12 +71,12 @@ def handler(job):
                         dest_file = data_path / filename
                         shutil.copy(default_file, dest_file)
                         file_paths[arg_name] = dest_file
-                        print(f"  Using default: {filename}")
+                        print(f"  ✓ Using default: {filename}")
                     else:
                         return {'error': f"Required file not found: {filename} (not uploaded and no default available)"}
                         
         except Exception as e:
-            return {'error': f"Failed to process data files: {e}"}
+            return {'error': f"Failed to process data files: {str(e)}"}
 
         # --- 4. Run the GPU projection ---
         try:
