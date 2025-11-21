@@ -21,9 +21,10 @@ COPY gpu.py .
 COPY cpu.py .
 COPY paths.py .
 COPY extract_csv_from_zips.py .
+COPY runpod_worker.py .
 
-# Create directories for data
-RUN mkdir -p uploads results static data_in
+# Create directories for data (runpod_worker uses temp dirs, but these are useful for debugging)
+RUN mkdir -p uploads results static data_in data_out
 
 # Copy zip files from default_data
 COPY default_data/*.zip ./default_data/
@@ -47,6 +48,5 @@ ENV PORT=80
 ENV PORT_HEALTH=80
 ENV RUNPOD_CORS=true
 
-# Run the Flask application using gunicorn
-# Note: For RunPod load balancing, the --bind port will read from $PORT environment variable
-CMD uv run gunicorn --bind 0.0.0.0:${PORT} --workers 4 --timeout 330 --worker-class sync flask_app:app
+# Run the RunPod serverless worker
+CMD uv run python runpod_worker.py
