@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 # Try to import cuDF for GPU-accelerated DataFrame operations
 try:
     import cudf
+    import cupy as cp
     CUDF_AVAILABLE = True
     print("✓ CuDF available - using GPU-accelerated DataFrame operations")
 except ImportError:
@@ -1676,10 +1677,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             prep_start = datetime.now()
             logger.info(f"    Creating cuDF DataFrame from GPU array...")
             
-            # Convert device array to cuDF DataFrame column by column
+            # Convert Numba device array to CuPy array (zero-copy via __cuda_array_interface__)
+            # Both Numba and CuPy support the CUDA Array Interface protocol
+            cupy_array = cp.asarray(d_batch_reshaped)
+            
+            # Convert to cuDF DataFrame column by column
             gpu_data = {}
             for col_idx, col_name in enumerate(columns):
-                gpu_data[col_name] = cudf.Series(d_batch_reshaped[:, col_idx])
+                gpu_data[col_name] = cudf.Series(cupy_array[:, col_idx])
             
             gpu_df = cudf.DataFrame(gpu_data)
             df_create_time = (datetime.now() - prep_start).total_seconds()
