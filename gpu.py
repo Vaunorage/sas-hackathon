@@ -4,6 +4,7 @@ os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
 
 import pandas as pd
 import numpy as np
+import polars as pl
 import gc
 import psutil
 import logging
@@ -1567,9 +1568,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     
     print(f"Parquet directory: {parquet_dir}")
     if CUDF_AVAILABLE:
-        print(f"Using cuDF (GPU) filtering + CuPy fast transfer + pandas write (hybrid optimized)")
+        print(f"Using cuDF (GPU) filtering + CuPy fast transfer + Polars write (hybrid optimized)")
     else:
-        print(f"Using pandas (CPU) DataFrame + LZ4 compression + async I/O (CPU-optimized)")
+        print(f"Using Polars (CPU) DataFrame + LZ4 compression (OPTIMIZED FOR SPEED)")
+        print(f"   Polars is 10-50× faster than pandas for large DataFrame operations")
     
     # Create thread pool for async parquet writes
     parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -1812,51 +1814,59 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy) in {mask_time:.3f}s")
             
             if n_valid > 0:
-                # Convert to pandas DataFrame
+                # Use POLARS - much faster than pandas for DataFrame creation
                 prep_start = datetime.now()
-                logger.info(f"    Creating DataFrame directly from NumPy array...")
+                logger.info(f"    Creating Polars DataFrame from NumPy array...")
                 
-                # Create DataFrame from full reshaped array (fast - uses views where possible)
-                df = pd.DataFrame(reshaped, columns=columns)
+                # Create Polars DataFrame from full reshaped array (MUCH faster than pandas!)
+                pl_df = pl.DataFrame(reshaped, schema=columns, orient="row")
                 df_create_time = (datetime.now() - prep_start).total_seconds()
-                logger.info(f"    DataFrame created: {df_create_time:.3f}s")
+                logger.info(f"    Polars DataFrame created: {df_create_time:.3f}s")
                 
-                # Filter to valid rows (pandas is highly optimized for this)
+                # Filter to valid rows (Polars is optimized for this)
                 filter_start = datetime.now()
-                df = df[df['ID_COMPTE'] > 0]
-                num_rows = len(df)
+                pl_df = pl_df.filter(pl.col('ID_COMPTE') > 0)
+                num_rows = len(pl_df)
                 filter_time = (datetime.now() - filter_start).total_seconds()
                 logger.info(f"    Filtered to {num_rows:,} valid rows: {filter_time:.3f}s")
                 
                 # Convert ID columns to int32 for smaller file size
                 type_start = datetime.now()
-                df['ID_COMPTE'] = df['ID_COMPTE'].astype(np.int32)
-                df['SCN_EVAL'] = df['SCN_EVAL'].astype(np.int32)
-                df['AN_EVAL'] = df['AN_EVAL'].astype(np.int32)
-                df['MOIS_EVAL'] = df['MOIS_EVAL'].astype(np.int32)
+                pl_df = pl_df.with_columns([
+                    pl.col('ID_COMPTE').cast(pl.Int32),
+                    pl.col('SCN_EVAL').cast(pl.Int32),
+                    pl.col('AN_EVAL').cast(pl.Int32),
+                    pl.col('MOIS_EVAL').cast(pl.Int32)
+                ])
                 type_time = (datetime.now() - type_start).total_seconds()
                 
                 prep_time = (datetime.now() - prep_start).total_seconds()
-                logger.info(f"    DataFrame prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
+                logger.info(f"    Polars prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
                 
-                # Free large arrays immediately (before async write)
+                # Free large arrays immediately (before write)
                 del h_batch_output, reshaped, valid_mask
                 gc.collect()
                 
-                # Submit async write to thread pool
+                # Write with Polars (optimized parquet writer - faster than pandas)
+                write_start = datetime.now()
                 parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                future = parquet_writer_pool.submit(
-                    write_parquet_async_pandas,
-                    df,
+                logger.info(f"    Writing parquet with Polars...")
+                
+                pl_df.write_parquet(
                     parquet_path,
-                    i,
-                    num_rows
+                    compression='lz4',
+                    use_pyarrow=True  # Use pyarrow backend for compatibility
                 )
-                write_futures.append(future)
-                logger.info(f"    Parquet write submitted to async pool (batch {i})")
+                
+                write_time = (datetime.now() - write_start).total_seconds()
+                file_size_mb = parquet_path.stat().st_size / 1024**2
+                logger.info(f"    Written {file_size_mb:.1f} MB in {write_time:.3f}s ({file_size_mb/write_time:.1f} MB/s)")
+                
+                # Track stats (synchronous write, already complete)
+                write_futures.append((i, file_size_mb, num_rows, write_time))
                 
                 # Free DataFrame immediately
-                del df
+                del pl_df
                 gc.collect()
             else:
                 # No valid data - just clean up
