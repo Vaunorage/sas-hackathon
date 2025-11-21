@@ -2216,14 +2216,19 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     # These files contain 1 row per account with only VP columns (very small!)
     print("Computing VP_FLUX_TOTAL from VP summary parquet files (ultra-fast, low memory)...")
     
-    # Get all VP columns by reading schema from first parquet file
-    sample_df = pd.read_parquet(parquet_files[0])
-    vp_columns = [col for col in sample_df.columns if col.startswith('VP_')]
-    del sample_df  # Free memory
+    # Use the EXACT same VP columns as aggregate_vp_flux_total in cpu.py
+    # NOTE: VP_VALEUR_MARCHANDE is deliberately excluded!
+    vp_flux_cols = [
+        'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES',
+        'VP_PRIMES_VARIABLES', 'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN',
+        'VP_PREST_ECH', 'VP_PREST_MRV', 'VP_PREST_DECES',
+        'VP_PASSIF_REDRESSE', 'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE',
+        'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE', 'VP_COUSSIN_MORTALITE',
+        'VP_COUSSIN_DEPOT'
+    ]
     
-    # Build SQL query to sum all VP columns across all accounts
-    # Data is already aggregated per account, so we just sum across all accounts
-    vp_sum_expressions = [f"SUM({col}) as {col}" for col in vp_columns]
+    # Build SQL query to sum only the flux VP columns across all accounts
+    vp_sum_expressions = [f"SUM({col}) as {col}" for col in vp_flux_cols]
     vp_sum_sql = ", ".join(vp_sum_expressions)
     
     total_vp_sql = f"""
@@ -2234,7 +2239,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     
     vp_totals = duckdb.execute(total_vp_sql).df()
     
-    # Calculate total VP (sum of all VP columns)
+    # Calculate total VP (sum of flux VP columns only)
     total_vp = vp_totals.sum(axis=1).iloc[0]
     
     # Create VP_FLUX_TOTAL dataframe
