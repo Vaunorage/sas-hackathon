@@ -1754,8 +1754,11 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 transfer_time = (datetime.now() - transfer_start).total_seconds()
                 logger.info(f"    Transferred {aggregated_rows:,} rows to CPU: {transfer_time:.3f}s")
                 
-                # Free GPU memory immediately!
+                # Free GPU memory AND unused CPU pinned memory immediately!
                 del agg_gpu_df, gpu_data, cupy_array, d_batch_reshaped
+                # CRITICAL: Delete the unused h_batch_output pinned array (4GB per batch!)
+                if 'h_batch_output' in locals():
+                    del h_batch_output
                 gc.collect()
                 cuda.synchronize()
                 
@@ -1805,6 +1808,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             else:
                 logger.info(f"    No valid rows in batch - skipping write")
                 del cupy_array, gpu_data, d_batch_reshaped
+                # Also free the unused pinned array
+                if 'h_batch_output' in locals():
+                    del h_batch_output
                 gc.collect()
                 cuda.synchronize()
             
@@ -1959,9 +1965,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         # Cleanup remaining GPU/batch memory
         del d_batch_account_data
         del d_batch_output
-        # h_batch_output, reshaped, valid_mask, df already deleted above
+        # h_batch_output already deleted in cuDF path (or in CPU path's valid_data extraction)
+        # Clean up input pinned memory if it exists
         if use_pinned_memory and 'h_batch_input_pinned' in locals():
             del h_batch_input_pinned
+        # Clean up h_batch_output if it wasn't deleted yet (CPU path with no valid data)
+        if 'h_batch_output' in locals():
+            del h_batch_output
         
         # Force garbage collection and GPU memory cleanup after EVERY batch
         gc_start = datetime.now()
