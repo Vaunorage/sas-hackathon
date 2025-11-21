@@ -76,7 +76,7 @@ def write_parquet_async_pandas(df, parquet_path, batch_num, num_rows):
     df.to_parquet(
         parquet_path,
         engine='pyarrow',
-        compression='lz4',
+        compression='snappy',
         index=False
     )
     write_time = (datetime.now() - write_start).total_seconds()
@@ -99,7 +99,7 @@ def write_parquet_async_cudf(gpu_df, parquet_path, batch_num, num_rows):
     write_start = datetime.now()
     gpu_df.to_parquet(
         parquet_path,
-        compression='lz4',
+        compression='snappy',
         index=False
     )
     write_time = (datetime.now() - write_start).total_seconds()
