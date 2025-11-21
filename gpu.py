@@ -23,7 +23,7 @@ from fastparquet import write as fastparquet_write
 try:
     import cudf
     import cupy as cp
-    CUDF_AVAILABLE = True  # DISABLED - cuDF causes GPU memory leaks and slow DataFrame creation
+    CUDF_AVAILABLE = False  # DISABLED - cuDF causes GPU memory leaks and slow DataFrame creation
 except ImportError:
     CUDF_AVAILABLE = False
     print("⚠ CuDF not available - falling back to pandas (CPU). Install with: pip install cudf-cu12")
@@ -1824,8 +1824,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 logger.info(f"    Extracted valid data: {extract_time:.3f}s")
                 
                 # Now create Polars DataFrame from ONLY valid rows (half the data = much faster!)
+                # CRITICAL: Use columnar format for Polars (100x faster than orient="row")
                 df_start = datetime.now()
-                pl_df = pl.DataFrame(valid_data, schema=columns, orient="row")
+                
+                # Extract columns from 2D array (fast NumPy slicing)
+                col_dict = {col_name: valid_data[:, col_idx] for col_idx, col_name in enumerate(columns)}
+                
+                # Create DataFrame from column dict (MUCH faster than orient="row")
+                pl_df = pl.DataFrame(col_dict)
                 df_create_time = (datetime.now() - df_start).total_seconds()
                 logger.info(f"    Polars DataFrame created from {n_valid:,} rows: {df_create_time:.3f}s")
                 
