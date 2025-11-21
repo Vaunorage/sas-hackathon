@@ -2217,8 +2217,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print("Computing VP_FLUX_TOTAL from VP summary parquet files (ultra-fast, low memory)...")
     
     # Get all VP columns by reading schema from first parquet file
-    sample_df = pd.read_parquet(parquet_files[0], nrows=1)
+    sample_df = pd.read_parquet(parquet_files[0])
     vp_columns = [col for col in sample_df.columns if col.startswith('VP_')]
+    del sample_df  # Free memory
     
     # Build SQL query to sum all VP columns across all accounts
     # Data is already aggregated per account, so we just sum across all accounts
