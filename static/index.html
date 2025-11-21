@@ -647,7 +647,7 @@ input[type="password"] {
         // Check API health on load
         async function checkHealth() {
             try {
-                const response = await fetchWithToken(`${API_BASE}/`);
+                const response = await fetchWithToken(`${API_BASE}/info`);
                 const data = await response.json();
                 
                 document.getElementById('api-status').textContent = `API: v${data.version}`;
@@ -1132,6 +1132,13 @@ input[type="password"] {
                     body: formData
                 });
                 
+                // Check if response is JSON
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    throw new Error(`Server returned non-JSON response (${response.status}): ${text.substring(0, 100)}`);
+                }
+                
                 const data = await response.json();
                 
                 if (response.ok) {
@@ -1139,9 +1146,10 @@ input[type="password"] {
                     loadJobs();
                     setTimeout(() => selectJob(data.job_id), 1000);
                 } else {
-                    messageDiv.innerHTML = `<div class="error">${data.message || 'Failed to create job'}</div>`;
+                    messageDiv.innerHTML = `<div class="error">${data.error || data.message || 'Failed to create job'}</div>`;
                 }
             } catch (error) {
+                console.error('Create job error:', error);
                 messageDiv.innerHTML = `<div class="error">Failed to create job: ${error.message}</div>`;
             } finally {
                 submitBtn.disabled = false;
