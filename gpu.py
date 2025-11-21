@@ -1566,7 +1566,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     
     print(f"Parquet directory: {parquet_dir}")
     if CUDF_AVAILABLE:
-        print(f"Using cuDF (GPU) DataFrame + LZ4 compression + synchronous writes (GPU-optimized)")
+        print(f"Using cuDF (GPU) filtering + CuPy fast transfer + pandas write (hybrid optimized)")
     else:
         print(f"Using pandas (CPU) DataFrame + LZ4 compression + async I/O (CPU-optimized)")
     
@@ -1727,7 +1727,21 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 
                 # Free GPU memory immediately!
                 del gpu_df, gpu_data, cupy_array
+                
+                # Also delete the reshaped GPU array
+                del d_batch_reshaped
+                
                 gc.collect()
+                cuda.synchronize()  # Wait for all CUDA operations to complete
+                
+                # Force RMM memory pool to release unused memory
+                try:
+                    import rmm
+                    rmm.mr.get_current_device_resource().deallocate(0, 0)  # Trigger pool cleanup
+                    logger.info(f"    GPU memory freed (RMM pool cleaned)")
+                except:
+                    logger.info(f"    GPU memory freed (Python GC only)")
+                    pass  # If RMM cleanup fails, continue anyway
                 
                 # Create pandas DataFrame from NumPy arrays (fast on CPU)
                 df_start = datetime.now()
@@ -1759,12 +1773,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 write_futures.append((i, file_size_mb, num_rows, transfer_time + write_time))
             else:
                 logger.info(f"    No valid rows in batch - skipping write")
-                del cupy_array, gpu_data
+                del cupy_array, gpu_data, d_batch_reshaped
+                gc.collect()
+                cuda.synchronize()
             
-            # Synchronous write completed, GPU memory freed
-            transfer_from_gpu = 0.0  # Write happens directly from GPU
+            # Write completed, GPU memory freed
+            transfer_from_gpu = 0.0  # Filtered data transferred via CuPy
             total_transfer_duration += transfer_to_gpu  # Upload only
-            logger.info(f"  ✓ GPU-accelerated filtering + synchronous write (GPU memory freed)")
+            logger.info(f"  ✓ GPU-accelerated filtering + fast CuPy transfer (GPU memory freed)")
             
         else:
             # ===== CPU PATH (pandas) =====
