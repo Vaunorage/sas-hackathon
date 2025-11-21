@@ -18,7 +18,7 @@ import tempfile
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pyarrow.compute as pc
-from fastparquet import write as fastparquet_write
+# from fastparquet import write as fastparquet_write  # Not needed for NPY format
 
 # Try to import cuDF for GPU-accelerated DataFrame operations
 try:
@@ -1543,16 +1543,16 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     estimated_rows = int(max_possible_rows * 0.6)
     estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
     
-    print(f"\nUsing PARQUET + DUCKDB BATCH STORAGE (optimized for speed)")
+    print(f"\nUsing NUMPY NPY BATCH STORAGE (optimized for maximum speed)")
     print(f"Estimated: {n_accounts:,} accounts, {estimated_rows:,} rows, ~{estimated_memory_gb:.1f} GB")
-    print(f"Each batch will be written to Parquet file (fast columnar format)")
-    print(f"Final aggregation will be done with DuckDB SQL reading Parquet files")
+    print(f"Each batch will be written to NPY file (raw binary, zero conversion overhead)")
+    print(f"Final aggregation will be done with pandas groupby after loading all NPY files")
     
-    # Create temporary Parquet directory (clean up any previous run first)
+    # Create temporary NPY directory (clean up any previous run first)
     parquet_dir = Path(output_path) / "_temp_parquet"
     if parquet_dir.exists():
         shutil.rmtree(parquet_dir)
-        print(f"Cleaned up existing parquet directory")
+        print(f"Cleaned up existing npy directory")
     parquet_dir.mkdir(parents=True, exist_ok=True)
     
     # Define column names for the table
@@ -1570,12 +1570,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
     ]
     
-    print(f"Parquet directory: {parquet_dir}")
-    if CUDF_AVAILABLE:
-        print(f"Using cuDF (GPU) filtering + CuPy fast transfer + fastparquet write (hybrid optimized)")
-    else:
-        print(f"Using fastparquet (CPU) + LZ4 compression (OPTIMIZED FOR SPEED)")
-        print(f"   pandas DataFrame from dict (columnar, fast) → fastparquet write")
+    print(f"NPY directory: {parquet_dir}")
+    print(f"Using NumPy binary format (ZERO OVERHEAD - MAXIMUM SPEED)")
+    print(f"   Direct NumPy array save → no conversion, no compression overhead")
     
     # Create thread pool for async parquet writes
     parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -1838,58 +1835,34 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 
                 num_rows = n_valid
                 
-                # OPTIMIZED APPROACH: Create pandas DataFrame efficiently, write with fastparquet
-                # Fastparquet requires DataFrame but we can make it fast with dict-of-arrays approach
+                # ULTRA-FAST: Write raw NumPy array directly to disk (no pandas overhead!)
                 write_start = datetime.now()
-                parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                logger.info(f"    Writing parquet with fastparquet (pandas from dict)...")
+                npy_path = parquet_dir / f"batch_{i:04d}.npy"
+                logger.info(f"    Writing raw NumPy array (NPY format - FASTEST)...")
                 
-                # Create dict of columns with proper types (fast, no row iteration)
-                data_dict = {}
-                for col_idx, col_name in enumerate(columns):
-                    col_data = valid_data[:, col_idx]
-                    if col_idx < 4:  # ID columns: convert to int32
-                        data_dict[col_name] = col_data.astype(np.int32)
-                    else:  # Already float32, just copy to break references
-                        data_dict[col_name] = col_data.copy()
+                # Convert ID columns to int32 for space savings
+                # Make a copy to avoid modifying original
+                output_data = valid_data.copy()
+                output_data[:, 0:4] = output_data[:, 0:4].astype(np.int32)
                 
                 # Free source data NOW
                 del valid_data
                 gc.collect()
                 
-                # Create pandas DataFrame from dict (FAST - columnar, no row iteration)
-                df_start = datetime.now()
-                df = pd.DataFrame(data_dict)
-                df_time = (datetime.now() - df_start).total_seconds()
-                logger.info(f"      DataFrame created: {df_time:.3f}s")
+                # Write directly to disk with np.save (optimized binary format)
+                npy_start = datetime.now()
+                np.save(str(npy_path), output_data)
+                npy_time = (datetime.now() - npy_start).total_seconds()
                 
-                # Free the dict
-                del data_dict
-                gc.collect()
-                
-                # Write with fastparquet (optimized for speed)
-                fp_start = datetime.now()
-                fastparquet_write(
-                    str(parquet_path),
-                    df,
-                    compression='LZ4',  # Fastest compression
-                    row_group_offsets=1000000,  # 1M rows per group
-                    file_scheme='simple',  # Single file (no partitioning)
-                    write_index=False,
-                    stats=False  # Skip statistics for speed
-                )
-                fp_time = (datetime.now() - fp_start).total_seconds()
-                
-                write_time = (datetime.now() - write_start).total_seconds()
-                file_size_mb = parquet_path.stat().st_size / 1024**2
+                write_time = (datetime.now() - npy_start).total_seconds()
+                file_size_mb = npy_path.stat().st_size / 1024**2
                 logger.info(f"    Written {file_size_mb:.1f} MB in {write_time:.3f}s ({file_size_mb/write_time:.1f} MB/s)")
-                logger.info(f"      (df:{df_time:.3f}s, write:{fp_time:.3f}s)")
                 
                 # Track stats (synchronous write, already complete)
                 write_futures.append((i, file_size_mb, num_rows, write_time))
                 
-                # CRITICAL: Free DataFrame and force memory release
-                del df
+                # CRITICAL: Free array and force memory release
+                del output_data
                 # Force Python GC to release memory immediately
                 gc.collect()
                 gc.collect()  # Run twice to catch circular references
@@ -1921,9 +1894,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         cpu_processing_time = batch_duration - kernel_duration - transfer_to_gpu - transfer_from_gpu
         logger.info(f"  Batch {i + 1} total time: {batch_duration:.2f}s (Kernel: {kernel_duration:.2f}s, Transfer: {transfer_to_gpu + transfer_from_gpu:.2f}s, CPU: {cpu_processing_time:.2f}s)")
 
-    # --- SUMMARIZE WRITES (synchronous with cuDF, async with pandas) ---
+    # --- SUMMARIZE WRITES ---
     print("\n" + "="*60)
-    print("PARQUET WRITE SUMMARY")
+    print("NPY WRITE SUMMARY")
     print("="*60)
     
     wait_start = datetime.now()
@@ -1931,24 +1904,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     total_file_size_mb = 0
     total_rows_written = 0
     
-    # Handle mixed futures (tuples for cuDF sync writes, futures for pandas async)
+    # All writes are synchronous with NPY - just sum up
     if len(write_futures) > 0:
-        # Check if first item is a future or tuple
-        if hasattr(write_futures[0], 'result'):
-            # Async pandas writes - wait for completion
-            print(f"\nWaiting for {len(write_futures)} async write operations...")
-            for future in concurrent.futures.as_completed(write_futures):
-                batch_num, file_size_mb, num_rows, write_time = future.result()
-                total_write_time += write_time
-                total_file_size_mb += file_size_mb
-                total_rows_written += num_rows
-        else:
-            # Synchronous cuDF writes - already complete, just sum up
-            print(f"\nAll {len(write_futures)} writes completed synchronously (cuDF GPU path)")
-            for batch_num, file_size_mb, num_rows, write_time in write_futures:
-                total_write_time += write_time
-                total_file_size_mb += file_size_mb
-                total_rows_written += num_rows
+        print(f"\nAll {len(write_futures)} writes completed synchronously (NPY binary format)")
+        for batch_num, file_size_mb, num_rows, write_time in write_futures:
+            total_write_time += write_time
+            total_file_size_mb += file_size_mb
+            total_rows_written += num_rows
     
     # Shutdown thread pool
     parquet_writer_pool.shutdown(wait=True)
@@ -1963,83 +1925,63 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     print(f"  Total data written: {total_file_size_mb:.1f} MB ({total_rows_written:,} rows)")
     print(f"  Effective speedup from parallelism: {total_write_time/wait_duration:.1f}x")
     
-    # --- FINAL AGGREGATION WITH DUCKDB + PARQUET ---
+    # --- FINAL AGGREGATION WITH NUMPY (ULTRA-FAST) ---
     print("\n" + "="*60)
-    print("FINAL DATA ASSEMBLY (DuckDB reading Parquet)")
+    print("FINAL DATA ASSEMBLY (NumPy array aggregation)")
     print("="*60)
     
     merge_start = datetime.now()
     
-    # Count Parquet files
-    parquet_files = list(parquet_dir.glob("batch_*.parquet"))
-    print(f"\nFound {len(parquet_files)} Parquet files to aggregate")
+    # Count NPY files
+    npy_files = sorted(parquet_dir.glob("batch_*.npy"))
+    print(f"\nFound {len(npy_files)} NPY files to aggregate")
     
-    # DuckDB can read all Parquet files with wildcard pattern
-    parquet_pattern = str(parquet_dir / "batch_*.parquet")
+    # Load all data into single array
+    print("Loading all NPY files...")
+    load_start = datetime.now()
+    all_data_chunks = []
+    for npy_file in npy_files:
+        chunk = np.load(str(npy_file))
+        all_data_chunks.append(chunk)
     
-    # Perform aggregation using DuckDB SQL (averaging across scenarios)
-    # DuckDB reads Parquet files in parallel for fast aggregation
-    print("Aggregating across scenarios using DuckDB SQL (parallel Parquet read)...")
-    agg_sql = f"""
-    SELECT 
-        ID_COMPTE,
-        AN_EVAL,
-        MOIS_EVAL,
-        AVG(PRIMES_GARANTIES) AS PRIMES_GARANTIES,
-        AVG(PREST_DECES) AS PREST_DECES,
-        AVG(PREST_ECH) AS PREST_ECH,
-        AVG(PREST_MRV) AS PREST_MRV,
-        AVG(FRAIS_ACQUIS) AS FRAIS_ACQUIS,
-        AVG(COMM_VENTE) AS COMM_VENTE,
-        AVG(PRIMES_VARIABLES) AS PRIMES_VARIABLES,
-        AVG(FRAIS_FIXES) AS FRAIS_FIXES,
-        AVG(HON_GEST) AS HON_GEST,
-        AVG(COMM_MAINTIEN) AS COMM_MAINTIEN,
-        AVG(VALEUR_MARCHANDE) AS VALEUR_MARCHANDE,
-        AVG(PASSIF_REDRESSE) AS PASSIF_REDRESSE,
-        AVG(COUSSIN_CREDIT) AS COUSSIN_CREDIT,
-        AVG(COUSSIN_MARCHE) AS COUSSIN_MARCHE,
-        AVG(COUSSIN_DEPENSE) AS COUSSIN_DEPENSE,
-        AVG(COUSSIN_DECHEANCE) AS COUSSIN_DECHEANCE,
-        AVG(COUSSIN_MORTALITE) AS COUSSIN_MORTALITE,
-        AVG(COUSSIN_DEPOT) AS COUSSIN_DEPOT,
-        AVG(VP_FRAIS_ACQUIS) AS VP_FRAIS_ACQUIS,
-        AVG(VP_COMM_VENTE) AS VP_COMM_VENTE,
-        AVG(VP_PRIMES_GARANTIES) AS VP_PRIMES_GARANTIES,
-        AVG(VP_PRIMES_VARIABLES) AS VP_PRIMES_VARIABLES,
-        AVG(VP_FRAIS_FIXES) AS VP_FRAIS_FIXES,
-        AVG(VP_HON_GEST) AS VP_HON_GEST,
-        AVG(VP_COMM_MAINTIEN) AS VP_COMM_MAINTIEN,
-        AVG(VP_PREST_ECH) AS VP_PREST_ECH,
-        AVG(VP_PREST_MRV) AS VP_PREST_MRV,
-        AVG(VP_PREST_DECES) AS VP_PREST_DECES,
-        AVG(VP_VALEUR_MARCHANDE) AS VP_VALEUR_MARCHANDE,
-        AVG(VP_PASSIF_REDRESSE) AS VP_PASSIF_REDRESSE,
-        AVG(VP_COUSSIN_CREDIT) AS VP_COUSSIN_CREDIT,
-        AVG(VP_COUSSIN_MARCHE) AS VP_COUSSIN_MARCHE,
-        AVG(VP_COUSSIN_DEPENSE) AS VP_COUSSIN_DEPENSE,
-        AVG(VP_COUSSIN_DECHEANCE) AS VP_COUSSIN_DECHEANCE,
-        AVG(VP_COUSSIN_MORTALITE) AS VP_COUSSIN_MORTALITE,
-        AVG(VP_COUSSIN_DEPOT) AS VP_COUSSIN_DEPOT
-    FROM read_parquet('{parquet_pattern}')
-    GROUP BY ID_COMPTE, AN_EVAL, MOIS_EVAL
-    ORDER BY ID_COMPTE, AN_EVAL, MOIS_EVAL
-    """
+    all_data = np.vstack(all_data_chunks)
+    del all_data_chunks
+    gc.collect()
+    load_time = (datetime.now() - load_start).total_seconds()
+    print(f"  Loaded {len(all_data):,} rows in {load_time:.2f}s")
     
-    # Execute aggregation and fetch result as pandas DataFrame
-    all_results = duckdb.execute(agg_sql).df()
+    # Aggregate across scenarios using pandas groupby (fast for this operation)
+    print("Aggregating across scenarios...")
+    agg_start = datetime.now()
     
+    # Convert to DataFrame for aggregation (now we only do this once for ALL data)
+    df = pd.DataFrame(all_data, columns=columns)
+    del all_data
+    gc.collect()
+    
+    # Group by account, year, month and average
+    grouped = df.groupby(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL'], as_index=False).mean()
+    del df
+    gc.collect()
+    
+    # Sort by account, year, month
+    all_results = grouped.sort_values(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL']).reset_index(drop=True)
+    del grouped
+    gc.collect()
+    
+    agg_time = (datetime.now() - agg_start).total_seconds()
     merge_time = (datetime.now() - merge_start).total_seconds()
-    print(f"  Aggregated to {len(all_results):,} rows: {merge_time:.2f}s")
+    print(f"  Aggregated to {len(all_results):,} rows in {agg_time:.2f}s")
+    print(f"  Total merge time: {merge_time:.2f}s")
     print(f"  Size: {all_results.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
     
-    # Cleanup Parquet files
-    print("\nCleaning up Parquet files...")
+    # Cleanup NPY files
+    print("\nCleaning up NPY files...")
     try:
         shutil.rmtree(parquet_dir)
-        print(f"  Removed temporary Parquet directory: {parquet_dir}")
+        print(f"  Removed temporary NPY directory: {parquet_dir}")
     except Exception as e:
-        print(f"  Warning: Could not remove temporary Parquet files: {e}")
+        print(f"  Warning: Could not remove temporary NPY files: {e}")
 
     # Debug logging for specific account
     # Note: With scenario averaging, we show the averaged results (not individual scenarios)
