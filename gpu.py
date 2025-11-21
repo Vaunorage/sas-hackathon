@@ -1759,18 +1759,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             filter_start = datetime.now()
             gpu_df = gpu_df[gpu_df['ID_COMPTE'] > 0]
             
-            # OPTIMIZATION: In debug mode, filter to only the specific account ON GPU before transfer!
-            if debug_account is not None:
-                # Check if debug account is in this batch
-                batch_start_account = start_idx + 1  # Account IDs start at 1
-                batch_end_account = end_idx
-                if batch_start_account <= debug_account <= batch_end_account:
-                    logger.info(f"    Debug mode: Filtering to account {debug_account} on GPU...")
-                    gpu_df = gpu_df[gpu_df['ID_COMPTE'] == debug_account]
-                    logger.info(f"    Kept only account {debug_account} data: {len(gpu_df):,} rows")
-                else:
-                    logger.info(f"    Debug mode: Account {debug_account} not in this batch, skipping transfer...")
-                    gpu_df = gpu_df.iloc[:0]  # Empty dataframe
+            # No filtering here - we need all accounts for VP_FLUX_TOTAL calculation
+            # Debug account filtering will happen AFTER we aggregate to VP-only summary
             
             num_rows = len(gpu_df)
             filter_time = (datetime.now() - filter_start).total_seconds()
@@ -1841,35 +1831,23 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 del cpu_data
                 gc.collect()  # Immediate cleanup
                 
-                # OPTIMIZATION: Filter by mode
-                if debug_account is not None:
-                    # Debug mode: Only keep the specific account's data
-                    batch_start_account = start_idx + 1  # Account IDs start at 1
-                    batch_end_account = end_idx
-                    if batch_start_account <= debug_account <= batch_end_account:
-                        logger.info(f"    Debug mode: Filtering to account {debug_account}...")
-                        df = df[df['ID_COMPTE'] == debug_account]
-                        logger.info(f"    Kept only account {debug_account} data: {len(df):,} rows")
-                    else:
-                        logger.info(f"    Debug mode: Account {debug_account} not in this batch, skipping write...")
-                        df = df.iloc[:0]  # Empty dataframe
-                elif debug_account is None:
-                    logger.info(f"    Production mode: Aggregating to VP-only summary (1 row per account)...")
-                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
-                    df = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
-                    logger.info(f"    Reduced to {len(df):,} rows (VP values only)")
+                # ALWAYS aggregate to VP-only summary for VP_FLUX_TOTAL calculation
+                logger.info(f"    Aggregating to VP-only summary (1 row per account)...")
+                vp_columns = [col for col in df.columns if col.startswith('VP_')]
+                df_vp_summary = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
+                logger.info(f"    Reduced to {len(df_vp_summary):,} rows (VP values only)")
                 
                 df_time = (datetime.now() - df_start).total_seconds()
                 logger.info(f"    Created pandas DataFrame: {df_time:.3f}s")
                 
-                # Write aggregated data to parquet
+                # Write VP summary (always, for all accounts)
                 write_start = datetime.now()
                 parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
                 fastparquet_write(
                     str(parquet_path),
-                    df,
+                    df_vp_summary,
                     compression='snappy',
-                    row_group_offsets=50000,  # Smaller row groups for better memory efficiency
+                    row_group_offsets=50000,
                     file_scheme='simple',
                     write_index=False,
                     stats=False
@@ -1878,15 +1856,36 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 write_time = (datetime.now() - write_start).total_seconds()
                 file_size_mb = parquet_path.stat().st_size / 1024**2
                 total_time = transfer_time + df_time + write_time
-                logger.info(f"    Written {file_size_mb:.1f} MB in {total_time:.3f}s ({file_size_mb/total_time:.1f} MB/s)")
+                logger.info(f"    Written VP summary: {file_size_mb:.1f} MB in {total_time:.3f}s ({file_size_mb/total_time:.1f} MB/s)")
                 logger.info(f"      (transfer:{transfer_time:.3f}s, df:{df_time:.3f}s, write:{write_time:.3f}s)")
                 
-                # Free CPU DataFrame
-                del df
-                gc.collect()
-                
                 # Track stats
-                write_futures.append((i, file_size_mb, num_rows, total_time))
+                write_futures.append((i, file_size_mb, len(df_vp_summary), total_time))
+                
+                # If debug mode, ALSO write detailed timestep data for the specific account
+                if debug_account is not None:
+                    batch_start_account = start_idx + 1
+                    batch_end_account = end_idx
+                    if batch_start_account <= debug_account <= batch_end_account:
+                        logger.info(f"    Debug mode: Writing detailed data for account {debug_account}...")
+                        df_debug = df[df['ID_COMPTE'] == debug_account]
+                        debug_path = parquet_dir / f"debug_batch_{i:04d}.parquet"
+                        fastparquet_write(
+                            str(debug_path),
+                            df_debug,
+                            compression='snappy',
+                            row_group_offsets=50000,
+                            file_scheme='simple',
+                            write_index=False,
+                            stats=False
+                        )
+                        logger.info(f"    Written debug data: {len(df_debug):,} rows")
+                
+                # Free CPU DataFrames
+                del df, df_vp_summary
+                if 'df_debug' in locals():
+                    del df_debug
+                gc.collect()
             else:
                 logger.info(f"    No valid rows in batch - skipping write")
                 del cupy_array, gpu_data, d_batch_reshaped
@@ -1968,34 +1967,21 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 # Drop SCN_EVAL column (always 0 after kernel aggregation)
                 df = df.drop(columns=['SCN_EVAL'])
                 
-                # OPTIMIZATION: Filter by mode
-                if debug_account is not None:
-                    # Debug mode: Only keep the specific account's data
-                    batch_start_account = start_idx + 1  # Account IDs start at 1
-                    batch_end_account = end_idx
-                    if batch_start_account <= debug_account <= batch_end_account:
-                        logger.info(f"      Debug mode: Filtering to account {debug_account}...")
-                        df = df[df['ID_COMPTE'] == debug_account]
-                        logger.info(f"      Kept only account {debug_account} data: {len(df):,} rows")
-                    else:
-                        logger.info(f"      Debug mode: Account {debug_account} not in this batch, skipping write...")
-                        df = df.iloc[:0]  # Empty dataframe
-                elif debug_account is None:
-                    logger.info(f"      Production mode: Aggregating to VP-only summary (1 row per account)...")
-                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
-                    agg_dict = {col: 'sum' for col in vp_columns}
-                    df = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
-                    logger.info(f"      Reduced to {len(df):,} rows (VP values only)")
+                # ALWAYS aggregate to VP-only summary for VP_FLUX_TOTAL calculation
+                logger.info(f"      Aggregating to VP-only summary (1 row per account)...")
+                vp_columns = [col for col in df.columns if col.startswith('VP_')]
+                df_vp_summary = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
+                logger.info(f"      Reduced to {len(df_vp_summary):,} rows (VP values only)")
                 
                 df_time = (datetime.now() - df_start).total_seconds()
-                logger.info(f"      Created DataFrame with {len(df):,} rows in {df_time:.3f}s")
+                logger.info(f"      Created DataFrame with {len(df_vp_summary):,} rows in {df_time:.3f}s")
                 
-                # Write pre-aggregated data to parquet
-                logger.info(f"    Writing pre-aggregated data to parquet...")
+                # Write VP summary (always, for all accounts)
+                logger.info(f"    Writing VP summary to parquet...")
                 write_start_time = datetime.now()
                 fastparquet_write(
                     str(parquet_path),
-                    df,
+                    df_vp_summary,
                     compression='snappy',
                     row_group_offsets=100000,
                     file_scheme='simple',
@@ -2006,14 +1992,35 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 
                 total_time = (datetime.now() - write_start).total_seconds()
                 file_size_mb = parquet_path.stat().st_size / 1024**2
-                logger.info(f"    Written {file_size_mb:.1f} MB in {total_time:.3f}s ({file_size_mb/total_time:.1f} MB/s)")
+                logger.info(f"    Written VP summary: {file_size_mb:.1f} MB in {total_time:.3f}s ({file_size_mb/total_time:.1f} MB/s)")
                 logger.info(f"      (df:{df_time:.3f}s, write:{write_time:.3f}s)")
                 
                 # Track stats
-                write_futures.append((i, file_size_mb, num_rows, total_time))
+                write_futures.append((i, file_size_mb, len(df_vp_summary), total_time))
                 
-                # Free DataFrame
-                del df
+                # If debug mode, ALSO write detailed timestep data for the specific account
+                if debug_account is not None:
+                    batch_start_account = start_idx + 1
+                    batch_end_account = end_idx
+                    if batch_start_account <= debug_account <= batch_end_account:
+                        logger.info(f"    Debug mode: Writing detailed data for account {debug_account}...")
+                        df_debug = df[df['ID_COMPTE'] == debug_account]
+                        debug_path = parquet_dir / f"debug_batch_{i:04d}.parquet"
+                        fastparquet_write(
+                            str(debug_path),
+                            df_debug,
+                            compression='snappy',
+                            row_group_offsets=100000,
+                            file_scheme='simple',
+                            write_index=False,
+                            stats=False
+                        )
+                        logger.info(f"    Written debug data: {len(df_debug):,} rows")
+                
+                # Free DataFrames
+                del df, df_vp_summary
+                if 'df_debug' in locals():
+                    del df_debug
                 gc.collect()
                 gc.collect()
             else:
@@ -2100,23 +2107,29 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     # Otherwise, compute VP_FLUX_TOTAL directly from parquet files using DuckDB aggregation
     all_results = None
     
+    # Always load VP summary for all accounts (for VP_FLUX_TOTAL calculation)
+    # This is now very small (1 row per account) regardless of mode
+    print("Loading VP summary for all accounts...")
+    all_results = None  # Will be loaded separately if needed for debug
+    merge_time = 0
+    
+    # In debug mode, also load detailed timestep data
     if debug_account is not None:
-        # Debug mode: Load only the specific account's data
-        print(f"Debug mode: Loading data for account {debug_account} only...")
-        debug_sql = f"""
-        SELECT *
-        FROM read_parquet('{parquet_pattern}')
-        WHERE ID_COMPTE = {debug_account}
-        ORDER BY AN_EVAL, MOIS_EVAL
-        """
-        all_results = duckdb.execute(debug_sql).df()
-        merge_time = (datetime.now() - merge_start).total_seconds()
-        print(f"  Loaded {len(all_results):,} rows for account {debug_account} in {merge_time:.2f}s")
-        print(f"  Size: {all_results.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
-    else:
-        # Production mode: Don't load all data, just compute the essential VP_FLUX_TOTAL
-        print("Production mode: Computing VP_FLUX_TOTAL directly from parquet files (no full data load)...")
-        merge_time = 0  # Will be computed below
+        debug_pattern = str(parquet_dir / "debug_batch_*.parquet")
+        debug_files = sorted(parquet_dir.glob("debug_batch_*.parquet"))
+        if len(debug_files) > 0:
+            print(f"Debug mode: Loading detailed data for account {debug_account}...")
+            debug_sql = f"""
+            SELECT *
+            FROM read_parquet('{debug_pattern}')
+            ORDER BY AN_EVAL, MOIS_EVAL
+            """
+            all_results = duckdb.execute(debug_sql).df()
+            merge_time = (datetime.now() - merge_start).total_seconds()
+            print(f"  Loaded {len(all_results):,} rows for account {debug_account} in {merge_time:.2f}s")
+            print(f"  Size: {all_results.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
+        else:
+            print(f"  No debug files found (account {debug_account} may not have been processed)")
 
     # Debug logging for specific account
     # Note: With scenario averaging, we show the averaged results (not individual scenarios)
@@ -2199,68 +2212,68 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
 
     agg_start = datetime.now()
     
-    # OPTIMIZATION: Compute VP_FLUX_TOTAL directly from parquet files using DuckDB
-    # This avoids loading all data into memory
+    # ALWAYS compute VP_FLUX_TOTAL from VP summary parquet files
+    # These files contain 1 row per account with only VP columns (very small!)
+    print("Computing VP_FLUX_TOTAL from VP summary parquet files (ultra-fast, low memory)...")
+    
+    # Get all VP columns by reading schema from first parquet file
+    sample_df = pd.read_parquet(parquet_files[0], nrows=1)
+    vp_columns = [col for col in sample_df.columns if col.startswith('VP_')]
+    
+    # Build SQL query to sum all VP columns across all accounts
+    # Data is already aggregated per account, so we just sum across all accounts
+    vp_sum_expressions = [f"SUM({col}) as {col}" for col in vp_columns]
+    vp_sum_sql = ", ".join(vp_sum_expressions)
+    
+    total_vp_sql = f"""
+    SELECT 
+        {vp_sum_sql}
+    FROM read_parquet('{parquet_pattern}')
+    """
+    
+    vp_totals = duckdb.execute(total_vp_sql).df()
+    
+    # Calculate total VP (sum of all VP columns)
+    total_vp = vp_totals.sum(axis=1).iloc[0]
+    
+    # Create VP_FLUX_TOTAL dataframe
+    vp_flux_total = pd.DataFrame({
+        'CATEGORIE': ['TOTAL'],
+        'VP_FLUX_TOT': [total_vp]
+    })
+    
+    print(f"  ✓ VP_FLUX_TOTAL computed: ${total_vp:,.2f}")
+    
+    # Handle detailed outputs based on debug mode
     if debug_account is None:
-        # Production mode: Compute VP_FLUX_TOTAL efficiently without loading all data
-        print("Computing VP_FLUX_TOTAL directly from parquet files (ultra-fast, low memory)...")
-        print(f"  Note: Parquet files contain only VP columns per account (600x data reduction!)")
-        
-        # Get all VP columns by reading schema from first parquet file
-        sample_df = pd.read_parquet(parquet_files[0], nrows=1)
-        vp_columns = [col for col in sample_df.columns if col.startswith('VP_')]
-        
-        # Build SQL query to sum all VP columns across all accounts
-        # Data is already aggregated per account, so we just sum across all accounts
-        vp_sum_expressions = [f"SUM({col}) as {col}" for col in vp_columns]
-        vp_sum_sql = ", ".join(vp_sum_expressions)
-        
-        total_vp_sql = f"""
-        SELECT 
-            {vp_sum_sql}
-        FROM read_parquet('{parquet_pattern}')
-        """
-        
-        vp_totals = duckdb.execute(total_vp_sql).df()
-        
-        # Calculate total VP (sum of all VP columns)
-        total_vp = vp_totals.sum(axis=1).iloc[0]
-        
-        # Create VP_FLUX_TOTAL dataframe
-        vp_flux_total = pd.DataFrame({
-            'CATEGORIE': ['TOTAL'],
-            'VP_FLUX_TOT': [total_vp]
-        })
-        
-        print(f"  ✓ VP_FLUX_TOTAL computed: ${total_vp:,.2f}")
-        
-        # Set empty dataframes for the other outputs (not needed in production mode)
+        # Production mode: No detailed outputs
         vp_flux_compte = None
         flux_projetes = None
-        
-        merge_time = (datetime.now() - agg_start).total_seconds()
-        agg_time = merge_time
-        print(f"\nTotal aggregation time: {agg_time:.2f}s (optimized - minimal data processed!)")
-        
-    else:
-        # Debug mode: Load and aggregate all data for the specific account
-        print("Scenario averaging already completed by DuckDB")
-        calculs_sommaire = all_results
-        print(f"  → {len(calculs_sommaire):,} rows (account {debug_account} only)")
-        
-        print("Creating VP_FLUX_COMPTE...")
-        vp_flux_compte = aggregate_vp_flux_compte(calculs_sommaire)
-        print(f"  → {len(vp_flux_compte):,} accounts")
-        
-        print("Creating VP_FLUX_TOTAL...")
-        vp_flux_total = aggregate_vp_flux_total(vp_flux_compte)
-        
-        print("Creating FLUX_PROJETES...")
-        flux_projetes = aggregate_flux_projetes(calculs_sommaire)
-        print(f"  → {len(flux_projetes):,} time periods")
-        
         agg_time = (datetime.now() - agg_start).total_seconds()
-        print(f"\nTotal aggregation time: {agg_time:.2f}s")
+        print(f"\nTotal aggregation time: {agg_time:.2f}s (optimized - minimal data processed!)")
+    else:
+        # Debug mode: Create detailed outputs if debug data was loaded
+        if all_results is not None and len(all_results) > 0:
+            print("Scenario averaging already completed by DuckDB")
+            calculs_sommaire = all_results
+            print(f"  → {len(calculs_sommaire):,} rows (account {debug_account} only)")
+            
+            print("Creating VP_FLUX_COMPTE...")
+            vp_flux_compte = aggregate_vp_flux_compte(calculs_sommaire)
+            print(f"  → {len(vp_flux_compte):,} accounts")
+            
+            print("Creating FLUX_PROJETES...")
+            flux_projetes = aggregate_flux_projetes(calculs_sommaire)
+            print(f"  → {len(flux_projetes):,} time periods")
+            
+            agg_time = (datetime.now() - agg_start).total_seconds()
+            print(f"\nTotal aggregation time: {agg_time:.2f}s")
+        else:
+            # No debug data available
+            vp_flux_compte = None
+            flux_projetes = None
+            agg_time = (datetime.now() - agg_start).total_seconds()
+            print(f"\nTotal aggregation time: {agg_time:.2f}s (VP_FLUX_TOTAL only)")
 
     # Save outputs
     print("\nSaving outputs...")
