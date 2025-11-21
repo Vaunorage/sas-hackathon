@@ -16,6 +16,8 @@ import duckdb
 import tempfile
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pyarrow.compute as pc
+from fastparquet import write as fastparquet_write
 
 # Try to import cuDF for GPU-accelerated DataFrame operations
 try:
@@ -1848,15 +1850,21 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 del h_batch_output, reshaped, valid_mask, valid_data
                 gc.collect()
                 
-                # Write with Polars (optimized parquet writer - faster than pandas)
+                # Convert to pandas DataFrame for fastparquet
                 write_start = datetime.now()
                 parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                logger.info(f"    Writing parquet with Polars...")
+                logger.info(f"    Writing parquet with fastparquet...")
                 
-                pl_df.write_parquet(
-                    parquet_path,
-                    compression='lz4',
-                    use_pyarrow=True  # Use pyarrow backend for compatibility
+                # Convert to pandas (fastparquet works with pandas DataFrames)
+                pdf = pl_df.to_pandas()
+                
+                # Write with fastparquet (faster than pyarrow for this use case)
+                fastparquet_write(
+                    str(parquet_path),
+                    pdf,
+                    compression='SNAPPY',  # Fast compression, good balance of speed/ratio
+                    row_group_offsets=1000000,  # 1M rows per row group
+                    file_scheme='hive'  # Better compatibility with DuckDB
                 )
                 
                 write_time = (datetime.now() - write_start).total_seconds()
@@ -1866,8 +1874,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 # Track stats (synchronous write, already complete)
                 write_futures.append((i, file_size_mb, num_rows, write_time))
                 
-                # Free DataFrame immediately
-                del pl_df
+                # Free DataFrames immediately
+                del pl_df, pdf
                 gc.collect()
             else:
                 # No valid data - just clean up
