@@ -1609,8 +1609,13 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
 
         # 2. Allocate batch-specific output array on CPU (use pinned memory if enabled)
         if use_pinned_memory:
-            h_batch_output = cuda.pinned_array((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
-            h_batch_output[:] = 0  # Initialize to zero
+            try:
+                h_batch_output = cuda.pinned_array((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
+                h_batch_output[:] = 0  # Initialize to zero
+            except Exception as e:
+                logger.warning(f"  Pinned memory allocation failed ({e}), falling back to regular memory")
+                use_pinned_memory = False  # Disable for remaining batches
+                h_batch_output = np.zeros((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
         else:
             h_batch_output = np.zeros((current_batch_size, nb_scenarios, max_timesteps, n_output_fields), dtype=np.float32)
         logger.info(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB")
@@ -1827,13 +1832,17 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 extract_time = (datetime.now() - prep_start).total_seconds()
                 logger.info(f"    Extracted valid data: {extract_time:.3f}s")
                 
+                # Free large arrays immediately after extraction
+                del h_batch_output, reshaped, valid_mask
+                gc.collect()
+                
                 num_rows = n_valid
                 
                 # FASTEST APPROACH: Skip DataFrames entirely, write directly to Parquet with PyArrow
-                # This eliminates: Polars creation, type casting, pandas conversion, DataFrame overhead
+                # CRITICAL: Force copy to avoid PyArrow holding references to source arrays
                 write_start = datetime.now()
                 parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                logger.info(f"    Writing parquet directly with PyArrow (zero-copy)...")
+                logger.info(f"    Writing parquet directly with PyArrow (with memory copy)...")
                 
                 # Define schema with optimal types (int32 for IDs, float32 for values)
                 schema_fields = []
@@ -1844,20 +1853,31 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                         schema_fields.append(pa.field(col_name, pa.float32()))
                 schema = pa.schema(schema_fields)
                 
-                # Create PyArrow arrays directly from NumPy columns (zero-copy for most types)
+                # Create PyArrow arrays with EXPLICIT COPY to avoid memory leaks
+                # Zero-copy causes PyArrow to hold references, preventing GC
                 arrow_arrays = []
                 for col_idx, col_name in enumerate(columns):
                     col_data = valid_data[:, col_idx]
                     if col_idx < 4:  # Integer columns
-                        arrow_arrays.append(pa.array(col_data.astype(np.int32), type=pa.int32()))
+                        # Make a copy to break references
+                        col_copy = col_data.astype(np.int32).copy()
+                        arrow_arrays.append(pa.array(col_copy, type=pa.int32()))
+                        del col_copy
                     else:  # Float columns (already float32)
-                        arrow_arrays.append(pa.array(col_data, type=pa.float32()))
+                        # Make a copy to break references
+                        col_copy = col_data.copy()
+                        arrow_arrays.append(pa.array(col_copy, type=pa.float32()))
+                        del col_copy
                 
-                # Create PyArrow table (lightweight, no copy)
+                # Free source data NOW (before creating table)
+                del valid_data
+                gc.collect()
+                
+                # Create PyArrow table from copied arrays
                 arrow_table = pa.table(arrow_arrays, schema=schema)
                 
-                # Free source arrays immediately
-                del h_batch_output, reshaped, valid_mask, valid_data, arrow_arrays
+                # Free arrow arrays
+                del arrow_arrays
                 gc.collect()
                 
                 # Write directly to Parquet (optimized settings for speed)
@@ -1877,9 +1897,11 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 # Track stats (synchronous write, already complete)
                 write_futures.append((i, file_size_mb, num_rows, write_time))
                 
-                # Free Arrow table
+                # CRITICAL: Free Arrow table and force memory release
                 del arrow_table
+                # Force Python GC to release memory immediately
                 gc.collect()
+                gc.collect()  # Run twice to catch circular references
             else:
                 # No valid data - just clean up
                 del h_batch_output, reshaped, valid_mask
