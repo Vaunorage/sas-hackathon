@@ -21,11 +21,37 @@ def force_gpu_memory_cleanup():
     """Force GPU memory cleanup by running garbage collection"""
     gc.collect()
 
+# Async parquet writer
+def write_parquet_async(arrow_table, parquet_path, batch_num, num_rows):
+    """Write parquet file asynchronously with optimized settings.
+    
+    Args:
+        arrow_table: PyArrow table to write
+        parquet_path: Path to output file
+        batch_num: Batch number for logging
+        num_rows: Number of rows for logging
+        
+    Returns:
+        Tuple of (batch_num, file_size_mb, num_rows, write_time)
+    """
+    write_start = datetime.now()
+    pq.write_table(
+        arrow_table,
+        parquet_path,
+        compression='lz4',  # Faster than snappy
+        use_dictionary=False,
+        write_statistics=False
+    )
+    write_time = (datetime.now() - write_start).total_seconds()
+    file_size_mb = parquet_path.stat().st_size / 1024**2
+    return batch_num, file_size_mb, num_rows, write_time
+
 # Import numba for CUDA
 from numba import cuda
 from paths import HERE
 import argparse
 from multiprocessing import Pool, cpu_count
+import concurrent.futures
 
 # =============================================================================
 # LOGGING SETUP
@@ -1482,7 +1508,11 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     ]
     
     print(f"Parquet directory: {parquet_dir}")
-    print(f"Parquet writes are ~4-5x faster than database inserts")
+    print(f"Parquet writes with LZ4 compression + async I/O (optimized)")
+    
+    # Create thread pool for async parquet writes
+    parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    write_futures = []
     
     total_kernel_duration = 0
     total_transfer_duration = 0
@@ -1626,8 +1656,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             mem_after_free = process.memory_info().rss / 1024**3
             logger.info(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
             
-            # Write batch data to Parquet file (zero-copy Arrow optimization!)
-            write_start = datetime.now()
+            # Prepare Arrow table with optimized zero-copy and explicit types
+            prep_start = datetime.now()
             
             # Convert ID columns to int32 in-place (very fast on NumPy)
             valid_data[:, 0] = valid_data[:, 0].astype(np.int32)  # ID_COMPTE
@@ -1635,27 +1665,35 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             valid_data[:, 2] = valid_data[:, 2].astype(np.int32)  # AN_EVAL
             valid_data[:, 3] = valid_data[:, 3].astype(np.int32)  # MOIS_EVAL
             
-            # Create Arrow table directly from NumPy (zero-copy!)
-            # This is much faster than creating a DataFrame
-            arrow_arrays = [pa.array(valid_data[:, i]) for i in range(len(columns))]
-            arrow_table = pa.Table.from_arrays(arrow_arrays, names=columns)
+            # Create Arrow arrays with explicit types for zero-copy optimization
+            # First 4 columns are int32, rest are float32
+            arrow_arrays = []
+            for col_idx in range(len(columns)):
+                if col_idx < 4:
+                    # Integer columns - use zero-copy from_numpy
+                    arrow_arrays.append(pa.array(valid_data[:, col_idx], type=pa.int32()))
+                else:
+                    # Float columns - use zero-copy from_numpy
+                    arrow_arrays.append(pa.array(valid_data[:, col_idx], type=pa.float32()))
             
-            # Write directly to Parquet (optimized for numeric data)
+            arrow_table = pa.Table.from_arrays(arrow_arrays, names=columns)
+            num_rows = len(valid_data)
+            prep_time = (datetime.now() - prep_start).total_seconds()
+            logger.info(f"    Arrow table prep (optimized zero-copy): {prep_time:.3f}s ({num_rows:,} rows)")
+            
+            # Submit async write to thread pool (LZ4 compression)
             parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-            pq.write_table(
+            future = parquet_writer_pool.submit(
+                write_parquet_async,
                 arrow_table,
                 parquet_path,
-                compression='snappy',
-                use_dictionary=False,  # Faster for numeric data
-                write_statistics=False  # Skip stats for speed
+                i,
+                num_rows
             )
+            write_futures.append(future)
+            logger.info(f"    Parquet write submitted to async pool (batch {i})")
             
-            write_time = (datetime.now() - write_start).total_seconds()
-            file_size_mb = parquet_path.stat().st_size / 1024**2
-            num_rows = len(valid_data)
-            logger.info(f"    Parquet write (Arrow zero-copy): {write_time:.3f}s ({num_rows:,} rows, {file_size_mb:.1f} MB)")
-            
-            # Free batch data immediately
+            # Free batch data immediately (don't wait for write to complete)
             del valid_data, arrow_arrays, arrow_table
             gc.collect()
         
@@ -1689,6 +1727,36 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         cpu_processing_time = batch_duration - kernel_duration - transfer_to_gpu - transfer_from_gpu
         logger.info(f"  Batch {i + 1} total time: {batch_duration:.2f}s (Kernel: {kernel_duration:.2f}s, Transfer: {transfer_to_gpu + transfer_from_gpu:.2f}s, CPU: {cpu_processing_time:.2f}s)")
 
+    # --- WAIT FOR ALL ASYNC WRITES TO COMPLETE ---
+    print("\n" + "="*60)
+    print("WAITING FOR ASYNC PARQUET WRITES TO COMPLETE")
+    print("="*60)
+    
+    wait_start = datetime.now()
+    total_write_time = 0
+    total_file_size_mb = 0
+    total_rows_written = 0
+    
+    print(f"\nWaiting for {len(write_futures)} async write operations...")
+    for future in concurrent.futures.as_completed(write_futures):
+        batch_num, file_size_mb, num_rows, write_time = future.result()
+        total_write_time += write_time
+        total_file_size_mb += file_size_mb
+        total_rows_written += num_rows
+    
+    # Shutdown thread pool
+    parquet_writer_pool.shutdown(wait=True)
+    
+    wait_duration = (datetime.now() - wait_start).total_seconds()
+    avg_write_time = total_write_time / len(write_futures) if write_futures else 0
+    
+    print(f"\nAll async writes completed:")
+    print(f"  Total wait time: {wait_duration:.2f}s")
+    print(f"  Total write time (sum of all threads): {total_write_time:.2f}s")
+    print(f"  Average write time per batch: {avg_write_time:.3f}s")
+    print(f"  Total data written: {total_file_size_mb:.1f} MB ({total_rows_written:,} rows)")
+    print(f"  Effective speedup from parallelism: {total_write_time/wait_duration:.1f}x")
+    
     # --- FINAL AGGREGATION WITH DUCKDB + PARQUET ---
     print("\n" + "="*60)
     print("FINAL DATA ASSEMBLY (DuckDB reading Parquet)")
