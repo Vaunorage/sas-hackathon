@@ -1824,11 +1824,19 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 # Create pandas DataFrame from NumPy arrays (fast on CPU)
                 df_start = datetime.now()
                 df = pd.DataFrame(cpu_data)
-                df_time = (datetime.now() - df_start).total_seconds()
-                logger.info(f"    Created pandas DataFrame: {df_time:.3f}s")
-                
                 del cpu_data
                 gc.collect()  # Immediate cleanup
+                
+                # OPTIMIZATION: In production mode (no debug), only keep VP columns aggregated per account
+                # This reduces data from ~600 rows per account to 1 row per account (600x reduction!)
+                if debug_account is None:
+                    logger.info(f"    Production mode: Aggregating to VP-only summary (1 row per account)...")
+                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
+                    df = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
+                    logger.info(f"    Reduced to {len(df):,} rows (VP values only)")
+                
+                df_time = (datetime.now() - df_start).total_seconds()
+                logger.info(f"    Created pandas DataFrame: {df_time:.3f}s")
                 
                 # Write aggregated data to parquet
                 write_start = datetime.now()
@@ -1936,8 +1944,17 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 # Drop SCN_EVAL column (always 0 after kernel aggregation)
                 df = df.drop(columns=['SCN_EVAL'])
                 
+                # OPTIMIZATION: In production mode (no debug), only keep VP columns aggregated per account
+                # This reduces data from ~600 rows per account to 1 row per account (600x reduction!)
+                if debug_account is None:
+                    logger.info(f"      Production mode: Aggregating to VP-only summary (1 row per account)...")
+                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
+                    agg_dict = {col: 'sum' for col in vp_columns}
+                    df = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
+                    logger.info(f"      Reduced to {len(df):,} rows (VP values only)")
+                
                 df_time = (datetime.now() - df_start).total_seconds()
-                logger.info(f"      Created DataFrame with {len(df):,} pre-aggregated rows in {df_time:.3f}s")
+                logger.info(f"      Created DataFrame with {len(df):,} rows in {df_time:.3f}s")
                 
                 # Write pre-aggregated data to parquet
                 logger.info(f"    Writing pre-aggregated data to parquet...")
@@ -2153,12 +2170,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     if debug_account is None:
         # Production mode: Compute VP_FLUX_TOTAL efficiently without loading all data
         print("Computing VP_FLUX_TOTAL directly from parquet files (ultra-fast, low memory)...")
+        print(f"  Note: Parquet files contain only VP columns per account (600x data reduction!)")
         
         # Get all VP columns by reading schema from first parquet file
         sample_df = pd.read_parquet(parquet_files[0], nrows=1)
         vp_columns = [col for col in sample_df.columns if col.startswith('VP_')]
         
         # Build SQL query to sum all VP columns across all accounts
+        # Data is already aggregated per account, so we just sum across all accounts
         vp_sum_expressions = [f"SUM({col}) as {col}" for col in vp_columns]
         vp_sum_sql = ", ".join(vp_sum_expressions)
         
@@ -2187,7 +2206,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         
         merge_time = (datetime.now() - agg_start).total_seconds()
         agg_time = merge_time
-        print(f"\nTotal aggregation time: {agg_time:.2f}s (optimized - no full data load!)")
+        print(f"\nTotal aggregation time: {agg_time:.2f}s (optimized - minimal data processed!)")
         
     else:
         # Debug mode: Load and aggregate all data for the specific account
@@ -2312,7 +2331,7 @@ if __name__ == "__main__":
             max_accounts=200000,
             threads_per_block=(32, 8),  # (accounts_per_block, scenarios_per_block) - 256 threads per block
             debug_account=3,
-            debug_scenario=2
+            debug_scenario=1
         )
 
         if results:
