@@ -1630,17 +1630,25 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         reshape_time = (datetime.now() - reshape_start).total_seconds()
         logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s")
         
-        # Extract valid rows
+        # Extract valid rows - OPTIMIZED with boolean indexing
         extract_start = datetime.now()
+        logger.info(f"    Creating valid mask for {total_rows:,} rows...")
         valid_mask = reshaped[:, 0] > 0
+        mask_time = (datetime.now() - extract_start).total_seconds()
+        logger.info(f"    Mask created: {mask_time:.3f}s")
+        
         n_valid = np.sum(valid_mask)
         logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
         
         if n_valid > 0:
-            valid_data = np.compress(valid_mask, reshaped, axis=0)
+            logger.info(f"    Extracting {n_valid:,} valid rows...")
+            compress_start = datetime.now()
+            # Use boolean indexing instead of compress - much faster!
+            valid_data = reshaped[valid_mask]
+            compress_time = (datetime.now() - compress_start).total_seconds()
             extract_time = (datetime.now() - extract_start).total_seconds()
             mem_after_extract = process.memory_info().rss / 1024**3
-            logger.info(f"    Extract: {extract_time:.3f}s, mem: +{mem_after_extract - mem_before:.2f} GB")
+            logger.info(f"    Extract: {extract_time:.3f}s (compress: {compress_time:.3f}s), mem: +{mem_after_extract - mem_before:.2f} GB")
             del valid_mask
         else:
             valid_data = None
@@ -1658,28 +1666,37 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             
             # Prepare Arrow table with optimized zero-copy and explicit types
             prep_start = datetime.now()
+            num_rows = len(valid_data)
+            logger.info(f"    Preparing Arrow table for {num_rows:,} rows...")
             
             # Convert ID columns to int32 in-place (very fast on NumPy)
+            type_start = datetime.now()
             valid_data[:, 0] = valid_data[:, 0].astype(np.int32)  # ID_COMPTE
             valid_data[:, 1] = valid_data[:, 1].astype(np.int32)  # SCN_EVAL
             valid_data[:, 2] = valid_data[:, 2].astype(np.int32)  # AN_EVAL
             valid_data[:, 3] = valid_data[:, 3].astype(np.int32)  # MOIS_EVAL
+            type_time = (datetime.now() - type_start).total_seconds()
+            logger.info(f"    Type conversion: {type_time:.3f}s")
             
-            # Create Arrow arrays with explicit types for zero-copy optimization
-            # First 4 columns are int32, rest are float32
+            # Create Arrow arrays - use contiguous arrays for zero-copy
+            arrow_start = datetime.now()
             arrow_arrays = []
             for col_idx in range(len(columns)):
+                # Make contiguous copy of column (required for zero-copy to Arrow)
                 if col_idx < 4:
-                    # Integer columns - use zero-copy from_numpy
-                    arrow_arrays.append(pa.array(valid_data[:, col_idx], type=pa.int32()))
+                    col_data = np.ascontiguousarray(valid_data[:, col_idx], dtype=np.int32)
                 else:
-                    # Float columns - use zero-copy from_numpy
-                    arrow_arrays.append(pa.array(valid_data[:, col_idx], type=pa.float32()))
+                    col_data = np.ascontiguousarray(valid_data[:, col_idx], dtype=np.float32)
+                arrow_arrays.append(pa.array(col_data))
+            arrow_time = (datetime.now() - arrow_start).total_seconds()
+            logger.info(f"    Arrow arrays created: {arrow_time:.3f}s")
             
+            table_start = datetime.now()
             arrow_table = pa.Table.from_arrays(arrow_arrays, names=columns)
-            num_rows = len(valid_data)
+            table_time = (datetime.now() - table_start).total_seconds()
+            
             prep_time = (datetime.now() - prep_start).total_seconds()
-            logger.info(f"    Arrow table prep (optimized zero-copy): {prep_time:.3f}s ({num_rows:,} rows)")
+            logger.info(f"    Arrow table prep total: {prep_time:.3f}s (type:{type_time:.3f}s, arrays:{arrow_time:.3f}s, table:{table_time:.3f}s)")
             
             # Submit async write to thread pool (LZ4 compression)
             parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
