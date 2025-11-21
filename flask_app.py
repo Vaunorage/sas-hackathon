@@ -18,6 +18,9 @@ from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
+import runpod
+import requests
+import base64
 
 from paths import HERE
 
@@ -88,6 +91,10 @@ HERE.joinpath('static').mkdir(exist_ok=True)
 APP_VERSION = "1.0.0"
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')  # Change in production!
+
+# RunPod worker configuration
+RUNPOD_API_KEY = os.getenv('RUNPOD_API_KEY')
+RUNPOD_ENDPOINT_ID = os.getenv('RUNPOD_ENDPOINT_ID')
 
 # RunPod configuration
 PORT = int(os.getenv('PORT', '80'))  # Main application port
@@ -325,6 +332,12 @@ set_app_healthy()
 # Track running jobs and their threads
 job_threads = {}
 job_cancellation_flags = {}
+if RUNPOD_API_KEY:
+    runpod.api_key = RUNPOD_API_KEY
+    print("✓ RunPod API key configured")
+else:
+    print("Warning: RUNPOD_API_KEY not set. RunPod worker integration will be disabled.")
+
 job_progress = {}  # In-memory progress tracking: {job_id: {'current': int, 'total': int}}
 
 # =============================================================================
@@ -624,6 +637,64 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
         return job_data
     return None
 
+def trigger_runpod_job(job_id: str):
+    """
+    Triggers a job on a RunPod serverless worker.
+    """
+    try:
+        update_job_status(job_id, 'running')
+        job = get_job(job_id)
+        if not job:
+            raise Exception(f"Job {job_id} not found")
+
+        params = job['parameters']
+        data_path = app.config['DEFAULT_DATA_FOLDER']
+
+        # --- Prepare data files ---
+        data_files_b64 = {}
+        required_files = [
+            'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv', 'DEPOTS_FUTURS.csv',
+            'FRAIS_ADMIN.csv', 'MIN_FERR.csv', 'TX_LAPSE_PART.csv', 'TX_LAPSE_TOT.csv',
+            'ACQUISITION.csv', 'COUSSINS_ESCAP.csv'
+        ]
+
+        for filename in required_files:
+            file_path = data_path / filename
+            if file_path.exists():
+                with open(file_path, 'rb') as f:
+                    content_bytes = f.read()
+                    data_files_b64[filename] = base64.b64encode(content_bytes).decode('utf-8')
+            else:
+                raise FileNotFoundError(f"Required data file not found: {filename}")
+
+        # --- Trigger RunPod job ---
+        runpod_input = {
+            'input': {
+                'nb_an_projection': params.get('nb_an_projection', 10),
+                'nb_scenarios': params.get('nb_scenarios', 100),
+                'data_files': data_files_b64
+            }
+        }
+
+        print(f"Triggering RunPod job for endpoint {RUNPOD_ENDPOINT_ID}...")
+        endpoint = runpod.Endpoint(RUNPOD_ENDPOINT_ID)
+        run_request = endpoint.run(runpod_input)
+
+        # Store the RunPod job ID for tracking
+        ph = get_placeholder()
+        sql = f"UPDATE jobs SET parameters = {ph} WHERE job_id = {ph}"
+        params['runpod_job_id'] = run_request.id
+        execute_sql(sql, (json.dumps(params), job_id))
+
+        print(f"RunPod job started with ID: {run_request.id}")
+        # The job status will remain 'running'. A separate process/endpoint would be needed
+        # to check the status with run_request.status() and retrieve the results.
+
+    except Exception as e:
+        error_msg = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"RunPod job trigger for {job_id} failed: {error_msg}")
+        update_job_status(job_id, 'failed', error_message=error_msg)
+
 def get_all_jobs() -> list:
     """Get all jobs ordered by creation date"""
     sql = "SELECT * FROM jobs ORDER BY created_at DESC"
@@ -863,6 +934,31 @@ def process_job(job_id: str):
             del job_threads[job_id]
         if job_id in job_cancellation_flags:
             del job_cancellation_flags[job_id]
+
+# =============================================================================
+# API ENDPOINTS
+# =============================================================================
+
+@app.route('/jobs/runpod', methods=['POST'])
+def create_runpod_job_endpoint():
+    """
+    Endpoint to create and trigger a new projection job on a RunPod worker.
+    """
+    if not RUNPOD_ENDPOINT_ID or not RUNPOD_API_KEY:
+        return jsonify({'error': 'RunPod environment variables (RUNPOD_ENDPOINT_ID, RUNPOD_API_KEY) are not configured.'}), 500
+
+    job_id = f"job_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    params = request.json or {}
+
+    # Create job record in local DB
+    create_job(job_id, params, uploaded_files=[])
+
+    # Trigger the RunPod job in a background thread
+    thread = threading.Thread(target=trigger_runpod_job, args=(job_id,))
+    thread.start()
+    job_threads[job_id] = thread
+
+    return jsonify({'job_id': job_id, 'status': 'pending'}), 202
         if job_id in job_progress:
             del job_progress[job_id]
 
@@ -871,6 +967,11 @@ def process_job(job_id: str):
 # =============================================================================
 
 @app.route('/', methods=['GET'])
+def serve_index():
+    """Serve the index.html file from the static folder."""
+    return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/info', methods=['GET'])
 def welcome():
     """Welcome endpoint with API information"""
     return jsonify({
