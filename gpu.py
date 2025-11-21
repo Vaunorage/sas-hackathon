@@ -1722,39 +1722,51 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             logger.info(f"    cuDF prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
             
             if num_rows > 0:
-                # Transfer to CPU efficiently using CuPy (MUCH faster than to_pandas)
-                # cuDF.to_parquet() needs 3x GPU memory for compression buffers → OOM
-                # cuDF.to_pandas() is extremely slow (201s!) → Bad
-                # Solution: Use CuPy arrays directly (fast transfer)
-                transfer_start = datetime.now()
-                logger.info(f"    Transferring filtered data to CPU (CuPy → NumPy)...")
+                # AGGREGATE SCENARIOS ON GPU (100x data reduction!)
+                agg_start = datetime.now()
+                logger.info(f"    Aggregating {num_rows:,} rows across scenarios (GPU groupby)...")
                 
-                # Convert cuDF columns to CuPy, then to NumPy (much faster than to_pandas)
+                # Group by account/year/month and average across scenarios (GPU-accelerated!)
+                # This reduces from ~12M rows to ~120k rows (100x reduction)
+                agg_gpu_df = gpu_df.groupby(['ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL'], as_index=False).mean()
+                del gpu_df
+                gc.collect()
+                
+                # Drop SCN_EVAL column (no longer needed after averaging)
+                agg_gpu_df = agg_gpu_df.drop(columns=['SCN_EVAL'])
+                
+                agg_time = (datetime.now() - agg_start).total_seconds()
+                aggregated_rows = len(agg_gpu_df)
+                logger.info(f"      Aggregated {num_rows:,} rows → {aggregated_rows:,} rows in {agg_time:.3f}s (GPU)")
+                
+                # Transfer aggregated data to CPU (MUCH smaller now!)
+                transfer_start = datetime.now()
+                logger.info(f"    Transferring aggregated data to CPU (CuPy → NumPy)...")
+                
+                # Get column list without SCN_EVAL
+                final_columns = [col for col in columns if col != 'SCN_EVAL']
+                
+                # Convert cuDF columns to NumPy
                 cpu_data = {}
-                for col in columns:
-                    # Get CuPy array from cuDF column, then transfer to CPU
-                    cpu_data[col] = cp.asnumpy(gpu_df[col].values)
+                for col in final_columns:
+                    cpu_data[col] = cp.asnumpy(agg_gpu_df[col].values)
                 
                 transfer_time = (datetime.now() - transfer_start).total_seconds()
-                logger.info(f"    Transferred {num_rows:,} rows to CPU: {transfer_time:.3f}s")
+                logger.info(f"    Transferred {aggregated_rows:,} rows to CPU: {transfer_time:.3f}s")
                 
                 # Free GPU memory immediately!
-                del gpu_df, gpu_data, cupy_array
-                
-                # Also delete the reshaped GPU array
-                del d_batch_reshaped
-                
+                del agg_gpu_df, gpu_data, cupy_array, d_batch_reshaped
                 gc.collect()
-                cuda.synchronize()  # Wait for all CUDA operations to complete
+                cuda.synchronize()
                 
                 # Force RMM memory pool to release unused memory
                 try:
                     import rmm
-                    rmm.mr.get_current_device_resource().deallocate(0, 0)  # Trigger pool cleanup
+                    rmm.mr.get_current_device_resource().deallocate(0, 0)
                     logger.info(f"    GPU memory freed (RMM pool cleaned)")
                 except:
                     logger.info(f"    GPU memory freed (Python GC only)")
-                    pass  # If RMM cleanup fails, continue anyway
+                    pass
                 
                 # Create pandas DataFrame from NumPy arrays (fast on CPU)
                 df_start = datetime.now()
@@ -1763,27 +1775,33 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 logger.info(f"    Created pandas DataFrame: {df_time:.3f}s")
                 
                 del cpu_data
+                gc.collect()
                 
-                # Write from CPU (pandas is memory-efficient for parquet writes)
+                # Write aggregated data to parquet
                 write_start = datetime.now()
                 parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                df.to_parquet(
-                    parquet_path,
-                    engine='pyarrow',
-                    compression='lz4',
-                    index=False
+                fastparquet_write(
+                    str(parquet_path),
+                    df,
+                    compression='LZ4',
+                    row_group_offsets=100000,
+                    file_scheme='simple',
+                    write_index=False,
+                    stats=False
                 )
                 
                 write_time = (datetime.now() - write_start).total_seconds()
                 file_size_mb = parquet_path.stat().st_size / 1024**2
-                logger.info(f"    Written {file_size_mb:.1f} MB in {write_time:.3f}s ({file_size_mb/write_time:.1f} MB/s)")
+                total_time = agg_time + transfer_time + df_time + write_time
+                logger.info(f"    Written {file_size_mb:.1f} MB in {total_time:.3f}s ({file_size_mb/total_time:.1f} MB/s)")
+                logger.info(f"      (agg:{agg_time:.3f}s, transfer:{transfer_time:.3f}s, df:{df_time:.3f}s, write:{write_time:.3f}s)")
                 
                 # Free CPU DataFrame
                 del df
                 gc.collect()
                 
                 # Track stats
-                write_futures.append((i, file_size_mb, num_rows, transfer_time + write_time))
+                write_futures.append((i, file_size_mb, aggregated_rows, total_time))
             else:
                 logger.info(f"    No valid rows in batch - skipping write")
                 del cupy_array, gpu_data, d_batch_reshaped
@@ -1791,9 +1809,9 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 cuda.synchronize()
             
             # Write completed, GPU memory freed
-            transfer_from_gpu = 0.0  # Filtered data transferred via CuPy
+            transfer_from_gpu = 0.0  # Aggregated data transferred via CuPy
             total_transfer_duration += transfer_to_gpu  # Upload only
-            logger.info(f"  ✓ GPU-accelerated filtering + fast CuPy transfer (GPU memory freed)")
+            logger.info(f"  ✓ GPU-accelerated filtering + aggregation + fast transfer (100x data reduction, GPU memory freed)")
             
         else:
             # ===== CPU PATH (pandas) =====
