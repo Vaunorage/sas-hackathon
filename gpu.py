@@ -1,5 +1,6 @@
 import os
-# Set environment variables BEFORE importing numba
+# Set environment variables BEFORE importing numba/cudf
+os.environ['RAPIDS_NO_INITIALIZE'] = '1'
 os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
 
 import pandas as pd
@@ -13,102 +14,50 @@ from datetime import datetime
 import math
 import duckdb
 import tempfile
-import pyarrow as pa
-import pyarrow.parquet as pq
 
-# Try to import cuDF for GPU-accelerated DataFrame operations
+# Optional: Import cuDF/RMM for advanced GPU memory management
+HAS_CUDF = False
+HAS_RMM = False
 try:
     import cudf
-    import cupy as cp
-    CUDF_AVAILABLE = True
-    print("✓ CuDF available - using GPU-accelerated DataFrame operations")
+    import rmm
+    HAS_CUDF = True
+    HAS_RMM = True
+    print("✓ cuDF/RMM loaded - Advanced GPU memory management available")
 except ImportError:
-    CUDF_AVAILABLE = False
-    print("⚠ CuDF not available - falling back to pandas (CPU). Install with: pip install cudf-cu12")
+    print("ℹ cuDF/RMM not available - using basic GPU memory management (this is fine)")
+    pass
 
 # GPU memory cleanup helper
 def force_gpu_memory_cleanup():
-    """Force GPU memory cleanup by running garbage collection"""
+    """Force GPU memory cleanup by clearing RMM pool and running garbage collection"""
     gc.collect()
-
-# Async parquet writer (Arrow version - kept for compatibility)
-def write_parquet_async(arrow_table, parquet_path, batch_num, num_rows):
-    """Write parquet file asynchronously with optimized settings.
     
-    Args:
-        arrow_table: PyArrow table to write
-        parquet_path: Path to output file
-        batch_num: Batch number for logging
-        num_rows: Number of rows for logging
-        
-    Returns:
-        Tuple of (batch_num, file_size_mb, num_rows, write_time)
-    """
-    write_start = datetime.now()
-    pq.write_table(
-        arrow_table,
-        parquet_path,
-        compression='lz4',  # Faster than snappy
-        use_dictionary=False,
-        write_statistics=False
-    )
-    write_time = (datetime.now() - write_start).total_seconds()
-    file_size_mb = parquet_path.stat().st_size / 1024**2
-    return batch_num, file_size_mb, num_rows, write_time
-
-# Async parquet writer (pandas version - MUCH faster for NumPy arrays)
-def write_parquet_async_pandas(df, parquet_path, batch_num, num_rows):
-    """Write parquet file from pandas DataFrame asynchronously.
+    # Try to free CuPy memory pool (used by cuDF)
+    if HAS_CUDF:
+        try:
+            import cupy
+            mempool = cupy.get_default_memory_pool()
+            pinned_mempool = cupy.get_default_pinned_memory_pool()
+            mempool.free_all_blocks()
+            pinned_mempool.free_all_blocks()
+        except Exception:
+            pass
     
-    Args:
-        df: Pandas DataFrame to write
-        parquet_path: Path to output file
-        batch_num: Batch number for logging
-        num_rows: Number of rows for logging
-        
-    Returns:
-        Tuple of (batch_num, file_size_mb, num_rows, write_time)
-    """
-    write_start = datetime.now()
-    df.to_parquet(
-        parquet_path,
-        engine='pyarrow',
-        compression='lz4',
-        index=False
-    )
-    write_time = (datetime.now() - write_start).total_seconds()
-    file_size_mb = parquet_path.stat().st_size / 1024**2
-    return batch_num, file_size_mb, num_rows, write_time
+    # Additional cleanup for RMM
+    if HAS_RMM:
+        try:
+            # Force RMM to release memory back to OS
+            import rmm
+            rmm.mr.get_current_device_resource().deallocate(0, 0)
+        except Exception:
+            pass
 
-# Async parquet writer (cuDF version - GPU-accelerated, FASTEST!)
-def write_parquet_async_cudf(gpu_df, parquet_path, batch_num, num_rows):
-    """Write parquet file from cuDF DataFrame asynchronously.
-    
-    Args:
-        gpu_df: cuDF GPU DataFrame to write
-        parquet_path: Path to output file
-        batch_num: Batch number for logging
-        num_rows: Number of rows for logging
-        
-    Returns:
-        Tuple of (batch_num, file_size_mb, num_rows, write_time)
-    """
-    write_start = datetime.now()
-    gpu_df.to_parquet(
-        parquet_path,
-        compression='lz4',
-        index=False
-    )
-    write_time = (datetime.now() - write_start).total_seconds()
-    file_size_mb = parquet_path.stat().st_size / 1024**2
-    return batch_num, file_size_mb, num_rows, write_time
-
-# Import numba for CUDA
+# Import numba AFTER cuDF
 from numba import cuda
 from paths import HERE
 import argparse
 from multiprocessing import Pool, cpu_count
-import concurrent.futures
 
 # =============================================================================
 # LOGGING SETUP
@@ -1540,14 +1489,18 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     estimated_rows = int(max_possible_rows * 0.6)
     estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
     
-    print(f"\nUsing PARQUET + DUCKDB BATCH STORAGE (optimized for speed)")
+    print(f"\nUsing DUCKDB BATCH STORAGE (all dataset sizes)")
     print(f"Estimated: {n_accounts:,} accounts, {estimated_rows:,} rows, ~{estimated_memory_gb:.1f} GB")
-    print(f"Each batch will be written to Parquet file (fast columnar format)")
-    print(f"Final aggregation will be done with DuckDB SQL reading Parquet files")
+    print(f"Each batch will be written to DuckDB table")
+    print(f"Final aggregation will be done with DuckDB SQL (GPU-accelerated if needed)")
     
-    # Create temporary Parquet directory
-    parquet_dir = Path(output_path) / "_temp_parquet"
-    parquet_dir.mkdir(parents=True, exist_ok=True)
+    # Create temporary DuckDB database
+    db_temp_dir = Path(output_path) / "_temp_duckdb"
+    db_temp_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_temp_dir / "batches.duckdb"
+    
+    # Initialize DuckDB connection
+    duckdb_conn = duckdb.connect(str(db_path))
     
     # Define column names for the table
     columns = [
@@ -1564,15 +1517,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
     ]
     
-    print(f"Parquet directory: {parquet_dir}")
-    if CUDF_AVAILABLE:
-        print(f"Using cuDF (GPU) DataFrame + LZ4 compression + synchronous writes (GPU-optimized)")
-    else:
-        print(f"Using pandas (CPU) DataFrame + LZ4 compression + async I/O (CPU-optimized)")
-    
-    # Create thread pool for async parquet writes
-    parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
-    write_futures = []
+    print(f"DuckDB database: {db_path}")
+    print(f"Batch inserts will be immediate, aggregation deferred to end")
     
     total_kernel_duration = 0
     total_transfer_duration = 0
@@ -1658,193 +1604,90 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         total_kernel_duration += kernel_duration
         logger.info(f"  Kernel execution for batch finished in: {kernel_duration:.2f} seconds")
 
-        # 6. Process results - GPU path (cuDF) or CPU path (pandas)
+        # 6. Copy results back from GPU (async with stream)
+        transfer_back_start = datetime.now()
+        logger.info("  Copying batch results from GPU...")
+        d_batch_output.copy_to_host(h_batch_output, stream=stream_compute)
+        stream_compute.synchronize()
+        transfer_back_end = datetime.now()
+        transfer_from_gpu = (transfer_back_end - transfer_back_start).total_seconds()
+        total_transfer_duration += transfer_to_gpu + transfer_from_gpu
+        logger.info(f"  Transfer from GPU: {transfer_from_gpu:.2f} seconds")
+
+        # 7. Extract valid results
         cpu_proc_start = datetime.now()
-        process = psutil.Process(os.getpid())
+        logger.info("  Extracting valid results...")
         
-        if CUDF_AVAILABLE:
-            # ===== GPU-ACCELERATED PATH (cuDF) =====
-            logger.info("  Processing results on GPU with cuDF...")
-            
-            # Reshape GPU array directly (stays on GPU!)
-            reshape_start = datetime.now()
-            total_rows = current_batch_size * nb_scenarios * max_timesteps
-            d_batch_reshaped = d_batch_output.reshape(total_rows, n_output_fields)
-            reshape_time = (datetime.now() - reshape_start).total_seconds()
-            logger.info(f"    Reshape on GPU: {reshape_time:.3f}s")
-            
-            # Create cuDF DataFrame directly from GPU memory (NO CPU TRANSFER!)
-            prep_start = datetime.now()
-            logger.info(f"    Creating cuDF DataFrame from GPU array...")
-            
-            # Convert Numba device array to CuPy array (zero-copy via __cuda_array_interface__)
-            # Both Numba and CuPy support the CUDA Array Interface protocol
-            cupy_array = cp.asarray(d_batch_reshaped)
-            
-            # Convert to cuDF DataFrame column by column
-            gpu_data = {}
-            for col_idx, col_name in enumerate(columns):
-                gpu_data[col_name] = cudf.Series(cupy_array[:, col_idx])
-            
-            gpu_df = cudf.DataFrame(gpu_data)
-            df_create_time = (datetime.now() - prep_start).total_seconds()
-            logger.info(f"    cuDF DataFrame created on GPU: {df_create_time:.3f}s")
-            
-            # Filter on GPU (MUCH faster than CPU!)
-            filter_start = datetime.now()
-            gpu_df = gpu_df[gpu_df['ID_COMPTE'] > 0]
-            num_rows = len(gpu_df)
-            filter_time = (datetime.now() - filter_start).total_seconds()
-            logger.info(f"    Filtered on GPU to {num_rows:,} valid rows: {filter_time:.3f}s")
-            
-            # Convert ID columns to int32 on GPU
-            type_start = datetime.now()
-            gpu_df['ID_COMPTE'] = gpu_df['ID_COMPTE'].astype('int32')
-            gpu_df['SCN_EVAL'] = gpu_df['SCN_EVAL'].astype('int32')
-            gpu_df['AN_EVAL'] = gpu_df['AN_EVAL'].astype('int32')
-            gpu_df['MOIS_EVAL'] = gpu_df['MOIS_EVAL'].astype('int32')
-            type_time = (datetime.now() - type_start).total_seconds()
-            
-            prep_time = (datetime.now() - prep_start).total_seconds()
-            logger.info(f"    cuDF prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
-            
-            if num_rows > 0:
-                # Transfer to CPU efficiently using CuPy (MUCH faster than to_pandas)
-                # cuDF.to_parquet() needs 3x GPU memory for compression buffers → OOM
-                # cuDF.to_pandas() is extremely slow (201s!) → Bad
-                # Solution: Use CuPy arrays directly (fast transfer)
-                transfer_start = datetime.now()
-                logger.info(f"    Transferring filtered data to CPU (CuPy → NumPy)...")
-                
-                # Convert cuDF columns to CuPy, then to NumPy (much faster than to_pandas)
-                cpu_data = {}
-                for col in columns:
-                    # Get CuPy array from cuDF column, then transfer to CPU
-                    cpu_data[col] = cp.asnumpy(gpu_df[col].values)
-                
-                transfer_time = (datetime.now() - transfer_start).total_seconds()
-                logger.info(f"    Transferred {num_rows:,} rows to CPU: {transfer_time:.3f}s")
-                
-                # Free GPU memory immediately!
-                del gpu_df, gpu_data, cupy_array
-                gc.collect()
-                
-                # Create pandas DataFrame from NumPy arrays (fast on CPU)
-                df_start = datetime.now()
-                df = pd.DataFrame(cpu_data)
-                df_time = (datetime.now() - df_start).total_seconds()
-                logger.info(f"    Created pandas DataFrame: {df_time:.3f}s")
-                
-                del cpu_data
-                
-                # Write from CPU (pandas is memory-efficient for parquet writes)
-                write_start = datetime.now()
-                parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                df.to_parquet(
-                    parquet_path,
-                    engine='pyarrow',
-                    compression='lz4',
-                    index=False
-                )
-                
-                write_time = (datetime.now() - write_start).total_seconds()
-                file_size_mb = parquet_path.stat().st_size / 1024**2
-                logger.info(f"    Written {file_size_mb:.1f} MB in {write_time:.3f}s ({file_size_mb/write_time:.1f} MB/s)")
-                
-                # Free CPU DataFrame
-                del df
-                gc.collect()
-                
-                # Track stats
-                write_futures.append((i, file_size_mb, num_rows, transfer_time + write_time))
-            else:
-                logger.info(f"    No valid rows in batch - skipping write")
-                del cupy_array, gpu_data
-            
-            # Synchronous write completed, GPU memory freed
-            transfer_from_gpu = 0.0  # Write happens directly from GPU
-            total_transfer_duration += transfer_to_gpu  # Upload only
-            logger.info(f"  ✓ GPU-accelerated filtering + synchronous write (GPU memory freed)")
-            
+        process = psutil.Process(os.getpid())
+        mem_before = process.memory_info().rss / 1024**3
+        
+        # Convert pinned memory to regular memory
+        convert_start = datetime.now()
+        h_batch_regular = np.array(h_batch_output, copy=True)
+        convert_time = (datetime.now() - convert_start).total_seconds()
+        logger.info(f"    Convert pinned to regular memory: {convert_time:.3f}s")
+        
+        del h_batch_output
+        
+        # Reshape to 2D
+        reshape_start = datetime.now()
+        total_rows = current_batch_size * nb_scenarios * max_timesteps
+        reshaped = h_batch_regular.reshape(total_rows, n_output_fields)
+        reshape_time = (datetime.now() - reshape_start).total_seconds()
+        logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s")
+        
+        # Extract valid rows
+        extract_start = datetime.now()
+        valid_mask = reshaped[:, 0] > 0
+        n_valid = np.sum(valid_mask)
+        logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy)")
+        
+        if n_valid > 0:
+            valid_data = np.compress(valid_mask, reshaped, axis=0)
+            extract_time = (datetime.now() - extract_start).total_seconds()
+            mem_after_extract = process.memory_info().rss / 1024**3
+            logger.info(f"    Extract: {extract_time:.3f}s, mem: +{mem_after_extract - mem_before:.2f} GB")
+            del valid_mask
         else:
-            # ===== CPU PATH (pandas) =====
-            transfer_back_start = datetime.now()
-            logger.info("  Copying batch results from GPU...")
-            d_batch_output.copy_to_host(h_batch_output, stream=stream_compute)
-            stream_compute.synchronize()
-            transfer_back_end = datetime.now()
-            transfer_from_gpu = (transfer_back_end - transfer_back_start).total_seconds()
-            total_transfer_duration += transfer_to_gpu + transfer_from_gpu
-            logger.info(f"  Transfer from GPU: {transfer_from_gpu:.2f} seconds")
+            valid_data = None
+        
+        if valid_data is not None and n_valid > 0:
             
-            logger.info("  Extracting valid results...")
+            # FREE LARGE ARRAYS IMMEDIATELY to prevent fragmentation
+            free_start = datetime.now()
+            del h_batch_regular
+            del reshaped
+            gc.collect()  # Immediate GC to reduce fragmentation
+            free_time = (datetime.now() - free_start).total_seconds()
+            mem_after_free = process.memory_info().rss / 1024**3
+            logger.info(f"    Free batch arrays: {free_time:.3f}s, mem: -{mem_after_extract - mem_after_free:.2f} GB")
             
-            # Reshape directly from pinned memory (no copy needed!)
-            reshape_start = datetime.now()
-            total_rows = current_batch_size * nb_scenarios * max_timesteps
-            reshaped = h_batch_output.reshape(total_rows, n_output_fields)
-            reshape_time = (datetime.now() - reshape_start).total_seconds()
-            logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s (zero-copy from pinned memory)")
+            # Insert batch data into DuckDB (simple and efficient!)
+            insert_start = datetime.now()
             
-            # Use pandas DataFrame (optimized for columnar operations)
-            extract_start = datetime.now()
-            logger.info(f"    Creating valid mask for {total_rows:,} rows...")
-            valid_mask = reshaped[:, 0] > 0
-            n_valid = np.sum(valid_mask)
-            mask_time = (datetime.now() - extract_start).total_seconds()
-            logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy) in {mask_time:.3f}s")
+            # Create DataFrame from valid_data
+            batch_df = pd.DataFrame(valid_data, columns=columns)
             
-            if n_valid > 0:
-                # Convert to pandas DataFrame
-                prep_start = datetime.now()
-                logger.info(f"    Creating DataFrame directly from NumPy array...")
-                
-                # Create DataFrame from full reshaped array (fast - uses views where possible)
-                df = pd.DataFrame(reshaped, columns=columns)
-                df_create_time = (datetime.now() - prep_start).total_seconds()
-                logger.info(f"    DataFrame created: {df_create_time:.3f}s")
-                
-                # Filter to valid rows (pandas is highly optimized for this)
-                filter_start = datetime.now()
-                df = df[df['ID_COMPTE'] > 0]
-                num_rows = len(df)
-                filter_time = (datetime.now() - filter_start).total_seconds()
-                logger.info(f"    Filtered to {num_rows:,} valid rows: {filter_time:.3f}s")
-                
-                # Convert ID columns to int32 for smaller file size
-                type_start = datetime.now()
-                df['ID_COMPTE'] = df['ID_COMPTE'].astype(np.int32)
-                df['SCN_EVAL'] = df['SCN_EVAL'].astype(np.int32)
-                df['AN_EVAL'] = df['AN_EVAL'].astype(np.int32)
-                df['MOIS_EVAL'] = df['MOIS_EVAL'].astype(np.int32)
-                type_time = (datetime.now() - type_start).total_seconds()
-                
-                prep_time = (datetime.now() - prep_start).total_seconds()
-                logger.info(f"    DataFrame prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
-                
-                # Free large arrays immediately (before async write)
-                del h_batch_output, reshaped, valid_mask
-                gc.collect()
-                
-                # Submit async write to thread pool
-                parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                future = parquet_writer_pool.submit(
-                    write_parquet_async_pandas,
-                    df,
-                    parquet_path,
-                    i,
-                    num_rows
-                )
-                write_futures.append(future)
-                logger.info(f"    Parquet write submitted to async pool (batch {i})")
-                
-                # Free DataFrame immediately
-                del df
-                gc.collect()
+            # Convert ID columns to appropriate types
+            batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']] = \
+                batch_df[['ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL']].astype(np.int32)
+            
+            # Insert into DuckDB (creates table on first insert)
+            if i == 0:
+                # First batch: create table
+                duckdb_conn.execute("CREATE TABLE batch_results AS SELECT * FROM batch_df")
+                logger.info(f"    Created DuckDB table with {len(batch_df):,} rows")
             else:
-                # No valid data - just clean up
-                del h_batch_output, reshaped, valid_mask
-                logger.info(f"    No valid rows in batch - skipping write")
+                # Subsequent batches: append data
+                duckdb_conn.execute("INSERT INTO batch_results SELECT * FROM batch_df")
+                logger.info(f"    Inserted {len(batch_df):,} rows into DuckDB")
+            
+            insert_time = (datetime.now() - insert_start).total_seconds()
+            logger.info(f"    DuckDB insert: {insert_time:.3f}s")
+            
+            # Free batch data immediately
+            del valid_data, batch_df
+            gc.collect()
         
         cpu_proc_end = datetime.now()
         cpu_proc_time = (cpu_proc_end - cpu_proc_start).total_seconds()
@@ -1853,7 +1696,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         # Cleanup remaining GPU/batch memory
         del d_batch_account_data
         del d_batch_output
-        # h_batch_output, reshaped, valid_mask, df already deleted above
+        if 'h_batch_output' in locals():
+            del h_batch_output
+        if 'h_batch_regular' in locals():
+            del h_batch_regular
+        if 'reshaped' in locals():
+            del reshaped
+        if 'valid_data' in locals():
+            del valid_data
         if use_pinned_memory and 'h_batch_input_pinned' in locals():
             del h_batch_input_pinned
         
@@ -1869,66 +1719,20 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         cpu_processing_time = batch_duration - kernel_duration - transfer_to_gpu - transfer_from_gpu
         logger.info(f"  Batch {i + 1} total time: {batch_duration:.2f}s (Kernel: {kernel_duration:.2f}s, Transfer: {transfer_to_gpu + transfer_from_gpu:.2f}s, CPU: {cpu_processing_time:.2f}s)")
 
-    # --- SUMMARIZE WRITES (synchronous with cuDF, async with pandas) ---
+    # --- FINAL AGGREGATION WITH DUCKDB ---
     print("\n" + "="*60)
-    print("PARQUET WRITE SUMMARY")
-    print("="*60)
-    
-    wait_start = datetime.now()
-    total_write_time = 0
-    total_file_size_mb = 0
-    total_rows_written = 0
-    
-    # Handle mixed futures (tuples for cuDF sync writes, futures for pandas async)
-    if len(write_futures) > 0:
-        # Check if first item is a future or tuple
-        if hasattr(write_futures[0], 'result'):
-            # Async pandas writes - wait for completion
-            print(f"\nWaiting for {len(write_futures)} async write operations...")
-            for future in concurrent.futures.as_completed(write_futures):
-                batch_num, file_size_mb, num_rows, write_time = future.result()
-                total_write_time += write_time
-                total_file_size_mb += file_size_mb
-                total_rows_written += num_rows
-        else:
-            # Synchronous cuDF writes - already complete, just sum up
-            print(f"\nAll {len(write_futures)} writes completed synchronously (cuDF GPU path)")
-            for batch_num, file_size_mb, num_rows, write_time in write_futures:
-                total_write_time += write_time
-                total_file_size_mb += file_size_mb
-                total_rows_written += num_rows
-    
-    # Shutdown thread pool
-    parquet_writer_pool.shutdown(wait=True)
-    
-    wait_duration = (datetime.now() - wait_start).total_seconds()
-    avg_write_time = total_write_time / len(write_futures) if write_futures else 0
-    
-    print(f"\nWrite statistics:")
-    print(f"  Processing time: {wait_duration:.2f}s")
-    print(f"  Total write time: {total_write_time:.2f}s")
-    print(f"  Average write time per batch: {avg_write_time:.3f}s")
-    print(f"  Total data written: {total_file_size_mb:.1f} MB ({total_rows_written:,} rows)")
-    print(f"  Effective speedup from parallelism: {total_write_time/wait_duration:.1f}x")
-    
-    # --- FINAL AGGREGATION WITH DUCKDB + PARQUET ---
-    print("\n" + "="*60)
-    print("FINAL DATA ASSEMBLY (DuckDB reading Parquet)")
+    print("FINAL DATA ASSEMBLY (DuckDB)")
     print("="*60)
     
     merge_start = datetime.now()
     
-    # Count Parquet files
-    parquet_files = list(parquet_dir.glob("batch_*.parquet"))
-    print(f"\nFound {len(parquet_files)} Parquet files to aggregate")
-    
-    # DuckDB can read all Parquet files with wildcard pattern
-    parquet_pattern = str(parquet_dir / "batch_*.parquet")
+    # Get row count from DuckDB
+    row_count = duckdb_conn.execute("SELECT COUNT(*) FROM batch_results").fetchone()[0]
+    print(f"\nTotal rows in DuckDB: {row_count:,}")
     
     # Perform aggregation using DuckDB SQL (averaging across scenarios)
-    # DuckDB reads Parquet files in parallel for fast aggregation
-    print("Aggregating across scenarios using DuckDB SQL (parallel Parquet read)...")
-    agg_sql = f"""
+    print("Aggregating across scenarios using DuckDB SQL...")
+    agg_sql = """
     SELECT 
         ID_COMPTE,
         AN_EVAL,
@@ -1969,26 +1773,27 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         AVG(VP_COUSSIN_DECHEANCE) AS VP_COUSSIN_DECHEANCE,
         AVG(VP_COUSSIN_MORTALITE) AS VP_COUSSIN_MORTALITE,
         AVG(VP_COUSSIN_DEPOT) AS VP_COUSSIN_DEPOT
-    FROM read_parquet('{parquet_pattern}')
+    FROM batch_results
     GROUP BY ID_COMPTE, AN_EVAL, MOIS_EVAL
     ORDER BY ID_COMPTE, AN_EVAL, MOIS_EVAL
     """
     
     # Execute aggregation and fetch result as pandas DataFrame
-    all_results = duckdb.execute(agg_sql).df()
+    all_results = duckdb_conn.execute(agg_sql).df()
     
     merge_time = (datetime.now() - merge_start).total_seconds()
     print(f"  Aggregated to {len(all_results):,} rows: {merge_time:.2f}s")
     print(f"  Size: {all_results.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
     
-    # Cleanup Parquet files
-    print("\nCleaning up Parquet files...")
+    # Close DuckDB connection and cleanup
+    duckdb_conn.close()
+    print("\nCleaning up DuckDB database...")
     try:
-        import shutil
-        shutil.rmtree(parquet_dir)
-        print(f"  Removed temporary Parquet directory: {parquet_dir}")
+        db_path.unlink()
+        db_temp_dir.rmdir()
+        print(f"  Removed temporary database: {db_path}")
     except Exception as e:
-        print(f"  Warning: Could not remove temporary Parquet files: {e}")
+        print(f"  Warning: Could not remove temporary database: {e}")
 
     # Debug logging for specific account
     # Note: With scenario averaging, we show the averaged results (not individual scenarios)
