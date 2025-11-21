@@ -1568,10 +1568,10 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     
     print(f"Parquet directory: {parquet_dir}")
     if CUDF_AVAILABLE:
-        print(f"Using cuDF (GPU) filtering + CuPy fast transfer + Polars write (hybrid optimized)")
+        print(f"Using cuDF (GPU) filtering + CuPy fast transfer + PyArrow write (hybrid optimized)")
     else:
-        print(f"Using Polars (CPU) DataFrame + LZ4 compression (OPTIMIZED FOR SPEED)")
-        print(f"   Polars is 10-50× faster than pandas for large DataFrame operations")
+        print(f"Using PyArrow direct write (CPU) + LZ4 compression (OPTIMIZED FOR SPEED)")
+        print(f"   PyArrow zero-copy from NumPy → Parquet (no DataFrame overhead)")
     
     # Create thread pool for async parquet writes
     parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -1823,52 +1823,47 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 extract_time = (datetime.now() - prep_start).total_seconds()
                 logger.info(f"    Extracted valid data: {extract_time:.3f}s")
                 
-                # Now create Polars DataFrame from ONLY valid rows (half the data = much faster!)
-                # CRITICAL: Use columnar format for Polars (100x faster than orient="row")
-                df_start = datetime.now()
+                num_rows = n_valid
                 
-                # Extract columns from 2D array (fast NumPy slicing)
-                col_dict = {col_name: valid_data[:, col_idx] for col_idx, col_name in enumerate(columns)}
-                
-                # Create DataFrame from column dict (MUCH faster than orient="row")
-                pl_df = pl.DataFrame(col_dict)
-                df_create_time = (datetime.now() - df_start).total_seconds()
-                logger.info(f"    Polars DataFrame created from {n_valid:,} rows: {df_create_time:.3f}s")
-                
-                num_rows = len(pl_df)
-                
-                # Convert ID columns to int32 for smaller file size
-                type_start = datetime.now()
-                pl_df = pl_df.with_columns([
-                    pl.col('ID_COMPTE').cast(pl.Int32),
-                    pl.col('SCN_EVAL').cast(pl.Int32),
-                    pl.col('AN_EVAL').cast(pl.Int32),
-                    pl.col('MOIS_EVAL').cast(pl.Int32)
-                ])
-                type_time = (datetime.now() - type_start).total_seconds()
-                
-                prep_time = (datetime.now() - prep_start).total_seconds()
-                logger.info(f"    Polars prep total: {prep_time:.3f}s (extract:{extract_time:.3f}s, create:{df_create_time:.3f}s, types:{type_time:.3f}s)")
-                
-                # Free large arrays immediately (before write)
-                del h_batch_output, reshaped, valid_mask, valid_data
-                gc.collect()
-                
-                # Convert to pandas DataFrame for fastparquet
+                # FASTEST APPROACH: Skip DataFrames entirely, write directly to Parquet with PyArrow
+                # This eliminates: Polars creation, type casting, pandas conversion, DataFrame overhead
                 write_start = datetime.now()
                 parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                logger.info(f"    Writing parquet with fastparquet...")
+                logger.info(f"    Writing parquet directly with PyArrow (zero-copy)...")
                 
-                # Convert to pandas (fastparquet works with pandas DataFrames)
-                pdf = pl_df.to_pandas()
+                # Define schema with optimal types (int32 for IDs, float32 for values)
+                schema_fields = []
+                for col_idx, col_name in enumerate(columns):
+                    if col_idx < 4:  # ID_COMPTE, SCN_EVAL, AN_EVAL, MOIS_EVAL
+                        schema_fields.append(pa.field(col_name, pa.int32()))
+                    else:
+                        schema_fields.append(pa.field(col_name, pa.float32()))
+                schema = pa.schema(schema_fields)
                 
-                # Write with fastparquet (faster than pyarrow for this use case)
-                fastparquet_write(
-                    str(parquet_path),
-                    pdf,
-                    compression='SNAPPY',  # Fast compression, good balance of speed/ratio
-                    row_group_offsets=1000000,  # 1M rows per row group
-                    file_scheme='hive'  # Better compatibility with DuckDB
+                # Create PyArrow arrays directly from NumPy columns (zero-copy for most types)
+                arrow_arrays = []
+                for col_idx, col_name in enumerate(columns):
+                    col_data = valid_data[:, col_idx]
+                    if col_idx < 4:  # Integer columns
+                        arrow_arrays.append(pa.array(col_data.astype(np.int32), type=pa.int32()))
+                    else:  # Float columns (already float32)
+                        arrow_arrays.append(pa.array(col_data, type=pa.float32()))
+                
+                # Create PyArrow table (lightweight, no copy)
+                arrow_table = pa.table(arrow_arrays, schema=schema)
+                
+                # Free source arrays immediately
+                del h_batch_output, reshaped, valid_mask, valid_data, arrow_arrays
+                gc.collect()
+                
+                # Write directly to Parquet (optimized settings for speed)
+                pq.write_table(
+                    arrow_table,
+                    parquet_path,
+                    compression='lz4',  # Fastest compression
+                    use_dictionary=False,  # Skip dictionary encoding (faster write)
+                    write_statistics=False,  # Skip statistics (faster write)
+                    row_group_size=1000000  # 1M rows per row group
                 )
                 
                 write_time = (datetime.now() - write_start).total_seconds()
@@ -1878,8 +1873,8 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 # Track stats (synchronous write, already complete)
                 write_futures.append((i, file_size_mb, num_rows, write_time))
                 
-                # Free DataFrames immediately
-                del pl_df, pdf
+                # Free Arrow table
+                del arrow_table
                 gc.collect()
             else:
                 # No valid data - just clean up
