@@ -81,8 +81,8 @@ def handler(job):
         # --- 4. Run the GPU projection ---
         try:
             print(f"Starting GPU projection with {nb_an_projection} years and {nb_scenarios} scenarios.")
-            # The run_projection_gpu function returns the final aggregated DataFrame
-            results_df = gpu.run_projection_gpu(
+            # The run_projection_gpu function returns a dict with 3 DataFrames
+            results_dict = gpu.run_projection_gpu(
                 data_path=data_path,
                 output_path=output_path,
                 nb_an_projection=nb_an_projection,
@@ -92,12 +92,20 @@ def handler(job):
             print("GPU projection completed successfully.")
 
             # --- 5. Convert results to JSON and return ---
-            if isinstance(results_df, pd.DataFrame):
-                # Convert DataFrame to a list of dictionaries for JSON serialization
-                result_json = results_df.to_dict(orient='records')
-                return {'results': result_json}
+            if isinstance(results_dict, dict):
+                # Convert each DataFrame to JSON format
+                output = {}
+                for key, df in results_dict.items():
+                    if df is not None and isinstance(df, pd.DataFrame):
+                        output[key] = df.to_dict(orient='records')
+                        print(f"  ✓ Converted {key}: {len(df)} rows")
+                    else:
+                        output[key] = None
+                        print(f"  ⚠ Skipped {key}: empty or None")
+                
+                return {'results': output}
             else:
-                return {'error': 'Projection did not return a DataFrame.'}
+                return {'error': 'Projection did not return expected dictionary format.'}
 
         except Exception as e:
             # Catch exceptions from the GPU projection and return an error
