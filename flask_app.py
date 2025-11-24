@@ -712,8 +712,8 @@ def trigger_runpod_job(job_id: str):
         print(f"Triggering RunPod job for endpoint {RUNPOD_ENDPOINT_ID}...")
         print(f"  Payload: {len(data_file_urls)} file URLs (lightweight)")
         endpoint = runpod.Endpoint(RUNPOD_ENDPOINT_ID)
-        # Quick timeout since payload is tiny now
-        run_request = endpoint.run(runpod_input, timeout=60)
+        # Trigger the RunPod job
+        run_request = endpoint.run(runpod_input)
 
         # Store the RunPod job ID for tracking
         ph = get_placeholder()
