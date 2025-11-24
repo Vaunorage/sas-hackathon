@@ -701,12 +701,11 @@ def trigger_runpod_job(job_id: str):
             print("  Using all default CSVs from worker image (no uploads)")
 
         # --- Trigger RunPod job ---
+        # Note: endpoint.run() automatically wraps input in {'input': ...}
         runpod_input = {
-            'input': {
-                'nb_an_projection': params.get('nb_an_projection', 10),
-                'nb_scenarios': params.get('nb_scenarios', 100),
-                'data_file_urls': data_file_urls  # Send URLs instead of file data
-            }
+            'nb_an_projection': params.get('nb_an_projection', 10),
+            'nb_scenarios': params.get('nb_scenarios', 100),
+            'data_file_urls': data_file_urls  # Send URLs instead of file data
         }
 
         print(f"Triggering RunPod job for endpoint {RUNPOD_ENDPOINT_ID}...")
