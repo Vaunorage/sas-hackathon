@@ -35,7 +35,7 @@ def handler(job):
 
         # --- 3. Download uploaded files from URLs, use defaults for the rest ---
         file_paths = {}
-        default_data_path = Path('/app/data_in')  # Default CSVs baked into Docker image
+        default_data_path = Path('/data_in')  # Default CSVs baked into Docker image
         
         required_files = [
             'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv', 'DEPOTS_FUTURS.csv',
