@@ -20,6 +20,9 @@ RUN uv pip install --extra-index-url=https://pypi.nvidia.com \
     "cucim-cu12==25.10.*" "pylibraft-cu12==25.10.*" "raft-dask-cu12==25.10.*" \
     "cuvs-cu12==25.10.*" "nx-cugraph-cu12==25.10.*"
 
+# Reinstall compatible numba/llvmlite versions after RAPIDS (which may override them)
+RUN uv pip install --force-reinstall "llvmlite==0.43.0" "numba==0.60.0" "numpy<2.0"
+
 # Copy application files
 COPY flask_app.py .
 COPY cli.py .
