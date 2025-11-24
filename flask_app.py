@@ -709,21 +709,50 @@ def trigger_runpod_job(job_id: str):
         }
 
         print(f"Triggering RunPod job for endpoint {RUNPOD_ENDPOINT_ID}...")
-        print(f"  Payload: {len(data_file_urls)} file URLs (lightweight)")
+        print(f"  Payload: {len(data_file_urls)} file URLs")
+        print(f"  Input data: {json.dumps(runpod_input, indent=2)}")
+        
         endpoint = runpod.Endpoint(RUNPOD_ENDPOINT_ID)
-        # Trigger the RunPod job
+        
+        # Check endpoint health first
+        try:
+            health = endpoint.health()
+            print(f"  Endpoint health: {health}")
+        except Exception as health_err:
+            print(f"  Warning: Could not check endpoint health: {health_err}")
+        
+        # Trigger the RunPod job asynchronously (non-blocking)
+        # This returns immediately with a job request object
         run_request = endpoint.run(runpod_input)
+        
+        # Get the job ID from the request
+        job_id_str = run_request.job_id if hasattr(run_request, 'job_id') else str(run_request)
+        print(f"  RunPod job queued with ID: {job_id_str}")
 
         # Store the RunPod job ID for tracking
         ph = get_placeholder()
         sql = f"UPDATE jobs SET parameters = {ph} WHERE job_id = {ph}"
-        params['runpod_job_id'] = run_request.id
+        params['runpod_job_id'] = job_id_str
         execute_sql(sql, (json.dumps(params), job_id))
 
         print(f"RunPod job started with ID: {run_request.id}")
         # Note: The job status will remain 'running'. A separate process/endpoint would be needed
         # to check the status with run_request.status() and retrieve the results.
 
+    except requests.exceptions.HTTPError as e:
+        error_msg = f"{str(e)}\n{traceback.format_exc()}"
+        
+        # Extract details from HTTP error response
+        if e.response is not None:
+            try:
+                error_details = e.response.json()
+                error_msg += f"\n\nRunPod API Response: {json.dumps(error_details, indent=2)}"
+            except:
+                error_msg += f"\n\nRunPod API Response Text: {e.response.text}"
+                error_msg += f"\n\nRunPod API Status Code: {e.response.status_code}"
+        
+        print(f"RunPod job trigger for {job_id} failed: {error_msg}")
+        update_job_status(job_id, 'failed', error_message=error_msg)
     except Exception as e:
         error_msg = f"{str(e)}\n{traceback.format_exc()}"
         print(f"RunPod job trigger for {job_id} failed: {error_msg}")
@@ -795,8 +824,22 @@ def process_job(job_id: str):
     """
     Process a job in the background
     This runs the GPU projection with the uploaded data
+    
+    NOTE: This function runs jobs locally with GPU. 
+    If RunPod is configured, jobs should use trigger_runpod_job() instead.
     """
     try:
+        # Prevent local execution if RunPod is configured
+        if RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY:
+            error_msg = (
+                "This job was created for local execution, but RunPod is now configured. "
+                "Local GPU execution is disabled when RunPod is available. "
+                "Please create a new job which will automatically use RunPod workers."
+            )
+            print(f"ERROR: {error_msg}")
+            update_job_status(job_id, 'failed', error_message=error_msg)
+            return
+        
         # Check if job was cancelled before starting
         if job_cancellation_flags.get(job_id, False):
             update_job_status(job_id, 'cancelled')
