@@ -92,6 +92,7 @@ ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')  # Change in production!
 
 # RunPod worker configuration
+# NOTE: Use QUEUE-BASED endpoint, not Load Balancing endpoint
 RUNPOD_API_KEY = os.getenv('RUNPOD_API_KEY')
 RUNPOD_ENDPOINT_ID = os.getenv('RUNPOD_ENDPOINT_ID')
 
@@ -636,6 +637,89 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
         return job_data
     return None
 
+def poll_runpod_results(job_id: str, run_request):
+    """
+    Poll RunPod job for completion and save results to database.
+    This runs in a background thread.
+    """
+    import time
+    
+    try:
+        print(f"Starting result polling for job {job_id}")
+        
+        # Poll for job completion (timeout after 30 minutes)
+        max_wait_time = 30 * 60  # 30 minutes
+        poll_interval = 5  # Check every 5 seconds
+        elapsed_time = 0
+        
+        while elapsed_time < max_wait_time:
+            try:
+                # Check job status
+                status = run_request.status()
+                print(f"  RunPod job status: {status}")
+                
+                if status == "COMPLETED":
+                    # Get the output
+                    output = run_request.output()
+                    print(f"  RunPod job completed! Processing results...")
+                    
+                    # Check if output contains results
+                    if output and isinstance(output, dict):
+                        if 'results' in output:
+                            # Convert results to DataFrame format expected by save functions
+                            results_data = output['results']
+                            print(f"  Received {len(results_data)} result records")
+                            
+                            # Save to database (convert back to DataFrame if needed)
+                            # For now, just store as JSON
+                            update_job_results_data(job_id, output)
+                            update_job_status(job_id, 'completed')
+                            print(f"✓ Job {job_id} completed successfully!")
+                            return
+                        elif 'error' in output:
+                            error_msg = output.get('error', 'Unknown error from worker')
+                            if 'traceback' in output:
+                                error_msg += f"\n\nWorker Traceback:\n{output['traceback']}"
+                            update_job_status(job_id, 'failed', error_message=error_msg)
+                            print(f"✗ Job {job_id} failed on worker: {error_msg}")
+                            return
+                    
+                    # No recognizable output format
+                    update_job_status(job_id, 'completed')
+                    print(f"✓ Job {job_id} completed (no results data)")
+                    return
+                    
+                elif status == "FAILED":
+                    error_msg = "RunPod job failed"
+                    try:
+                        output = run_request.output()
+                        if output and isinstance(output, dict) and 'error' in output:
+                            error_msg = output['error']
+                    except:
+                        pass
+                    update_job_status(job_id, 'failed', error_message=error_msg)
+                    print(f"✗ Job {job_id} failed: {error_msg}")
+                    return
+                
+                # Job still running, wait and check again
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+                
+            except Exception as poll_error:
+                print(f"  Error polling job status: {poll_error}")
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+        
+        # Timeout reached
+        error_msg = f"Job timed out after {max_wait_time/60} minutes"
+        update_job_status(job_id, 'failed', error_message=error_msg)
+        print(f"✗ Job {job_id} timed out")
+        
+    except Exception as e:
+        error_msg = f"Error polling RunPod results: {str(e)}\n{traceback.format_exc()}"
+        print(f"✗ Polling error for job {job_id}: {error_msg}")
+        update_job_status(job_id, 'failed', error_message=error_msg)
+
 def trigger_runpod_job(job_id: str):
     """
     Triggers a job on a RunPod serverless worker.
@@ -735,9 +819,14 @@ def trigger_runpod_job(job_id: str):
         params['runpod_job_id'] = job_id_str
         execute_sql(sql, (json.dumps(params), job_id))
 
-        print(f"RunPod job started with ID: {run_request.id}")
-        # Note: The job status will remain 'running'. A separate process/endpoint would be needed
-        # to check the status with run_request.status() and retrieve the results.
+        print(f"✓ RunPod job successfully queued!")
+        print(f"  Job ID: {run_request.job_id if hasattr(run_request, 'job_id') else 'N/A'}")
+        print(f"  Status endpoint: /jobs/{job_id}")
+        
+        # Start polling for results in background
+        poll_thread = threading.Thread(target=poll_runpod_results, args=(job_id, run_request))
+        poll_thread.daemon = True
+        poll_thread.start()
 
     except requests.exceptions.HTTPError as e:
         error_msg = f"{str(e)}\n{traceback.format_exc()}"
