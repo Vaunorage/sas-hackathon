@@ -806,21 +806,22 @@ def trigger_runpod_job(job_id: str):
             print(f"  Warning: Could not check endpoint health: {health_err}")
         
         # Trigger the RunPod job asynchronously (non-blocking)
-        # This returns immediately with a job request object
+        # Per docs: endpoint.run() returns immediately with a job request object
         run_request = endpoint.run(runpod_input)
         
-        # Get the job ID from the request
-        job_id_str = run_request.job_id if hasattr(run_request, 'job_id') else str(run_request)
-        print(f"  RunPod job queued with ID: {job_id_str}")
+        # Get the RunPod job ID (the SDK returns an object with .job_id attribute)
+        runpod_job_id = run_request.job_id
+        print(f"  RunPod job queued with ID: {runpod_job_id}")
 
         # Store the RunPod job ID for tracking
         ph = get_placeholder()
         sql = f"UPDATE jobs SET parameters = {ph} WHERE job_id = {ph}"
-        params['runpod_job_id'] = job_id_str
+        params['runpod_job_id'] = runpod_job_id
         execute_sql(sql, (json.dumps(params), job_id))
 
         print(f"✓ RunPod job successfully queued!")
-        print(f"  Job ID: {run_request.job_id if hasattr(run_request, 'job_id') else 'N/A'}")
+        print(f"  RunPod Job ID: {runpod_job_id}")
+        print(f"  Local Job ID: {job_id}")
         print(f"  Status endpoint: /jobs/{job_id}")
         
         # Start polling for results in background
