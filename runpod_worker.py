@@ -22,6 +22,9 @@ def handler(job):
     try:
         nb_an_projection = int(job_input.get('nb_an_projection', 10))
         nb_scenarios = int(job_input.get('nb_scenarios', 100))
+        max_accounts = job_input.get('max_accounts', None)
+        if max_accounts is not None:
+            max_accounts = int(max_accounts)
         data_file_urls = job_input.get('data_file_urls', {})
     except (ValueError, TypeError) as e:
         return {'error': f"Invalid input parameter: {e}"}
@@ -80,13 +83,18 @@ def handler(job):
 
         # --- 4. Run the GPU projection ---
         try:
-            print(f"Starting GPU projection with {nb_an_projection} years and {nb_scenarios} scenarios.")
+            if max_accounts:
+                print(f"Starting GPU projection with {nb_an_projection} years, {nb_scenarios} scenarios, and max {max_accounts} accounts.")
+            else:
+                print(f"Starting GPU projection with {nb_an_projection} years and {nb_scenarios} scenarios.")
+            
             # The run_projection_gpu function returns a dict with 3 DataFrames
             results_dict = gpu.run_projection_gpu(
                 data_path=data_path,
                 output_path=output_path,
                 nb_an_projection=nb_an_projection,
                 nb_scenarios=nb_scenarios,
+                max_accounts=max_accounts,
                 **file_paths # Pass the specific paths for each data file
             )
             print("GPU projection completed successfully.")

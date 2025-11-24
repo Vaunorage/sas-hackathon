@@ -666,15 +666,41 @@ def poll_runpod_results(job_id: str, run_request):
                     # Check if output contains results
                     if output and isinstance(output, dict):
                         if 'results' in output:
-                            # Convert results to DataFrame format expected by save functions
+                            # Convert results to DataFrame format and save to database
                             results_data = output['results']
-                            print(f"  Received {len(results_data)} result records")
+                            print(f"  Processing results from RunPod worker...")
                             
-                            # Save to database (convert back to DataFrame if needed)
-                            # For now, just store as JSON
+                            # Save legacy JSON format
                             update_job_results_data(job_id, output)
+                            
+                            # Convert JSON results back to DataFrames and save to proper tables
+                            saved_any = False
+                            if isinstance(results_data, dict):
+                                # Save flux_projetes
+                                if results_data.get('flux_projetes'):
+                                    df = pd.DataFrame(results_data['flux_projetes'])
+                                    save_flux_projetes(job_id, df)
+                                    saved_any = True
+                                
+                                # Save vp_flux_compte
+                                if results_data.get('vp_flux_compte'):
+                                    df = pd.DataFrame(results_data['vp_flux_compte'])
+                                    save_vp_flux_compte(job_id, df)
+                                    saved_any = True
+                                
+                                # Save vp_flux_total
+                                if results_data.get('vp_flux_total'):
+                                    df = pd.DataFrame(results_data['vp_flux_total'])
+                                    save_vp_flux_total(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Total PV: ${df['VP_FLUX_TOT'].iloc[0]:,.2f}")
+                            
+                            if saved_any:
+                                print(f"✓ Job {job_id} completed and results saved to database!")
+                            else:
+                                print(f"✓ Job {job_id} completed (no DataFrame results to save)")
+                            
                             update_job_status(job_id, 'completed')
-                            print(f"✓ Job {job_id} completed successfully!")
                             return
                         elif 'error' in output:
                             error_msg = output.get('error', 'Unknown error from worker')
