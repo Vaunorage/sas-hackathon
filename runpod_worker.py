@@ -99,6 +99,18 @@ def handler(job):
                 log_parts.append(f"debug scenario {debug_scenario}")
             print(f"Starting GPU projection with {', '.join(log_parts)}.")
             
+            # Progress callback to report batch progress to RunPod
+            def progress_callback(current_batch, total_batches):
+                progress_percent = int((current_batch / total_batches) * 100)
+                try:
+                    runpod.serverless.progress_update(
+                        job,
+                        f"Processing batch {current_batch}/{total_batches} ({progress_percent}%)"
+                    )
+                    print(f"  Progress reported to RunPod: Batch {current_batch}/{total_batches} ({progress_percent}%)")
+                except Exception as e:
+                    print(f"  Warning: Failed to report progress: {e}")
+            
             # The run_projection_gpu function returns a dict with 3 DataFrames
             results_dict = gpu.run_projection_gpu(
                 data_path=data_path,
@@ -108,6 +120,7 @@ def handler(job):
                 max_accounts=max_accounts,
                 debug_account=debug_account,
                 debug_scenario=debug_scenario,
+                progress_callback=progress_callback,
                 **file_paths # Pass the specific paths for each data file
             )
             print("GPU projection completed successfully.")

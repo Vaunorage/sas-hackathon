@@ -410,10 +410,7 @@ input[type="password"] {
                     <p>High-performance actuarial modeling powered by GPU acceleration</p>
                 </div>
             </div>
-            <div class="status">
-                <span id="api-status" class="status-badge">Checking...</span>
-                <span id="gpu-status" class="status-badge">GPU: Unknown</span>
-            </div>
+
         </div>
 
         <div class="card">
@@ -658,7 +655,6 @@ input[type="password"] {
                 document.getElementById('api-status').textContent = `API: v${data.version}`;
                 document.getElementById('api-status').className = 'status-badge healthy';
                 
-                document.getElementById('gpu-status').textContent = data.gpu_available ? 'GPU: Available' : 'GPU: Not Available';
                 document.getElementById('gpu-status').className = data.gpu_available ? 'status-badge healthy' : 'status-badge error';
             } catch (error) {
                 document.getElementById('api-status').textContent = 'API: Offline';

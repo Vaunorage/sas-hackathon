@@ -670,39 +670,53 @@ def poll_runpod_results(job_id: str, run_request):
                     update_job_progress(job_id, 0, 1, 0)
                     update_job_status(job_id, 'running', progress_message="⏳ Job queued on RunPod, waiting for GPU worker...")
                 elif status == "IN_PROGRESS":
-                    # Get job parameters to estimate progress
-                    job = get_job(job_id)
-                    params = job.get('parameters', {})
-                    nb_scenarios = params.get('nb_scenarios', 100)
-                    max_accounts = params.get('max_accounts')
+                    # Try to get actual progress from worker
+                    import re
+                    progress_updated = False
                     
-                    # Estimate time based on typical performance
-                    # Rough estimate: ~30 seconds per 20k accounts with 100 scenarios
-                    # Or ~1 second per 1k accounts with 10 scenarios
-                    if max_accounts and nb_scenarios:
-                        # Estimate total time (very rough)
-                        estimated_seconds = (max_accounts / 1000) * (nb_scenarios / 10)
-                    else:
-                        # Assume full dataset (~200k accounts)
-                        estimated_seconds = (200000 / 1000) * (nb_scenarios / 10) if nb_scenarios else 300
-                    
-                    # Calculate estimated progress
-                    if estimated_seconds > 0 and elapsed_time > 0:
-                        progress_pct = min(int((elapsed_time / estimated_seconds) * 100), 99)
-                    else:
-                        progress_pct = min(50 + (elapsed_time / max_wait_time * 50), 99)
-                    
-                    # Build informative message
-                    minutes = int(elapsed_time / 60)
-                    seconds = int(elapsed_time % 60)
-                    msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed"
-                    if estimated_seconds > 60:
-                        est_total_min = int(estimated_seconds / 60)
-                        msg += f", est. ~{est_total_min}m total"
-                    msg += ")"
-                    
-                    update_job_progress(job_id, 1, 1, int(progress_pct))
-                    update_job_status(job_id, 'running', progress_message=msg)
+                    try:
+                        # Try to get progress from the job output/stream
+                        # RunPod SDK's stream() returns a generator of output chunks
+                        # We want the latest progress message
+                        job_output = run_request.output()
+                        
+                        # Check if output has progress information
+                        if job_output and isinstance(job_output, dict):
+                            # Look for progress in output
+                            if 'progress' in job_output:
+                                progress_msg = job_output['progress']
+                            elif 'message' in job_output:
+                                progress_msg = job_output['message']
+                            else:
+                                progress_msg = None
+                            
+                            if progress_msg:
+                                # Parse progress message like "Processing batch 6/10 (60%)"
+                                match = re.search(r'batch (\d+)/(\d+).*?(\d+)%', str(progress_msg))
+                                if match:
+                                    current_batch = int(match.group(1))
+                                    total_batches = int(match.group(2))
+                                    progress_pct = int(match.group(3))
+                                    
+                                    update_job_progress(job_id, current_batch, total_batches, progress_pct)
+                                    update_job_status(job_id, 'running', progress_message=f"🚀 {progress_msg}")
+                                    print(f"  Progress from worker: Batch {current_batch}/{total_batches} ({progress_pct}%)")
+                                    progress_updated = True
+                        
+                        if not progress_updated:
+                            # No specific progress info, show generic message with elapsed time
+                            minutes = int(elapsed_time / 60)
+                            seconds = int(elapsed_time % 60)
+                            msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
+                            update_job_status(job_id, 'running', progress_message=msg)
+                            
+                    except Exception as e:
+                        # If getting progress fails, fall back to generic progress
+                        print(f"  Warning: Could not get worker progress: {e}")
+                        minutes = int(elapsed_time / 60)
+                        seconds = int(elapsed_time % 60)
+                        msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
+                        update_job_status(job_id, 'running', progress_message=msg)
                 
                 if status == "COMPLETED":
                     # Get the output
@@ -1635,11 +1649,11 @@ def list_job_files(job_id: str):
         try:
             # Check for flux_projetes
             sql = f"SELECT COUNT(*) as count FROM flux_projetes WHERE job_id = {ph}"
-            flux_count = execute_sql(sql, (job_id,), fetch=True)
+            flux_count = fetch_all(sql, (job_id,))
             if flux_count and flux_count[0]['count'] > 0:
                 result_files.append({
                     'name': 'FLUX_PROJETES',
-                    'type': 'summary',
+                    'type': 'internal',
                     'description': f'Projected cash flows ({flux_count[0]["count"]} rows)',
                     'row_count': flux_count[0]['count'],
                     'table': 'flux_projetes'
@@ -1650,7 +1664,7 @@ def list_job_files(job_id: str):
         try:
             # Check for vp_flux_compte
             sql = f"SELECT COUNT(*) as count FROM vp_flux_compte WHERE job_id = {ph}"
-            compte_count = execute_sql(sql, (job_id,), fetch=True)
+            compte_count = fetch_all(sql, (job_id,))
             if compte_count and compte_count[0]['count'] > 0:
                 result_files.append({
                     'name': 'VP_FLUX_COMPTE',
@@ -1665,11 +1679,11 @@ def list_job_files(job_id: str):
         try:
             # Check for vp_flux_total
             sql = f"SELECT COUNT(*) as count FROM vp_flux_total WHERE job_id = {ph}"
-            total_count = execute_sql(sql, (job_id,), fetch=True)
+            total_count = fetch_all(sql, (job_id,))
             if total_count and total_count[0]['count'] > 0:
                 # Get the actual total value
                 sql = f"SELECT vp_flux_tot FROM vp_flux_total WHERE job_id = {ph} LIMIT 1"
-                total_val = execute_sql(sql, (job_id,), fetch=True)
+                total_val = fetch_all(sql, (job_id,))
                 pv_value = total_val[0]['vp_flux_tot'] if total_val else 0
                 result_files.append({
                     'name': 'VP_FLUX_TOTAL',
@@ -1722,7 +1736,7 @@ def preview_file(job_id: str, file_name: str):
             # Fetch from database table
             ph = get_placeholder()
             sql = f"SELECT * FROM {table_name} WHERE job_id = {ph} LIMIT {limit}"
-            rows = execute_sql(sql, (job_id,), fetch=True)
+            rows = fetch_all(sql, (job_id,))
             
             if not rows:
                 return jsonify({
@@ -1732,7 +1746,7 @@ def preview_file(job_id: str, file_name: str):
             
             # Get total count
             sql = f"SELECT COUNT(*) as count FROM {table_name} WHERE job_id = {ph}"
-            count_result = execute_sql(sql, (job_id,), fetch=True)
+            count_result = fetch_all(sql, (job_id,))
             total_rows = count_result[0]['count'] if count_result else 0
             
             # Convert to DataFrame for consistent handling
@@ -1812,7 +1826,7 @@ def download_file(job_id: str, file_name: str):
             # Generate CSV from database table
             ph = get_placeholder()
             sql = f"SELECT * FROM {table_name} WHERE job_id = {ph}"
-            rows = execute_sql(sql, (job_id,), fetch=True)
+            rows = fetch_all(sql, (job_id,))
             
             if not rows:
                 return jsonify({
