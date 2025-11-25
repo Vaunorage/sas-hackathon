@@ -25,6 +25,12 @@ def handler(job):
         max_accounts = job_input.get('max_accounts', None)
         if max_accounts is not None:
             max_accounts = int(max_accounts)
+        debug_account = job_input.get('debug_account', None)
+        if debug_account is not None:
+            debug_account = int(debug_account)
+        debug_scenario = job_input.get('debug_scenario', None)
+        if debug_scenario is not None:
+            debug_scenario = int(debug_scenario)
         data_file_urls = job_input.get('data_file_urls', {})
     except (ValueError, TypeError) as e:
         return {'error': f"Invalid input parameter: {e}"}
@@ -83,10 +89,15 @@ def handler(job):
 
         # --- 4. Run the GPU projection ---
         try:
+            # Build log message
+            log_parts = [f"{nb_an_projection} years", f"{nb_scenarios} scenarios"]
             if max_accounts:
-                print(f"Starting GPU projection with {nb_an_projection} years, {nb_scenarios} scenarios, and max {max_accounts} accounts.")
-            else:
-                print(f"Starting GPU projection with {nb_an_projection} years and {nb_scenarios} scenarios.")
+                log_parts.append(f"max {max_accounts} accounts")
+            if debug_account is not None:
+                log_parts.append(f"debug account {debug_account}")
+            if debug_scenario is not None:
+                log_parts.append(f"debug scenario {debug_scenario}")
+            print(f"Starting GPU projection with {', '.join(log_parts)}.")
             
             # The run_projection_gpu function returns a dict with 3 DataFrames
             results_dict = gpu.run_projection_gpu(
@@ -95,6 +106,8 @@ def handler(job):
                 nb_an_projection=nb_an_projection,
                 nb_scenarios=nb_scenarios,
                 max_accounts=max_accounts,
+                debug_account=debug_account,
+                debug_scenario=debug_scenario,
                 **file_paths # Pass the specific paths for each data file
             )
             print("GPU projection completed successfully.")

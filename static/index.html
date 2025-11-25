@@ -497,6 +497,11 @@ input[type="password"] {
                         <label for="debug_account">Debug Account ID (optional):</label>
                         <input type="number" id="debug_account" name="debug_account" placeholder="Leave empty for no debug">
                     </div>
+
+                    <div class="form-group">
+                        <label for="debug_scenario">Debug Scenario (optional):</label>
+                        <input type="number" id="debug_scenario" name="debug_scenario" placeholder="Leave empty for no debug" min="0">
+                    </div>
                 </div>
 
                 <button type="submit" class="btn btn-primary" id="submit-btn">Create Job</button>
@@ -1121,11 +1126,13 @@ input[type="password"] {
                 const nbScenarios = document.getElementById('nb_scenarios').value;
                 const maxAccounts = document.getElementById('max_accounts').value;
                 const debugAccount = document.getElementById('debug_account').value;
+                const debugScenario = document.getElementById('debug_scenario').value;
                 
                 formData.append('nb_an_projection', nbAnProjection);
                 formData.append('nb_scenarios', nbScenarios);
                 if (maxAccounts) formData.append('max_accounts', maxAccounts);
                 if (debugAccount) formData.append('debug_account', debugAccount);
+                if (debugScenario) formData.append('debug_scenario', debugScenario);
                 
                 const response = await fetchWithToken(`${API_BASE}/jobs`, {
                     method: 'POST',

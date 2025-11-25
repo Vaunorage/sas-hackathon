@@ -381,17 +381,20 @@ def create_job(job_id: str, parameters: Dict[str, Any], uploaded_files: list) ->
         json.dumps(uploaded_files)
     ))
 
-def update_job_status(job_id: str, status: str, error_message: Optional[str] = None) -> None:
-    """Update job status"""
+def update_job_status(job_id: str, status: str, error_message: Optional[str] = None, progress_message: Optional[str] = None) -> None:
+    """Update job status and optionally set progress/error message"""
     ph = get_placeholder()
     updates = {'status': status}
     
-    if status == 'running' and error_message is None:
+    if status == 'running' and error_message is None and progress_message is None:
         updates['started_at'] = datetime.utcnow().isoformat()
     elif status in ['completed', 'failed']:
         updates['completed_at'] = datetime.utcnow().isoformat()
     
-    if error_message:
+    # Use progress_message for running status, error_message for failures
+    if progress_message and status == 'running':
+        updates['error_message'] = progress_message  # Reuse error_message field for progress
+    elif error_message:
         updates['error_message'] = error_message
     
     set_clause = ', '.join([f"{k} = {ph}" for k in updates.keys()])
@@ -658,6 +661,45 @@ def poll_runpod_results(job_id: str, run_request):
                 status = run_request.status()
                 print(f"  RunPod job status: {status}")
                 
+                # Update progress in database based on status
+                if status == "IN_QUEUE":
+                    update_job_progress(job_id, 0, 1, 0)
+                    update_job_status(job_id, 'running', progress_message="⏳ Job queued on RunPod, waiting for GPU worker...")
+                elif status == "IN_PROGRESS":
+                    # Get job parameters to estimate progress
+                    job = get_job(job_id)
+                    params = job.get('parameters', {})
+                    nb_scenarios = params.get('nb_scenarios', 100)
+                    max_accounts = params.get('max_accounts')
+                    
+                    # Estimate time based on typical performance
+                    # Rough estimate: ~30 seconds per 20k accounts with 100 scenarios
+                    # Or ~1 second per 1k accounts with 10 scenarios
+                    if max_accounts and nb_scenarios:
+                        # Estimate total time (very rough)
+                        estimated_seconds = (max_accounts / 1000) * (nb_scenarios / 10)
+                    else:
+                        # Assume full dataset (~200k accounts)
+                        estimated_seconds = (200000 / 1000) * (nb_scenarios / 10) if nb_scenarios else 300
+                    
+                    # Calculate estimated progress
+                    if estimated_seconds > 0 and elapsed_time > 0:
+                        progress_pct = min(int((elapsed_time / estimated_seconds) * 100), 99)
+                    else:
+                        progress_pct = min(50 + (elapsed_time / max_wait_time * 50), 99)
+                    
+                    # Build informative message
+                    minutes = int(elapsed_time / 60)
+                    seconds = int(elapsed_time % 60)
+                    msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed"
+                    if estimated_seconds > 60:
+                        est_total_min = int(estimated_seconds / 60)
+                        msg += f", est. ~{est_total_min}m total"
+                    msg += ")"
+                    
+                    update_job_progress(job_id, 1, 1, int(progress_pct))
+                    update_job_status(job_id, 'running', progress_message=msg)
+                
                 if status == "COMPLETED":
                     # Get the output
                     output = run_request.output()
@@ -700,7 +742,10 @@ def poll_runpod_results(job_id: str, run_request):
                             else:
                                 print(f"✓ Job {job_id} completed (no DataFrame results to save)")
                             
-                            update_job_status(job_id, 'completed')
+                            # Clear progress message and mark as completed
+                            ph = get_placeholder()
+                            sql = f"UPDATE jobs SET status = {ph}, completed_at = {ph}, error_message = NULL WHERE job_id = {ph}"
+                            execute_sql(sql, ('completed', datetime.utcnow().isoformat(), job_id))
                             return
                         elif 'error' in output:
                             error_msg = output.get('error', 'Unknown error from worker')
@@ -711,7 +756,9 @@ def poll_runpod_results(job_id: str, run_request):
                             return
                     
                     # No recognizable output format
-                    update_job_status(job_id, 'completed')
+                    ph = get_placeholder()
+                    sql = f"UPDATE jobs SET status = {ph}, completed_at = {ph}, error_message = NULL WHERE job_id = {ph}"
+                    execute_sql(sql, ('completed', datetime.utcnow().isoformat(), job_id))
                     print(f"✓ Job {job_id} completed (no results data)")
                     return
                     
@@ -817,6 +864,14 @@ def trigger_runpod_job(job_id: str):
             'nb_scenarios': params.get('nb_scenarios', 100),
             'data_file_urls': data_file_urls  # Send URLs instead of file data
         }
+        
+        # Add optional parameters if provided
+        if params.get('max_accounts'):
+            runpod_input['max_accounts'] = params.get('max_accounts')
+        if params.get('debug_account'):
+            runpod_input['debug_account'] = params.get('debug_account')
+        if params.get('debug_scenario'):
+            runpod_input['debug_scenario'] = params.get('debug_scenario')
 
         print(f"Triggering RunPod job for endpoint {RUNPOD_ENDPOINT_ID}...")
         print(f"  Payload: {len(data_file_urls)} file URLs")
@@ -1289,7 +1344,8 @@ def create_job_endpoint():
             'nb_an_projection': int(request.form.get('nb_an_projection', 100)),
             'nb_scenarios': int(request.form.get('nb_scenarios', 100)),
             'max_accounts': int(request.form.get('max_accounts')) if request.form.get('max_accounts') else None,
-            'debug_account': int(request.form.get('debug_account')) if request.form.get('debug_account') else None
+            'debug_account': int(request.form.get('debug_account')) if request.form.get('debug_account') else None,
+            'debug_scenario': int(request.form.get('debug_scenario')) if request.form.get('debug_scenario') else None
         }
         
         # Handle file uploads
