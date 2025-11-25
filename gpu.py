@@ -591,6 +591,7 @@ def projection_kernel(
         n_scenarios,
         n_years,
         freq_eval,
+        debug_account_id,  # ID of account to output detailed data (-1 = no debug, output VP totals only)
         # Lookup tables - Mortality
         mortality_lookup,
         # Lookup tables - Returns
@@ -611,12 +612,16 @@ def projection_kernel(
         cous_base_decheance, cous_tx_decheance, cous_base_mortalite, cous_tx_mortalite,
         cous_base_depot, cous_tx_depot, cous_facteur_80, cous_facteur_90,
         # Output arrays
-        output_results  # Shape: (n_accounts, max_timesteps, n_output_fields) - AGGREGATED ACROSS SCENARIOS!
+        output_results  # Shape: (n_accounts, 1 or max_timesteps, n_output_fields) - 1 row (VP totals) per account unless debug
 ):
     """
     Main CUDA kernel - processes one account-scenario combination per thread.
     Each thread loops through all timesteps sequentially (state dependency).
-    Results are atomically aggregated across scenarios within the kernel (100x data reduction!).
+    Results are atomically aggregated across scenarios within the kernel.
+    
+    OUTPUT MODES:
+    - Production mode (debug_account_id = -1): Only VP totals (1 row per account)
+    - Debug mode (debug_account_id = specific ID): All timesteps for that account only
     """
     # Get global thread ID
     account_idx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
@@ -685,6 +690,29 @@ def projection_kernel(
 
     # Scenario-specific processing
     scn_eval = scenario_idx + 1  # Scenarios are 1-indexed
+
+    # Check if this account needs detailed output (for debugging)
+    output_all_timesteps = (ID_COMPTE == debug_account_id)
+    
+    # Accumulators for VP totals (used when output_all_timesteps == False)
+    total_vp_frais_acquis = 0.0
+    total_vp_comm_vente = 0.0
+    total_vp_primes_garanties = 0.0
+    total_vp_primes_variables = 0.0
+    total_vp_frais_fixes = 0.0
+    total_vp_hon_gest = 0.0
+    total_vp_comm_maintien = 0.0
+    total_vp_prest_ech = 0.0
+    total_vp_prest_mrv = 0.0
+    total_vp_prest_deces = 0.0
+    total_vp_valeur_marchande = 0.0
+    total_vp_passif_redresse = 0.0
+    total_vp_coussin_credit = 0.0
+    total_vp_coussin_marche = 0.0
+    total_vp_coussin_depense = 0.0
+    total_vp_coussin_decheance = 0.0
+    total_vp_coussin_mortalite = 0.0
+    total_vp_coussin_depot = 0.0
 
     output_idx = 0
     AJUST_NOUV_AFFAIRES = 1.0
@@ -1229,58 +1257,111 @@ def projection_kernel(
                 coussin_depot = tx_depot * base_amount_depot_c * age_factor * TX_SURVIE
                 vp_coussin_depot = coussin_depot * TX_ACTUALISATION / freq_eval
 
-            # ============= STEP 15: STORE RESULTS (ATOMIC AGGREGATION) =============
-            # Atomically aggregate results across scenarios within kernel (100x data reduction!)
-            if output_idx < output_results.shape[1]:
-                # Write ID fields only once (same across all scenarios)
-                if scenario_idx == 0:
-                    output_results[account_idx, output_idx, 0] = float(ID_COMPTE)
-                    output_results[account_idx, output_idx, 1] = 0.0  # SCN_EVAL removed (aggregated)
-                    output_results[account_idx, output_idx, 2] = float(an_eval)
-                    output_results[account_idx, output_idx, 3] = float(mois_eval)
-                
-                # Atomically accumulate value fields across scenarios
-                cuda.atomic.add(output_results, (account_idx, output_idx, 4), primes_garanties)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 5), prest_deces)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 6), prest_ech)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 7), prest_mrv)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 8), frais_acquis)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 9), comm_vente)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 10), primes_variables)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 11), frais_fixes)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 12), hon_gest)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 13), comm_maintien)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 14), valeur_marchande)
-                # Cushions
-                cuda.atomic.add(output_results, (account_idx, output_idx, 15), passif_redresse)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 16), coussin_credit)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 17), coussin_marche)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 18), coussin_depense)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 19), coussin_decheance)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 20), coussin_mortalite)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 21), coussin_depot)
-                # VP values
-                cuda.atomic.add(output_results, (account_idx, output_idx, 22), vp_frais_acquis)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 23), vp_comm_vente)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 24), vp_primes_garanties)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 25), vp_primes_variables)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 26), vp_frais_fixes)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 27), vp_hon_gest)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 28), vp_comm_maintien)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 29), vp_prest_ech)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 30), vp_prest_mrv)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 31), vp_prest_deces)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 32), vp_valeur_marchande)
-                # VP Cushions
-                cuda.atomic.add(output_results, (account_idx, output_idx, 33), vp_passif_redresse)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 34), vp_coussin_credit)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 35), vp_coussin_marche)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 36), vp_coussin_depense)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 37), vp_coussin_decheance)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 38), vp_coussin_mortalite)
-                cuda.atomic.add(output_results, (account_idx, output_idx, 39), vp_coussin_depot)
+            # ============= STEP 15: STORE RESULTS =============
+            if output_all_timesteps:
+                # DEBUG MODE: Write all timesteps for this account (atomic aggregation across scenarios)
+                if output_idx < output_results.shape[1]:
+                    # Write ID fields only once (same across all scenarios)
+                    if scenario_idx == 0:
+                        output_results[account_idx, output_idx, 0] = float(ID_COMPTE)
+                        output_results[account_idx, output_idx, 1] = 0.0  # SCN_EVAL removed (aggregated)
+                        output_results[account_idx, output_idx, 2] = float(an_eval)
+                        output_results[account_idx, output_idx, 3] = float(mois_eval)
+                    
+                    # Atomically accumulate value fields across scenarios
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 4), primes_garanties)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 5), prest_deces)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 6), prest_ech)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 7), prest_mrv)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 8), frais_acquis)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 9), comm_vente)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 10), primes_variables)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 11), frais_fixes)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 12), hon_gest)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 13), comm_maintien)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 14), valeur_marchande)
+                    # Cushions
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 15), passif_redresse)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 16), coussin_credit)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 17), coussin_marche)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 18), coussin_depense)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 19), coussin_decheance)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 20), coussin_mortalite)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 21), coussin_depot)
+                    # VP values
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 22), vp_frais_acquis)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 23), vp_comm_vente)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 24), vp_primes_garanties)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 25), vp_primes_variables)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 26), vp_frais_fixes)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 27), vp_hon_gest)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 28), vp_comm_maintien)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 29), vp_prest_ech)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 30), vp_prest_mrv)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 31), vp_prest_deces)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 32), vp_valeur_marchande)
+                    # VP Cushions
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 33), vp_passif_redresse)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 34), vp_coussin_credit)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 35), vp_coussin_marche)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 36), vp_coussin_depense)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 37), vp_coussin_decheance)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 38), vp_coussin_mortalite)
+                    cuda.atomic.add(output_results, (account_idx, output_idx, 39), vp_coussin_depot)
 
-                output_idx += 1
+                    output_idx += 1
+            else:
+                # PRODUCTION MODE: Accumulate VP values only (no timestep detail)
+                # Sum up VP values across all timesteps within this thread
+                total_vp_frais_acquis += vp_frais_acquis
+                total_vp_comm_vente += vp_comm_vente
+                total_vp_primes_garanties += vp_primes_garanties
+                total_vp_primes_variables += vp_primes_variables
+                total_vp_frais_fixes += vp_frais_fixes
+                total_vp_hon_gest += vp_hon_gest
+                total_vp_comm_maintien += vp_comm_maintien
+                total_vp_prest_ech += vp_prest_ech
+                total_vp_prest_mrv += vp_prest_mrv
+                total_vp_prest_deces += vp_prest_deces
+                total_vp_valeur_marchande += vp_valeur_marchande
+                total_vp_passif_redresse += vp_passif_redresse
+                total_vp_coussin_credit += vp_coussin_credit
+                total_vp_coussin_marche += vp_coussin_marche
+                total_vp_coussin_depense += vp_coussin_depense
+                total_vp_coussin_decheance += vp_coussin_decheance
+                total_vp_coussin_mortalite += vp_coussin_mortalite
+                total_vp_coussin_depot += vp_coussin_depot
+    
+    # ============= STEP 16: WRITE FINAL VP TOTALS (PRODUCTION MODE) =============
+    # After finishing all timesteps, write one summary row with VP totals
+    if not output_all_timesteps:
+        # Only write ID fields once (scenario 0)
+        if scenario_idx == 0:
+            output_results[account_idx, 0, 0] = float(ID_COMPTE)
+            output_results[account_idx, 0, 1] = 0.0  # SCN_EVAL not applicable
+            output_results[account_idx, 0, 2] = 0.0  # AN_EVAL not applicable (summary)
+            output_results[account_idx, 0, 3] = 0.0  # MOIS_EVAL not applicable (summary)
+        
+        # Atomically write VP totals (aggregated across scenarios)
+        # Skip non-VP fields (indices 4-21) - set them to 0 or don't write
+        cuda.atomic.add(output_results, (account_idx, 0, 22), total_vp_frais_acquis)
+        cuda.atomic.add(output_results, (account_idx, 0, 23), total_vp_comm_vente)
+        cuda.atomic.add(output_results, (account_idx, 0, 24), total_vp_primes_garanties)
+        cuda.atomic.add(output_results, (account_idx, 0, 25), total_vp_primes_variables)
+        cuda.atomic.add(output_results, (account_idx, 0, 26), total_vp_frais_fixes)
+        cuda.atomic.add(output_results, (account_idx, 0, 27), total_vp_hon_gest)
+        cuda.atomic.add(output_results, (account_idx, 0, 28), total_vp_comm_maintien)
+        cuda.atomic.add(output_results, (account_idx, 0, 29), total_vp_prest_ech)
+        cuda.atomic.add(output_results, (account_idx, 0, 30), total_vp_prest_mrv)
+        cuda.atomic.add(output_results, (account_idx, 0, 31), total_vp_prest_deces)
+        cuda.atomic.add(output_results, (account_idx, 0, 32), total_vp_valeur_marchande)
+        cuda.atomic.add(output_results, (account_idx, 0, 33), total_vp_passif_redresse)
+        cuda.atomic.add(output_results, (account_idx, 0, 34), total_vp_coussin_credit)
+        cuda.atomic.add(output_results, (account_idx, 0, 35), total_vp_coussin_marche)
+        cuda.atomic.add(output_results, (account_idx, 0, 36), total_vp_coussin_depense)
+        cuda.atomic.add(output_results, (account_idx, 0, 37), total_vp_coussin_decheance)
+        cuda.atomic.add(output_results, (account_idx, 0, 38), total_vp_coussin_mortalite)
+        cuda.atomic.add(output_results, (account_idx, 0, 39), total_vp_coussin_depot)
 
 
 # =============================================================================
@@ -1515,10 +1596,14 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
 
     mem_per_account_input = all_account_data.shape[1] * all_account_data.dtype.itemsize
     # Output no longer has scenario dimension (aggregated in kernel with atomics!)
-    mem_per_account_output = max_timesteps * n_output_fields * np.dtype(np.float32).itemsize
+    # In production mode: 1 row per account (VP totals only)
+    # In debug mode: max_timesteps rows (all timesteps for debug account)
+    output_rows_per_account = max_timesteps if debug_account is not None else 1
+    mem_per_account_output = output_rows_per_account * n_output_fields * np.dtype(np.float32).itemsize
     total_mem_per_account = mem_per_account_input + mem_per_account_output
 
-    print(f"  Memory per account (Input + Output): {total_mem_per_account / 1024 ** 2:.2f} MB")
+    mode_str = f"DEBUG (all timesteps for account {debug_account})" if debug_account is not None else "PRODUCTION (VP totals only)"
+    print(f"  Memory per account (Input + Output): {total_mem_per_account / 1024 ** 2:.2f} MB ({mode_str})")
 
     if available_mem_for_dynamic_data < total_mem_per_account:
         raise MemoryError(
@@ -1563,14 +1648,20 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     
     # DuckDB-based batch storage strategy (simpler, more efficient)
     # No scenario dimension - aggregated atomically in kernel!
-    max_possible_rows = n_accounts * max_timesteps
-    estimated_rows = int(max_possible_rows * 0.6)
-    estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
+    if debug_account is not None:
+        # Debug mode: detailed timesteps for one account
+        estimated_rows = int(max_timesteps * 0.6)  # Estimated timesteps for debug account
+        print(f"\nUsing DEBUG MODE with ATOMIC IN-KERNEL AGGREGATION")
+        print(f"Estimated: ~{estimated_rows:,} timestep rows for account {debug_account}")
+    else:
+        # Production mode: VP totals only (1 row per account)
+        estimated_rows = n_accounts
+        estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
+        print(f"\nUsing PRODUCTION MODE: VP TOTALS ONLY (1000x data reduction!)")
+        print(f"Output: {n_accounts:,} accounts → {estimated_rows:,} rows (1 VP summary per account)")
     
-    print(f"\nUsing ATOMIC IN-KERNEL AGGREGATION + PARQUET STORAGE (100x memory reduction!)")
-    print(f"Estimated: {n_accounts:,} accounts, {estimated_rows:,} rows, ~{estimated_memory_gb:.1f} GB")
-    print(f"Scenarios aggregated atomically inside GPU kernel (eliminates 840s CPU bottleneck!)")
-    print(f"Final assembly will concatenate pre-aggregated batches (no re-aggregation needed)")
+    print(f"Scenarios aggregated atomically inside GPU kernel")
+    print(f"Final assembly will concatenate pre-aggregated batches")
     
     # Create temporary Parquet directory (clean up any previous run first)
     parquet_dir = Path(output_path) / "_temp_parquet"
@@ -1644,17 +1735,25 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
         batch_account_data = np.ascontiguousarray(all_account_data[start_idx:end_idx])
 
         # 2. Allocate batch-specific output array on CPU (NO SCENARIO DIM - aggregated in kernel!)
+        # In production mode (no debug), only 1 row per account (VP totals)
+        # In debug mode, max_timesteps rows for the debug account only
+        batch_start_account_id = start_idx + 1
+        batch_end_account_id = end_idx
+        is_debug_batch = debug_account is not None and batch_start_account_id <= debug_account <= batch_end_account_id
+        
+        output_timesteps = max_timesteps if is_debug_batch else 1
+        
         if use_pinned_memory:
             try:
-                h_batch_output = cuda.pinned_array((current_batch_size, max_timesteps, n_output_fields), dtype=np.float32)
+                h_batch_output = cuda.pinned_array((current_batch_size, output_timesteps, n_output_fields), dtype=np.float32)
                 h_batch_output[:] = 0  # Initialize to zero
             except Exception as e:
                 logger.warning(f"  Pinned memory allocation failed ({e}), falling back to regular memory")
                 use_pinned_memory = False  # Disable for remaining batches
-                h_batch_output = np.zeros((current_batch_size, max_timesteps, n_output_fields), dtype=np.float32)
+                h_batch_output = np.zeros((current_batch_size, output_timesteps, n_output_fields), dtype=np.float32)
         else:
-            h_batch_output = np.zeros((current_batch_size, max_timesteps, n_output_fields), dtype=np.float32)
-        logger.info(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB ")
+            h_batch_output = np.zeros((current_batch_size, output_timesteps, n_output_fields), dtype=np.float32)
+        logger.info(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB (mode: {'DEBUG' if is_debug_batch else 'PRODUCTION'}")
 
         # 3. Copy batch data to GPU (async with stream)
         transfer_start = datetime.now()
@@ -1682,11 +1781,12 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
 
         # 5. Launch kernel for the batch (using stream)
         kernel_start = datetime.now()
+        debug_account_id_param = debug_account if is_debug_batch else -1
         projection_kernel[blocks_per_grid, threads_per_block, stream_compute](
             # Batch-specific data
             d_batch_account_data,
             # Scenario parameters
-            nb_scenarios, nb_an_projection, CONFIG['FREQ_EVAL'],
+            nb_scenarios, nb_an_projection, CONFIG['FREQ_EVAL'], debug_account_id_param,
             # Lookup tables...
             d_mortality, d_forward_rate, d_ajust_forward, d_rend_dex, d_rend_mm, d_rend_tsx, d_rend_sp500, d_rend_eafe,
             d_min_ferr, d_lapse_part_min, d_lapse_part_max, d_lapse_tot_min, d_lapse_tot_max, d_lapse_tot_fact,
@@ -1733,7 +1833,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             
             # Reshape GPU array directly (stays on GPU! No scenario dim - already aggregated!)
             reshape_start = datetime.now()
-            total_rows = current_batch_size * max_timesteps
+            total_rows = current_batch_size * output_timesteps
             d_batch_reshaped = d_batch_output.reshape(total_rows, n_output_fields)
             reshape_time = (datetime.now() - reshape_start).total_seconds()
             logger.info(f"    Reshape on GPU: {reshape_time:.3f}s")
@@ -1831,11 +1931,17 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 del cpu_data
                 gc.collect()  # Immediate cleanup
                 
-                # ALWAYS aggregate to VP-only summary for VP_FLUX_TOTAL calculation
-                logger.info(f"    Aggregating to VP-only summary (1 row per account)...")
-                vp_columns = [col for col in df.columns if col.startswith('VP_')]
-                df_vp_summary = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
-                logger.info(f"    Reduced to {len(df_vp_summary):,} rows (VP values only)")
+                if is_debug_batch:
+                    # DEBUG MODE: Aggregate timestep data to VP-only summary for VP_FLUX_TOTAL
+                    logger.info(f"    Aggregating to VP-only summary (1 row per account)...")
+                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
+                    df_vp_summary = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
+                    logger.info(f"    Reduced to {len(df_vp_summary):,} rows (VP values only)")
+                else:
+                    # PRODUCTION MODE: Already have VP-only data (1 row per account)
+                    logger.info(f"    Already have VP-only data from kernel: {len(df):,} rows")
+                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
+                    df_vp_summary = df[['ID_COMPTE'] + vp_columns]
                 
                 df_time = (datetime.now() - df_start).total_seconds()
                 logger.info(f"    Created pandas DataFrame: {df_time:.3f}s")
@@ -1919,7 +2025,7 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
             
             # Reshape directly from pinned memory (no copy needed! No scenario dim!)
             reshape_start = datetime.now()
-            total_rows = current_batch_size * max_timesteps
+            total_rows = current_batch_size * output_timesteps
             reshaped = h_batch_output.reshape(total_rows, n_output_fields)
             reshape_time = (datetime.now() - reshape_start).total_seconds()
             logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s (zero-copy, scenarios pre-aggregated)")
@@ -1967,11 +2073,17 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
                 # Drop SCN_EVAL column (always 0 after kernel aggregation)
                 df = df.drop(columns=['SCN_EVAL'])
                 
-                # ALWAYS aggregate to VP-only summary for VP_FLUX_TOTAL calculation
-                logger.info(f"      Aggregating to VP-only summary (1 row per account)...")
-                vp_columns = [col for col in df.columns if col.startswith('VP_')]
-                df_vp_summary = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
-                logger.info(f"      Reduced to {len(df_vp_summary):,} rows (VP values only)")
+                if is_debug_batch:
+                    # DEBUG MODE: Aggregate timestep data to VP-only summary
+                    logger.info(f"      Aggregating to VP-only summary (1 row per account)...")
+                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
+                    df_vp_summary = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
+                    logger.info(f"      Reduced to {len(df_vp_summary):,} rows (VP values only)")
+                else:
+                    # PRODUCTION MODE: Already have VP-only data (1 row per account)
+                    logger.info(f"      Already have VP-only data from kernel: {len(df):,} rows")
+                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
+                    df_vp_summary = df[['ID_COMPTE'] + vp_columns]
                 
                 df_time = (datetime.now() - df_start).total_seconds()
                 logger.info(f"      Created DataFrame with {len(df_vp_summary):,} rows in {df_time:.3f}s")
