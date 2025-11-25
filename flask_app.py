@@ -8,6 +8,8 @@ import sqlite3
 import json
 import threading
 import traceback
+import io
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
@@ -104,7 +106,7 @@ PORT_HEALTH = int(os.getenv('PORT_HEALTH', str(PORT)))  # Health check port (def
 ALLOWED_EXTENSIONS = {'csv'}
 
 # Database configuration
-USE_NEONDB = os.getenv('USE_NEONDB', 'false').lower() == 'true'
+USE_NEONDB = os.getenv('USE_NEONDB', 'true').lower() == 'true'
 NEONDB_URL = os.getenv('NEONDB_URL', '')
 
 # Determine which database to use
@@ -403,7 +405,7 @@ def update_job_status(job_id: str, status: str, error_message: Optional[str] = N
     sql = f"UPDATE jobs SET {set_clause} WHERE job_id = {ph}"
     execute_sql(sql, tuple(values))
 
-def update_job_progress(job_id: str, current_batch: int, total_batches: int) -> None:
+def update_job_progress(job_id: str, current_batch: int, total_batches: int, progress_percent: int = None) -> None:
     """
     Update job progress
     
@@ -411,8 +413,10 @@ def update_job_progress(job_id: str, current_batch: int, total_batches: int) -> 
         job_id: Job identifier
         current_batch: Current batch number (1-indexed)
         total_batches: Total number of batches
+        progress_percent: Optional override for progress percentage
     """
-    progress_percent = (current_batch / total_batches * 100.0) if total_batches > 0 else 0.0
+    if progress_percent is None:
+        progress_percent = (current_batch / total_batches * 100.0) if total_batches > 0 else 0.0
     
     print(f"  Progress update: {job_id} - Batch {current_batch}/{total_batches} ({progress_percent:.1f}%)")
     
@@ -702,8 +706,15 @@ def poll_runpod_results(job_id: str, run_request):
                 
                 if status == "COMPLETED":
                     # Get the output
-                    output = run_request.output()
-                    print(f"  RunPod job completed! Processing results...")
+                    try:
+                        output = run_request.output()
+                        print(f"  RunPod job completed! Raw output type: {type(output)}")
+                        print(f"  Output keys: {output.keys() if isinstance(output, dict) else 'N/A'}")
+                    except Exception as e:
+                        error_msg = f"Failed to retrieve RunPod output: {str(e)}"
+                        print(f"✗ {error_msg}")
+                        update_job_status(job_id, 'failed', error_message=error_msg)
+                        return
                     
                     # Check if output contains results
                     if output and isinstance(output, dict):
@@ -711,6 +722,7 @@ def poll_runpod_results(job_id: str, run_request):
                             # Convert results to DataFrame format and save to database
                             results_data = output['results']
                             print(f"  Processing results from RunPod worker...")
+                            print(f"  Results data keys: {results_data.keys() if isinstance(results_data, dict) else 'N/A'}")
                             
                             # Save legacy JSON format
                             update_job_results_data(job_id, output)
@@ -720,32 +732,46 @@ def poll_runpod_results(job_id: str, run_request):
                             if isinstance(results_data, dict):
                                 # Save flux_projetes
                                 if results_data.get('flux_projetes'):
-                                    df = pd.DataFrame(results_data['flux_projetes'])
-                                    save_flux_projetes(job_id, df)
-                                    saved_any = True
+                                    try:
+                                        df = pd.DataFrame(results_data['flux_projetes'])
+                                        save_flux_projetes(job_id, df)
+                                        saved_any = True
+                                        print(f"  ✓ Saved flux_projetes: {len(df)} rows")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save flux_projetes: {e}")
                                 
                                 # Save vp_flux_compte
                                 if results_data.get('vp_flux_compte'):
-                                    df = pd.DataFrame(results_data['vp_flux_compte'])
-                                    save_vp_flux_compte(job_id, df)
-                                    saved_any = True
+                                    try:
+                                        df = pd.DataFrame(results_data['vp_flux_compte'])
+                                        save_vp_flux_compte(job_id, df)
+                                        saved_any = True
+                                        print(f"  ✓ Saved vp_flux_compte: {len(df)} rows")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save vp_flux_compte: {e}")
                                 
                                 # Save vp_flux_total
                                 if results_data.get('vp_flux_total'):
-                                    df = pd.DataFrame(results_data['vp_flux_total'])
-                                    save_vp_flux_total(job_id, df)
-                                    saved_any = True
-                                    print(f"  ✓ Total PV: ${df['VP_FLUX_TOT'].iloc[0]:,.2f}")
+                                    try:
+                                        df = pd.DataFrame(results_data['vp_flux_total'])
+                                        save_vp_flux_total(job_id, df)
+                                        saved_any = True
+                                        total_pv = df['VP_FLUX_TOT'].iloc[0]
+                                        print(f"  ✓ Saved vp_flux_total: Total PV = ${total_pv:,.2f}")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save vp_flux_total: {e}")
                             
                             if saved_any:
                                 print(f"✓ Job {job_id} completed and results saved to database!")
                             else:
-                                print(f"✓ Job {job_id} completed (no DataFrame results to save)")
+                                print(f"⚠ Job {job_id} completed but no DataFrame results were saved")
+                                print(f"  Results data structure: {type(results_data)}")
                             
                             # Clear progress message and mark as completed
                             ph = get_placeholder()
                             sql = f"UPDATE jobs SET status = {ph}, completed_at = {ph}, error_message = NULL WHERE job_id = {ph}"
                             execute_sql(sql, ('completed', datetime.utcnow().isoformat(), job_id))
+                            print(f"  ✓ Job status updated to completed")
                             return
                         elif 'error' in output:
                             error_msg = output.get('error', 'Unknown error from worker')
@@ -1602,21 +1628,59 @@ def list_job_files(job_id: str):
                         'type': 'input'
                     })
         
-        # Get result files from database (with metadata)
-        result_files = job.get('result_files', [])
+        # Get result DataFrames from database tables
+        result_files = []
+        ph = get_placeholder()
         
-        # If result_files are stored as strings (old format), convert to new format
-        if result_files and isinstance(result_files[0], str):
-            results_folder = get_job_results_folder(job_id)
-            result_files = []
-            for filename in job.get('result_files', []):
-                file_path = results_folder / filename
-                if file_path.exists():
-                    result_files.append({
-                        'name': filename,
-                        'size': file_path.stat().st_size,
-                        'type': 'output'
-                    })
+        try:
+            # Check for flux_projetes
+            sql = f"SELECT COUNT(*) as count FROM flux_projetes WHERE job_id = {ph}"
+            flux_count = execute_sql(sql, (job_id,), fetch=True)
+            if flux_count and flux_count[0]['count'] > 0:
+                result_files.append({
+                    'name': 'FLUX_PROJETES',
+                    'type': 'summary',
+                    'description': f'Projected cash flows ({flux_count[0]["count"]} rows)',
+                    'row_count': flux_count[0]['count'],
+                    'table': 'flux_projetes'
+                })
+        except Exception as e:
+            print(f"Error checking flux_projetes: {e}")
+        
+        try:
+            # Check for vp_flux_compte
+            sql = f"SELECT COUNT(*) as count FROM vp_flux_compte WHERE job_id = {ph}"
+            compte_count = execute_sql(sql, (job_id,), fetch=True)
+            if compte_count and compte_count[0]['count'] > 0:
+                result_files.append({
+                    'name': 'VP_FLUX_COMPTE',
+                    'type': 'detailed',
+                    'description': f'Present value by account ({compte_count[0]["count"]} rows)',
+                    'row_count': compte_count[0]['count'],
+                    'table': 'vp_flux_compte'
+                })
+        except Exception as e:
+            print(f"Error checking vp_flux_compte: {e}")
+        
+        try:
+            # Check for vp_flux_total
+            sql = f"SELECT COUNT(*) as count FROM vp_flux_total WHERE job_id = {ph}"
+            total_count = execute_sql(sql, (job_id,), fetch=True)
+            if total_count and total_count[0]['count'] > 0:
+                # Get the actual total value
+                sql = f"SELECT vp_flux_tot FROM vp_flux_total WHERE job_id = {ph} LIMIT 1"
+                total_val = execute_sql(sql, (job_id,), fetch=True)
+                pv_value = total_val[0]['vp_flux_tot'] if total_val else 0
+                result_files.append({
+                    'name': 'VP_FLUX_TOTAL',
+                    'type': 'summary',
+                    'description': f'Total present value: ${pv_value:,.2f}',
+                    'row_count': total_count[0]['count'],
+                    'table': 'vp_flux_total',
+                    'pv_total': pv_value
+                })
+        except Exception as e:
+            print(f"Error checking vp_flux_total: {e}")
         
         return jsonify({
             'job_id': job_id,
@@ -1645,43 +1709,78 @@ def preview_file(job_id: str, file_name: str):
         # Get row limit from query params (default 100)
         limit = int(request.args.get('limit', 100))
         
-        # Secure the filename
-        file_name = secure_filename(file_name)
+        # Map display names to database tables
+        table_map = {
+            'FLUX_PROJETES': 'flux_projetes',
+            'VP_FLUX_COMPTE': 'vp_flux_compte',
+            'VP_FLUX_TOTAL': 'vp_flux_total'
+        }
         
-        # Try to find file in results folder first
-        results_folder = get_job_results_folder(job_id)
-        file_path = results_folder / file_name
+        table_name = table_map.get(file_name.upper())
         
-        if not file_path.exists():
-            # Try upload folder
+        if table_name:
+            # Fetch from database table
+            ph = get_placeholder()
+            sql = f"SELECT * FROM {table_name} WHERE job_id = {ph} LIMIT {limit}"
+            rows = execute_sql(sql, (job_id,), fetch=True)
+            
+            if not rows:
+                return jsonify({
+                    'error': 'No data found',
+                    'file_name': file_name
+                }), 404
+            
+            # Get total count
+            sql = f"SELECT COUNT(*) as count FROM {table_name} WHERE job_id = {ph}"
+            count_result = execute_sql(sql, (job_id,), fetch=True)
+            total_rows = count_result[0]['count'] if count_result else 0
+            
+            # Convert to DataFrame for consistent handling
+            df = pd.DataFrame(rows)
+            # Remove job_id column for display
+            if 'job_id' in df.columns:
+                df = df.drop(columns=['job_id'])
+            
+            data = df.to_dict(orient='records')
+            columns = df.columns.tolist()
+            
+            return jsonify({
+                'job_id': job_id,
+                'file_name': file_name,
+                'columns': columns,
+                'data': data,
+                'rows_shown': len(data),
+                'total_rows': total_rows,
+                'truncated': total_rows > limit
+            })
+        else:
+            # Fall back to file-based results (for uploaded input files)
+            file_name = secure_filename(file_name)
             upload_folder = get_job_upload_folder(job_id)
             file_path = upload_folder / file_name
-        
-        if not file_path.exists():
+            
+            if not file_path.exists():
+                return jsonify({
+                    'error': 'File not found',
+                    'file_name': file_name
+                }), 404
+            
+            # Read CSV with limit
+            df = pd.read_csv(file_path, sep=';', nrows=limit)
+            total_rows = sum(1 for _ in open(file_path)) - 1
+            
+            data = df.to_dict(orient='records')
+            columns = df.columns.tolist()
+            
             return jsonify({
-                'error': 'File not found',
-                'file_name': file_name
-            }), 404
-        
-        # Read CSV with limit
-        df = pd.read_csv(file_path, sep=';', nrows=limit)
-        
-        # Get total row count
-        total_rows = sum(1 for _ in open(file_path)) - 1  # Subtract header
-        
-        # Convert to JSON
-        data = df.to_dict(orient='records')
-        columns = df.columns.tolist()
-        
-        return jsonify({
-            'job_id': job_id,
-            'file_name': file_name,
-            'columns': columns,
-            'data': data,
-            'rows_shown': len(data),
-            'total_rows': total_rows,
-            'truncated': total_rows > limit
-        })
+                'job_id': job_id,
+                'file_name': file_name,
+                'columns': columns,
+                'data': data,
+                'rows_shown': len(data),
+                'total_rows': total_rows,
+                'truncated': total_rows > limit
+            })
         
     except Exception as e:
         return jsonify({
@@ -1700,23 +1799,56 @@ def download_file(job_id: str, file_name: str):
                 'job_id': job_id
             }), 404
         
-        # Secure the filename
-        file_name = secure_filename(file_name)
+        # Map display names to database tables
+        table_map = {
+            'FLUX_PROJETES': 'flux_projetes',
+            'VP_FLUX_COMPTE': 'vp_flux_compte',
+            'VP_FLUX_TOTAL': 'vp_flux_total'
+        }
         
-        # Check in upload folder first
-        upload_file = get_job_upload_folder(job_id) / file_name
-        if upload_file.exists():
-            return send_file(upload_file, mimetype='text/plain', as_attachment=True)
+        table_name = table_map.get(file_name.upper())
         
-        # Check in results folder
-        result_file = get_job_results_folder(job_id) / file_name
-        if result_file.exists():
-            return send_file(result_file, mimetype='text/plain', as_attachment=True)
-        
-        return jsonify({
-            'error': 'File not found',
-            'file_name': file_name
-        }), 404
+        if table_name:
+            # Generate CSV from database table
+            ph = get_placeholder()
+            sql = f"SELECT * FROM {table_name} WHERE job_id = {ph}"
+            rows = execute_sql(sql, (job_id,), fetch=True)
+            
+            if not rows:
+                return jsonify({
+                    'error': 'No data found',
+                    'file_name': file_name
+                }), 404
+            
+            # Convert to DataFrame and remove job_id column
+            df = pd.DataFrame(rows)
+            if 'job_id' in df.columns:
+                df = df.drop(columns=['job_id'])
+            
+            # Create CSV in memory
+            from io import StringIO
+            output = StringIO()
+            df.to_csv(output, index=False, sep=';')
+            output.seek(0)
+            
+            # Return as downloadable file
+            return send_file(
+                io.BytesIO(output.getvalue().encode('utf-8')),
+                mimetype='text/csv',
+                as_attachment=True,
+                download_name=f'{file_name}.csv'
+            )
+        else:
+            # Check for uploaded input files
+            file_name = secure_filename(file_name)
+            upload_file = get_job_upload_folder(job_id) / file_name
+            if upload_file.exists():
+                return send_file(upload_file, mimetype='text/plain', as_attachment=True)
+            
+            return jsonify({
+                'error': 'File not found',
+                'file_name': file_name
+            }), 404
         
     except Exception as e:
         return jsonify({

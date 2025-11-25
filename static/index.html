@@ -807,6 +807,26 @@ input[type="password"] {
                 const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}`);
                 const job = await response.json();
                 
+                // Build parameters info
+                let parametersHTML = '<div style="background: #f8f8f8; padding: 10px; border: 1px solid #ccc; margin-bottom: 15px;">';
+                parametersHTML += '<p><strong>Job Parameters:</strong></p>';
+                parametersHTML += '<ul style="font-size: 13px; margin: 5px 0; padding-left: 20px;">';
+                if (job.parameters) {
+                    const params = typeof job.parameters === 'string' ? JSON.parse(job.parameters) : job.parameters;
+                    parametersHTML += `<li><strong>Years to Project:</strong> ${params.nb_an_projection || 'N/A'}</li>`;
+                    parametersHTML += `<li><strong>Scenarios:</strong> ${params.nb_scenarios || 'N/A'}</li>`;
+                    if (params.max_accounts) {
+                        parametersHTML += `<li><strong>Max Accounts:</strong> ${params.max_accounts}</li>`;
+                    }
+                    if (params.debug_account !== null && params.debug_account !== undefined) {
+                        parametersHTML += `<li><strong>Debug Account:</strong> ${params.debug_account}</li>`;
+                    }
+                    if (params.debug_scenario !== null && params.debug_scenario !== undefined) {
+                        parametersHTML += `<li><strong>Debug Scenario:</strong> ${params.debug_scenario}</li>`;
+                    }
+                }
+                parametersHTML += '</ul></div>';
+                
                 // Build file source info
                 let fileSourceHTML = '';
                 if (job.uploaded_files && job.uploaded_files.length > 0) {
@@ -853,16 +873,17 @@ input[type="password"] {
                 
                 detailsDiv.innerHTML = `
                     <div style="margin-bottom: 20px;">
+                        ${parametersHTML}
                         <p><strong>Started:</strong> ${job.started_at ? new Date(job.started_at).toLocaleString() : 'Not started yet'}</p>
                         <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'Not completed yet'}</p>
                         ${progressHTML}
                         ${cancelButton}
-                        ${job.error_message ? `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>` : ''}
+                        ${job.error_message && job.status !== 'running' ? `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>` : ''}
                         ${fileSourceHTML}
                     </div>
                     
-                    <h3>Output Files</h3>
-                    <div id="files-display-${jobId}"></div>
+                    <h3>Results</h3>
+                    <div id="results-display-${jobId}"></div>
                 `;
                 
                 // Load and display files
@@ -879,10 +900,10 @@ input[type="password"] {
                 const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}/files`);
                 const data = await response.json();
                 
-                const filesDiv = document.getElementById(`files-display-${jobId}`);
+                const filesDiv = document.getElementById(`results-display-${jobId}`);
                 
                 if (!data.result_files || data.result_files.length === 0) {
-                    filesDiv.innerHTML = '<p>No result files available yet</p>';
+                    filesDiv.innerHTML = '<p style="color: #666; font-style: italic;">No results available yet. Job may still be running or failed.</p>';
                     return;
                 }
                 
@@ -917,17 +938,19 @@ input[type="password"] {
                         html += `<h4>${typeLabels[type]}</h4>`;
                         files.forEach(file => {
                             const fileName = file.name;
+                            const rowCount = file.row_count ? `(${file.row_count.toLocaleString()} rows)` : '';
                             const fileSize = file.size ? `(${(file.size / 1024).toFixed(2)} KB)` : '';
-                            const description = file.description ? `<div>${file.description}</div>` : '';
+                            const sizeInfo = rowCount || fileSize;
+                            const description = file.description ? `<div style="font-size: 12px; color: #666;">${file.description}</div>` : '';
                             html += `
-                                <div>
+                                <div style="padding: 10px; border: 1px solid #ccc; margin-bottom: 8px; background: #fff;">
                                     <div>
-                                        <strong>${fileName}</strong> ${fileSize}
+                                        <strong style="font-size: 14px;">📊 ${fileName}</strong> ${sizeInfo}
                                         ${description}
                                     </div>
-                                    <div>
+                                    <div style="margin-top: 8px;">
                                         <button class="file-preview-btn" onclick="previewFile('${jobId}', '${fileName}')">👁️ Preview</button>
-                                        <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${fileName}')">⬇️ Download</button>
+                                        <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${fileName}')">⬇️ Download CSV</button>
                                     </div>
                                 </div>
                             `;
