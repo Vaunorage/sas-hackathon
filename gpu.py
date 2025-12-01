@@ -580,7 +580,407 @@ def create_gpu_coussins_lookup(df: pd.DataFrame):
 
 
 # =============================================================================
-# GPU KERNEL - MAIN PROJECTION ENGINE
+# GPU KERNELS - TWO-PASS NESTED STOCHASTIC ARCHITECTURE
+# =============================================================================
+
+# State variables passed between Kernel A and Kernel B
+# Index mapping for state tensor
+STATE_MT_VM = 0
+STATE_MT_GAR_DECES = 1
+STATE_MT_GAR_ECH = 2
+STATE_MT_SRG = 3
+STATE_AGE = 4
+STATE_TX_SURVIE = 5
+STATE_MT_DEX = 6
+STATE_MT_MM = 7
+STATE_MT_TSX = 8
+STATE_MT_SP500 = 9
+STATE_MT_EAFE = 10
+STATE_MT_BONI_DECES = 11
+STATE_SIZE = 12  # Total number of state variables
+
+@cuda.jit
+def external_generator_kernel(
+        # Account data
+        account_data,  # Shape: (n_accounts, n_account_fields)
+        # Scenario parameters
+        n_scenarios,
+        n_years,
+        freq_eval,
+        # Lookup tables - Mortality
+        mortality_lookup,
+        # Lookup tables - Returns
+        forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe,
+        # Lookup tables - Lapse
+        min_ferr_lookup,
+        lapse_part_min, lapse_part_max,
+        lapse_tot_min, lapse_tot_max, lapse_tot_fact,
+        # Lookup tables - Deposits
+        deposits_pc, deposits_var, deposits_age_max, deposits_i_even,
+        # Lookup tables - Fees
+        fees_lookup,
+        # Lookup tables - Acquisition
+        acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf,
+        # Output arrays
+        output_states,     # Shape: (Batch_Size, n_scenarios, n_years, STATE_SIZE)
+        output_cashflows   # Shape: (Batch_Size, n_scenarios, n_years, CF_SIZE)
+):
+    """
+    KERNEL A: EXTERNAL SCENARIO GENERATOR (Tier 1)
+    
+    Runs the external (real-world) scenarios and saves intermediate states at each timestep.
+    These states will be used by Kernel B to perform nested valuations.
+    
+    Output:
+    - State tensor: All policy state variables at each external scenario node
+    - Cashflow tensor: Nominal cashflows for reporting (Tier 1 results)
+    """
+    # Get global thread ID
+    account_idx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    scenario_idx = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
+
+    # Boundary check
+    if account_idx >= account_data.shape[0] or scenario_idx >= n_scenarios:
+        return
+
+    # Load account data into registers
+    acc = account_data[account_idx]
+
+    # Account static data indices
+    ID_COMPTE = int(acc[0])
+    ANNEE_EVALUATION_INI = int(acc[1])
+    MOIS_EVALUATION_INI = int(acc[2])
+    ANNEE_NAIS = int(acc[3])
+    MOIS_NAIS = int(acc[4])
+    I_SEXE = int(acc[5])
+    I_PRODUIT_REGR = int(acc[6])
+    ID_PRODUIT = int(acc[7])
+    ID_LAPSE = int(acc[8])
+    I_REGIME_2 = int(acc[9])
+    ID_DEPOT = int(acc[10])
+    ID_ACQUI = int(acc[11])
+    AGE_ECH_MIN = int(acc[12])
+    AGE_FIN_CONTRAT = int(acc[13])
+    AGE_DECAISSEMENT = int(acc[14])
+
+    # Initialize state variables
+    MT_VM_PROJ = acc[15]
+    MT_GAR_DECES_PROJ = acc[16]
+    MT_GAR_ECH_PROJ = acc[17]
+    MT_SRG_PROJ = acc[18]
+    MT_BCB_PROJ = acc[19]
+    MT_DEX_PROJ = acc[20]
+    MT_MM_PROJ = acc[21]
+    MT_TSX_PROJ = acc[22]
+    MT_SP500_PROJ = acc[23]
+    MT_EAFE_PROJ = acc[24]
+    MT_BONI_DECES_PROJ = acc[25]
+    MT_MRV_MRG_MRA_PROJ = acc[26]
+    TAUX_MRV_MRG_MRA_PROJ = acc[27]
+    MT_MIN_FERR_PROJ = 0.0
+
+    TX_SURVIE = 1.0
+
+    PC_HONORAIRES_GEST = acc[30]
+    PC_FRAIS_GARANTIE = acc[31]
+    PC_GAR_DECES_1 = acc[32]
+    PC_BONI_DECES = acc[33]
+    PC_RFG = acc[34]
+    PC_REVENU_FDS = acc[35]
+    PC_GAR_ECH = acc[36]
+    PC_GAR_ECH_DEP_FUT = acc[37]
+    MT_VM_ORIG = acc[40]
+
+    ANNEE_COTIS = int(acc[41]) if acc[41] > 0 else ANNEE_EVALUATION_INI
+    MOIS_COTIS = int(acc[42]) if acc[42] > 0 else 1
+
+    # Scenario-specific processing
+    scn_eval = scenario_idx + 1
+
+    output_year_idx = 0
+    AJUST_NOUV_AFFAIRES = 1.0
+
+    # TIME LOOP - External Projection
+    for an_eval in range(0, n_years + 1):
+        for mois_simul in range(1, freq_eval + 1):
+            # Calculate real year and month
+            annee_reelle = ANNEE_EVALUATION_INI + an_eval - 1
+            mois_eval = mois_simul * 12 // freq_eval
+
+            # Calculate age
+            age = annee_reelle - ANNEE_NAIS
+            if mois_eval < MOIS_NAIS:
+                age -= 1
+            if age < 1:
+                age = 1
+
+            # Check if we should keep this period
+            keep = (age <= AGE_FIN_CONTRAT and
+                    (an_eval > 1 or
+                     (an_eval == 1 and mois_eval >= MOIS_EVALUATION_INI) or
+                     (an_eval == 0 and mois_eval == 12)))
+
+            if not keep:
+                continue
+
+            # Check if policy is still active
+            if TX_SURVIE == 0 or (MT_VM_PROJ == 0 and I_PRODUIT_REGR == 0):
+                break
+
+            # Calculate duration from issue date
+            current_date = annee_reelle + mois_eval / 12.0
+            issue_date = ANNEE_COTIS + MOIS_COTIS / 12.0
+            duree = int(current_date - issue_date) + 1
+            duree_max10 = min(duree, 10)
+
+            TX_SURVIE_DEB = TX_SURVIE
+
+            # === PROJECTION LOGIC (SIMPLIFIED FOR BREVITY) ===
+            # [Insert full projection logic from existing kernel here]
+            # For now, showing key steps:
+            
+            # 1. Mortality lookup
+            month_diff = MOIS_NAIS - mois_eval
+            if month_diff <= 0:
+                month_diff += 12
+            age_mort = age + 1 if month_diff <= 6 else age
+            age_mort = min(age_mort, 120)
+            
+            if (I_SEXE < mortality_lookup.shape[0] and
+                    age_mort < mortality_lookup.shape[1] and
+                    annee_reelle < mortality_lookup.shape[2] and
+                    I_PRODUIT_REGR < mortality_lookup.shape[3]):
+                qx = mortality_lookup[I_SEXE, age_mort, annee_reelle, I_PRODUIT_REGR]
+            else:
+                qx = 0.001
+            qx = 1.0 - math.pow(1.0 - qx, (1.0 / freq_eval * AJUST_NOUV_AFFAIRES))
+
+            # 2. Returns lookup
+            if (scn_eval < forward_rate.shape[0] and
+                    an_eval < forward_rate.shape[1] and
+                    mois_eval < forward_rate.shape[2]):
+                r_dex = rend_dex[scn_eval, an_eval, mois_eval]
+                r_mm = rend_mm[scn_eval, an_eval, mois_eval]
+                r_tsx = rend_tsx[scn_eval, an_eval, mois_eval]
+                r_sp500 = rend_sp500[scn_eval, an_eval, mois_eval]
+                r_eafe = rend_eafe[scn_eval, an_eval, mois_eval]
+            else:
+                r_dex = r_mm = r_tsx = r_sp500 = r_eafe = 0.0
+
+            # 3. Apply returns
+            MT_DEX_PROJ *= math.exp(r_dex * AJUST_NOUV_AFFAIRES)
+            MT_MM_PROJ *= math.exp(r_mm * AJUST_NOUV_AFFAIRES)
+            MT_TSX_PROJ *= math.exp(r_tsx * AJUST_NOUV_AFFAIRES)
+            MT_SP500_PROJ *= math.exp(r_sp500 * AJUST_NOUV_AFFAIRES)
+            MT_EAFE_PROJ *= math.exp(r_eafe * AJUST_NOUV_AFFAIRES)
+
+            MT_VM_AV_RETRAIT_FRAIS = (MT_DEX_PROJ + MT_MM_PROJ + MT_TSX_PROJ +
+                                      MT_SP500_PROJ + MT_EAFE_PROJ)
+
+            # 4. Calculate lapse (simplified)
+            lapse = 0.0
+            if MT_VM_PROJ > 0:
+                # [Insert full lapse calculation here]
+                lapse = 0.01  # Placeholder
+
+            # 5. Update survival
+            TX_SURVIE *= (1.0 - qx) * (1.0 - lapse)
+
+            # 6. Apply fees (simplified)
+            MT_VM_AV_RETRAIT = MT_VM_AV_RETRAIT_FRAIS * math.exp(-PC_RFG / freq_eval * AJUST_NOUV_AFFAIRES)
+            
+            # 7. Update VM
+            MT_VM_PROJ = MT_VM_AV_RETRAIT
+
+            # 8. Portfolio rebalance
+            if MT_VM_ORIG > 0 and MT_VM_PROJ > 0:
+                MT_SP500_PROJ = MT_VM_PROJ * acc[23] / MT_VM_ORIG
+                MT_TSX_PROJ = MT_VM_PROJ * acc[22] / MT_VM_ORIG
+                MT_EAFE_PROJ = MT_VM_PROJ * acc[24] / MT_VM_ORIG
+                MT_DEX_PROJ = MT_VM_PROJ * acc[20] / MT_VM_ORIG
+                MT_MM_PROJ = MT_VM_PROJ * acc[21] / MT_VM_ORIG
+
+            # === SAVE STATE TO GLOBAL MEMORY ===
+            if an_eval < n_years and output_year_idx < output_states.shape[2]:
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_VM] = MT_VM_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_GAR_DECES] = MT_GAR_DECES_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_GAR_ECH] = MT_GAR_ECH_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_SRG] = MT_SRG_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_AGE] = float(age)
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_TX_SURVIE] = TX_SURVIE
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_DEX] = MT_DEX_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_MM] = MT_MM_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_TSX] = MT_TSX_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_SP500] = MT_SP500_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_EAFE] = MT_EAFE_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_BONI_DECES] = MT_BONI_DECES_PROJ
+
+                # Save cashflows for reporting
+                flux_net = 0.0  # Calculate actual net cashflow
+                output_cashflows[account_idx, scenario_idx, output_year_idx, 0] = flux_net
+
+                output_year_idx += 1
+
+
+@cuda.jit
+def nested_valuation_kernel(
+        # Input states from Kernel A
+        input_states,        # Shape: (Batch_Size, n_ext_scenarios, n_years, STATE_SIZE)
+        account_data,        # Account static data for internal calculations
+        # Internal scenario parameters
+        n_internal_scenarios,
+        n_internal_years,
+        shock_capital_pct,   # e.g. 0.30 for 30% shock
+        # Risk Neutral / Internal Tables
+        rn_forward_rate,     # Risk Neutral Returns
+        rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe,
+        mortality_lookup,    # Reuse mortality table
+        # Output arrays
+        output_metrics       # Shape: (Batch_Size, n_ext_scenarios, n_years, 2) -> [Reserve, Capital]
+):
+    """
+    KERNEL B: NESTED VALUATOR (Tier 2 & 3)
+    
+    For each external scenario node, runs internal (risk-neutral) scenarios
+    to calculate:
+    - Reserve (Best Estimate): PV of future cashflows under risk-neutral scenarios
+    - Capital: PV of future cashflows under shocked initial conditions
+    
+    Each thread processes one external node (Account x Ext_Scenario x Year)
+    """
+    # Thread setup - one thread per external node
+    global_idx = cuda.grid(1)
+    
+    # Unpack indices from flat index
+    total_years = input_states.shape[2]
+    total_scens = input_states.shape[1]
+    
+    year_idx = global_idx % total_years
+    rem = global_idx // total_years
+    scn_idx = rem % total_scens
+    acc_idx = rem // total_scens
+    
+    if acc_idx >= input_states.shape[0]:
+        return
+
+    # Load starting state from Kernel A output
+    start_vm = input_states[acc_idx, scn_idx, year_idx, STATE_MT_VM]
+    start_gar_deces = input_states[acc_idx, scn_idx, year_idx, STATE_MT_GAR_DECES]
+    start_gar_ech = input_states[acc_idx, scn_idx, year_idx, STATE_MT_GAR_ECH]
+    start_srg = input_states[acc_idx, scn_idx, year_idx, STATE_MT_SRG]
+    start_age = input_states[acc_idx, scn_idx, year_idx, STATE_AGE]
+    start_tx_survie = input_states[acc_idx, scn_idx, year_idx, STATE_TX_SURVIE]
+    
+    # Check if policy is active
+    if start_vm <= 0 or start_tx_survie <= 0:
+        output_metrics[acc_idx, scn_idx, year_idx, 0] = 0.0
+        output_metrics[acc_idx, scn_idx, year_idx, 1] = 0.0
+        return
+
+    # Load account parameters
+    acc = account_data[acc_idx]
+    PC_RFG = acc[34]
+    
+    # ==================================================
+    # PART A: CALCULATE RESERVE (Tier 2 - Best Estimate)
+    # ==================================================
+    sum_pv_reserve = 0.0
+    
+    for i_int in range(n_internal_scenarios):
+        # Initialize internal state
+        curr_vm = start_vm
+        curr_age = int(start_age)
+        
+        pv_path = 0.0
+        
+        # Internal time loop (project to run-off)
+        for t_int in range(n_internal_years):
+            if curr_vm <= 0:
+                break
+            
+            # Apply Risk Neutral Return (simplified)
+            # In practice, you would sample from risk-neutral distribution
+            if (i_int < rn_rend_dex.shape[0] and
+                    t_int < rn_rend_dex.shape[1]):
+                r_rn = rn_rend_dex[i_int, t_int]  # Simplified single-fund example
+            else:
+                r_rn = 0.02  # Fallback
+            
+            curr_vm *= math.exp(r_rn)
+            
+            # Deduct fees
+            fees = curr_vm * PC_RFG
+            curr_vm -= fees
+            
+            # Calculate net flux
+            flux = fees  # Simplified
+            
+            # Discount (using risk-neutral discount factor)
+            if (i_int < rn_forward_rate.shape[0] and
+                    t_int < rn_forward_rate.shape[1]):
+                fwd = rn_forward_rate[i_int, t_int]
+            else:
+                fwd = 0.02
+            
+            df = math.exp(-fwd * (t_int + 1))
+            pv_path += flux * df
+            
+            curr_age += 1
+        
+        sum_pv_reserve += pv_path
+
+    # Average over internal scenarios
+    reserve_val = sum_pv_reserve / n_internal_scenarios if n_internal_scenarios > 0 else 0.0
+    
+    # ==================================================
+    # PART B: CALCULATE CAPITAL (Tier 3 - Stressed)
+    # ==================================================
+    sum_pv_capital = 0.0
+    shocked_vm_start = start_vm * (1.0 - shock_capital_pct)
+    
+    for i_int in range(n_internal_scenarios):
+        # Initialize with SHOCK
+        curr_vm = shocked_vm_start
+        
+        pv_path = 0.0
+        
+        for t_int in range(n_internal_years):
+            if curr_vm <= 0:
+                break
+            
+            # Same projection logic as reserve, but with shocked starting point
+            if (i_int < rn_rend_dex.shape[0] and
+                    t_int < rn_rend_dex.shape[1]):
+                r_rn = rn_rend_dex[i_int, t_int]
+            else:
+                r_rn = 0.02
+            
+            curr_vm *= math.exp(r_rn)
+            fees = curr_vm * PC_RFG
+            curr_vm -= fees
+            
+            flux = fees
+            
+            if (i_int < rn_forward_rate.shape[0] and
+                    t_int < rn_forward_rate.shape[1]):
+                fwd = rn_forward_rate[i_int, t_int]
+            else:
+                fwd = 0.02
+            
+            df = math.exp(-fwd * (t_int + 1))
+            pv_path += flux * df
+        
+        sum_pv_capital += pv_path
+
+    capital_req_val = sum_pv_capital / n_internal_scenarios if n_internal_scenarios > 0 else 0.0
+
+    # Store results
+    output_metrics[acc_idx, scn_idx, year_idx, 0] = reserve_val
+    output_metrics[acc_idx, scn_idx, year_idx, 1] = capital_req_val
+
+
+# =============================================================================
+# GPU KERNEL - MAIN PROJECTION ENGINE (ORIGINAL SINGLE-PASS)
 # =============================================================================
 
 @cuda.jit
@@ -1410,102 +1810,95 @@ def prepare_account_data(population_df):
 
 
 # =============================================================================
-# GPU EXECUTION WRAPPER (MODIFIED FOR BATCHING - WITH CONTIGUOUS FIX)
+# TWO-PASS NESTED STOCHASTIC ORCHESTRATOR
 # =============================================================================
 
-def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int, nb_scenarios: int,
-                       max_accounts: int = None, threads_per_block=(16, 16), use_pinned_memory=True,
-                       debug_account: Optional[int] = None, debug_scenario: Optional[int] = None,
-                       population_path: Optional[Path] = None,
-                       mortalite_path: Optional[Path] = None,
-                       rendements_path: Optional[Path] = None,
-                       depots_futurs_path: Optional[Path] = None,
-                       frais_admin_path: Optional[Path] = None,
-                       min_ferr_path: Optional[Path] = None,
-                       tx_lapse_part_path: Optional[Path] = None,
-                       tx_lapse_tot_path: Optional[Path] = None,
-                       acquisition_path: Optional[Path] = None,
-                       coussins_escap_path: Optional[Path] = None,
-                       progress_callback: Optional[callable] = None):
+def run_projection_gpu_nested(
+        data_path: Path, 
+        output_path: Path, 
+        nb_an_projection: int,
+        nb_ext_scenarios: int,
+        nb_int_scenarios: int,
+        shock_capital_pct: float = 0.35,
+        max_accounts: int = None,
+        threads_per_block=(16, 16),
+        use_pinned_memory=True,
+        population_path: Optional[Path] = None,
+        mortalite_path: Optional[Path] = None,
+        rendements_path: Optional[Path] = None,
+        depots_futurs_path: Optional[Path] = None,
+        frais_admin_path: Optional[Path] = None,
+        min_ferr_path: Optional[Path] = None,
+        tx_lapse_part_path: Optional[Path] = None,
+        tx_lapse_tot_path: Optional[Path] = None,
+        acquisition_path: Optional[Path] = None,
+        coussins_escap_path: Optional[Path] = None,
+        progress_callback: Optional[callable] = None):
     """
-    Main function to run GPU-accelerated projection in batches to manage memory.
-
+    Run GPU-accelerated nested stochastic projection using Two-Pass architecture.
+    
+    Architecture:
+    - Kernel A (Generator): Runs external scenarios, outputs state tensors to VRAM
+    - Kernel B (Valuator): Reads states, runs internal scenarios, outputs reserves & capital
+    
     Args:
-        data_path: Path to input CSV files (default location)
+        data_path: Path to input CSV files
         output_path: Path for output files
-        nb_an_projection: Number of years to project
-        nb_scenarios: Number of economic scenarios
+        nb_an_projection: Number of years to project (external)
+        nb_ext_scenarios: Number of external (real-world) scenarios
+        nb_int_scenarios: Number of internal (risk-neutral) scenarios per node
+        shock_capital_pct: Capital shock percentage (e.g., 0.35 = 35% shock)
         max_accounts: Maximum number of accounts (for testing)
-        threads_per_block: CUDA block dimensions (accounts, scenarios)
-        use_pinned_memory: Use pinned memory for faster transfers (default: True)
-        debug_account: Optional account ID for debugging
-        debug_scenario: Optional scenario ID for debugging
-        population_path: Optional custom path for POPULATION.csv
-        mortalite_path: Optional custom path for MORTALITE.csv
-        rendements_path: Optional custom path for RENDEMENTS.csv
-        depots_futurs_path: Optional custom path for DEPOTS_FUTURS.csv
-        frais_admin_path: Optional custom path for FRAIS_ADMIN.csv
-        min_ferr_path: Optional custom path for MIN_FERR.csv
-        tx_lapse_part_path: Optional custom path for TX_LAPSE_PART.csv
-        tx_lapse_tot_path: Optional custom path for TX_LAPSE_TOT.csv
-        acquisition_path: Optional custom path for ACQUISITION.csv
-        coussins_escap_path: Optional custom path for COUSSINS_ESCAP.csv
+        threads_per_block: CUDA block dimensions
+        use_pinned_memory: Use pinned memory for faster transfers
+        ... (other paths for custom data files)
+    
+    Returns:
+        Dictionary with results including reserves and capital requirements
     """
     start_time = datetime.now()
-    print(f"Starting GPU projection at {start_time}")
-    print("=" * 60)
+    print(f"Starting NESTED STOCHASTIC GPU projection at {start_time}")
+    print("=" * 80)
+    print(f"Architecture: Two-Pass (Generator → Valuator)")
+    print(f"External scenarios: {nb_ext_scenarios}")
+    print(f"Internal scenarios per node: {nb_int_scenarios}")
+    print(f"Capital shock: {shock_capital_pct*100:.1f}%")
+    print("=" * 80)
     
     # Check GPU availability
     try:
         if not cuda.is_available():
-            raise RuntimeError(
-                "CUDA is not available. Please ensure:\n"
-                "  1. NVIDIA GPU is present in the system\n"
-                "  2. NVIDIA drivers are installed\n"
-                "  3. Docker container is run with '--gpus all' flag\n"
-                "  4. NVIDIA Container Toolkit is installed"
-            )
+            raise RuntimeError("CUDA is not available")
         
-        # Test GPU access
         gpu = cuda.get_current_device()
         print(f"GPU Device: {gpu.name.decode()}")
         
-        # Try to get memory info - may not work with RMM allocator
         try:
             free_mem, total_mem = cuda.current_context().get_memory_info()
             print(f"GPU Memory: {free_mem / 1024**3:.2f} GB free / {total_mem / 1024**3:.2f} GB total")
         except NotImplementedError:
-            # RMM allocator doesn't support get_memory_info()
             print(f"GPU Memory: Information not available (using RMM allocator)")
     except Exception as e:
-        raise RuntimeError(
-            f"Failed to initialize GPU: {e}\n"
-            f"Please ensure Docker is run with '--gpus all' flag and NVIDIA drivers are installed."
-        )
+        raise RuntimeError(f"Failed to initialize GPU: {e}")
 
     # Update config
     CONFIG['NB_AN_PROJECTION'] = nb_an_projection
-    CONFIG['NB_SC'] = nb_scenarios
-    print(f"Configuration: {nb_an_projection} years, {nb_scenarios} scenarios")
-    print(f"Optimization: Pinned memory = {use_pinned_memory}")
+    CONFIG['NB_SC'] = nb_ext_scenarios
 
     # Load data
-    try:
-        print("\nLoading data files...")
-        data = load_all_data(data_path,
-                             population_path=population_path,
-                             mortalite_path=mortalite_path,
-                             rendements_path=rendements_path,
-                             depots_futurs_path=depots_futurs_path,
-                             frais_admin_path=frais_admin_path,
-                             min_ferr_path=min_ferr_path,
-                             tx_lapse_part_path=tx_lapse_part_path,
-                             tx_lapse_tot_path=tx_lapse_tot_path,
-                             acquisition_path=acquisition_path,
-                             coussins_escap_path=coussins_escap_path)
-        print("✓ Data loaded successfully")
-    except Exception as e:
-        raise RuntimeError(f"Failed to load data: {e}")
+    print("\nLoading data files...")
+    data = load_all_data(data_path,
+                         population_path=population_path,
+                         mortalite_path=mortalite_path,
+                         rendements_path=rendements_path,
+                         depots_futurs_path=depots_futurs_path,
+                         frais_admin_path=frais_admin_path,
+                         min_ferr_path=min_ferr_path,
+                         tx_lapse_part_path=tx_lapse_part_path,
+                         tx_lapse_tot_path=tx_lapse_tot_path,
+                         acquisition_path=acquisition_path,
+                         coussins_escap_path=coussins_escap_path)
+    print("✓ Data loaded successfully")
 
     if max_accounts:
         data['population'] = data['population'].head(max_accounts)
@@ -1513,945 +1906,244 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
     n_accounts = len(data['population'])
     print(f"\nPreparing {n_accounts} accounts for GPU processing...")
 
-    # Prepare all account data on CPU first
-    try:
-        all_account_data, _ = prepare_account_data(data['population'])
-        print("✓ Account data prepared")
-    except Exception as e:
-        raise RuntimeError(f"Failed to prepare account data: {e}")
+    # Prepare account data
+    all_account_data, _ = prepare_account_data(data['population'])
+    print("✓ Account data prepared")
 
     # Create GPU lookup tables
     print("\nCreating GPU lookup tables...")
-    try:
-        mortality_lookup = create_gpu_mortality_lookup(data['mortalite'])
-        print("  ✓ Mortality lookup")
-        (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx,
-         rend_sp500, rend_eafe) = create_gpu_returns_lookup(data['rendements'])
-        print("  ✓ Returns lookup")
-        min_ferr_lookup = create_gpu_min_ferr_lookup(data['min_ferr'])
-        print("  ✓ Min FERR lookup")
-        lapse_part_min, lapse_part_max = create_gpu_lapse_part_lookup(data['tx_lapse_part'])
-        print("  ✓ Lapse partial lookup")
-        lapse_tot_min, lapse_tot_max, lapse_tot_fact = create_gpu_lapse_tot_lookup(data['tx_lapse_tot'])
-        print("  ✓ Lapse total lookup")
-        (deposits_pc, deposits_var, deposits_age_max,
-         deposits_i_even) = create_gpu_deposits_lookup(data['depots_futurs'])
-        print("  ✓ Deposits lookup")
-        fees_lookup = create_gpu_fees_lookup(data['frais_admin'])
-        print("  ✓ Fees lookup")
-        (acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac,
-         acq_frais_ac, acq_frais_rf) = create_gpu_acquisition_lookup(data['acquisition'])
-        print("  ✓ Acquisition lookup")
-        (cous_base_passif, cous_tx_passif, cous_base_credit, cous_tx_credit,
-         cous_base_marche, cous_tx_marche, cous_base_depense, cous_tx_depense,
-         cous_base_decheance, cous_tx_decheance, cous_base_mortalite, cous_tx_mortalite,
-         cous_base_depot, cous_tx_depot, cous_facteur_80,
-         cous_facteur_90) = create_gpu_coussins_lookup(data['coussins_escap'])
-        print("  ✓ Coussins lookup")
-        print("✓ All GPU lookup tables created")
-    except Exception as e:
-        raise RuntimeError(f"Failed to create GPU lookup tables: {e}\n{type(e).__name__}")
+    mortality_lookup = create_gpu_mortality_lookup(data['mortalite'])
+    (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx,
+     rend_sp500, rend_eafe) = create_gpu_returns_lookup(data['rendements'])
+    min_ferr_lookup = create_gpu_min_ferr_lookup(data['min_ferr'])
+    lapse_part_min, lapse_part_max = create_gpu_lapse_part_lookup(data['tx_lapse_part'])
+    lapse_tot_min, lapse_tot_max, lapse_tot_fact = create_gpu_lapse_tot_lookup(data['tx_lapse_tot'])
+    (deposits_pc, deposits_var, deposits_age_max,
+     deposits_i_even) = create_gpu_deposits_lookup(data['depots_futurs'])
+    fees_lookup = create_gpu_fees_lookup(data['frais_admin'])
+    (acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac,
+     acq_frais_ac, acq_frais_rf) = create_gpu_acquisition_lookup(data['acquisition'])
+    print("✓ All GPU lookup tables created")
 
-    lookup_tables = [
-        mortality_lookup, forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe,
-        min_ferr_lookup, lapse_part_min, lapse_part_max, lapse_tot_min, lapse_tot_max, lapse_tot_fact,
-        deposits_pc, deposits_var, deposits_age_max, deposits_i_even, fees_lookup, acq_vente_rf, acq_vente_ac,
-        acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf, cous_base_passif, cous_tx_passif,
-        cous_base_credit, cous_tx_credit, cous_base_marche, cous_tx_marche, cous_base_depense, cous_tx_depense,
-        cous_base_decheance, cous_tx_decheance, cous_base_mortalite, cous_tx_mortalite, cous_base_depot,
-        cous_tx_depot, cous_facteur_80, cous_facteur_90
-    ]
+    # For risk-neutral scenarios, create simplified return tables
+    # In practice, these would be calibrated to market prices
+    print("\nCreating risk-neutral scenario tables...")
+    rn_forward_rate = np.full((nb_int_scenarios, nb_an_projection), 0.03, dtype=np.float32)
+    rn_rend_dex = np.full((nb_int_scenarios, nb_an_projection), 0.025, dtype=np.float32)
+    rn_rend_mm = np.full((nb_int_scenarios, nb_an_projection), 0.02, dtype=np.float32)
+    rn_rend_tsx = np.full((nb_int_scenarios, nb_an_projection), 0.035, dtype=np.float32)
+    rn_rend_sp500 = np.full((nb_int_scenarios, nb_an_projection), 0.035, dtype=np.float32)
+    rn_rend_eafe = np.full((nb_int_scenarios, nb_an_projection), 0.03, dtype=np.float32)
+    print("✓ Risk-neutral tables created")
 
-    # --- BATCH SIZE CALCULATION ---
-    print("\nCalculating optimal batch size to maximize GPU memory usage...")
-
-    static_mem_usage = sum(table.nbytes for table in lookup_tables)
-    gpu = cuda.get_current_device()
+    # Calculate memory requirements
+    print("\nCalculating memory requirements...")
     
-    # Try to get memory info - may not work with RMM allocator
+    # State tensor: (Batch, Ext_Scenarios, Years, STATE_SIZE)
+    state_mem_per_account = nb_ext_scenarios * nb_an_projection * STATE_SIZE * 4  # float32
+    
+    # Cashflow tensor: (Batch, Ext_Scenarios, Years, 1)
+    cf_mem_per_account = nb_ext_scenarios * nb_an_projection * 1 * 4
+    
+    # Metrics tensor: (Batch, Ext_Scenarios, Years, 2) - Reserve & Capital
+    metrics_mem_per_account = nb_ext_scenarios * nb_an_projection * 2 * 4
+    
+    total_mem_per_account = (state_mem_per_account + cf_mem_per_account + 
+                             metrics_mem_per_account + all_account_data.shape[1] * 4)
+    
+    print(f"  State tensor per account: {state_mem_per_account / 1024**2:.2f} MB")
+    print(f"  Total memory per account: {total_mem_per_account / 1024**2:.2f} MB")
+    
+    # Calculate batch size (conservative for nested scenarios)
     try:
         free_mem, total_mem = cuda.current_context().get_memory_info()
-        safety_margin = 0.95
-        available_mem_for_dynamic_data = (free_mem - static_mem_usage) * safety_margin
-        
-        print(f"  Total GPU Memory: {total_mem / 1024 ** 3:.2f} GB")
-        print(f"  Free GPU Memory: {free_mem / 1024 ** 3:.2f} GB")
-        print(f"  Static Lookup Tables Size: {static_mem_usage / 1024 ** 3:.2f} GB")
-        print(f"  Available Memory for Batches: {available_mem_for_dynamic_data / 1024 ** 3:.2f} GB")
+        available_mem = free_mem * 0.7  # Conservative for nested scenarios
     except NotImplementedError:
-        # RMM allocator doesn't support get_memory_info() - use estimated memory
-        # Assume ~16GB total memory for RTX 4000 Ada, use conservative estimate
-        estimated_total_mem = 16 * 1024**3  # 16 GB
-        estimated_free_mem = estimated_total_mem * 0.8  # Assume 80% available
-        safety_margin = 0.8  # More conservative when estimating
-        available_mem_for_dynamic_data = (estimated_free_mem - static_mem_usage) * safety_margin
-        
-        print(f"  GPU Memory: Information not available (using RMM allocator)")
-        print(f"  Estimated Total Memory: {estimated_total_mem / 1024 ** 3:.2f} GB")
-        print(f"  Static Lookup Tables Size: {static_mem_usage / 1024 ** 3:.2f} GB")
-        print(f"  Estimated Available Memory for Batches: {available_mem_for_dynamic_data / 1024 ** 3:.2f} GB")
-
-    max_timesteps = (nb_an_projection + 1) * CONFIG['FREQ_EVAL']
-    n_output_fields = 40
-
-    mem_per_account_input = all_account_data.shape[1] * all_account_data.dtype.itemsize
-    # Output no longer has scenario dimension (aggregated in kernel with atomics!)
-    # In production mode: 1 row per account (VP totals only)
-    # In debug mode: max_timesteps rows (all timesteps for debug account)
-    output_rows_per_account = max_timesteps if debug_account is not None else 1
-    mem_per_account_output = output_rows_per_account * n_output_fields * np.dtype(np.float32).itemsize
-    total_mem_per_account = mem_per_account_input + mem_per_account_output
-
-    mode_str = f"DEBUG (all timesteps for account {debug_account})" if debug_account is not None else "PRODUCTION (VP totals only)"
-    print(f"  Memory per account (Input + Output): {total_mem_per_account / 1024 ** 2:.2f} MB ({mode_str})")
-
-    if available_mem_for_dynamic_data < total_mem_per_account:
-        raise MemoryError(
-            f"Not enough GPU memory to process even one account. "
-            f"Required: {total_mem_per_account / 1024 ** 2:.2f} MB, "
-            f"Available: {available_mem_for_dynamic_data / 1024 ** 2:.2f} MB"
-        )
-
-    # Calculate memory-based batch size
-    batch_size_memory = int(available_mem_for_dynamic_data // total_mem_per_account)
+        available_mem = 12 * 1024**3  # Assume 12 GB available
     
-    # Cap batch size to prevent CPU memory allocation bottlenecks
-    # Large batches (>4GB) cause memory fragmentation and 100x slower extraction
-    # This limits NumPy boolean indexing copy operations to manageable sizes
-    max_output_size_gb = 4.0
-    max_batch_size_transfer = int((max_output_size_gb * 1024**3) / mem_per_account_output)
-    
-    # Use the minimum of memory-based and transfer-based limits
-    batch_size = min(batch_size_memory, max_batch_size_transfer)
-    batch_size = max(1, min(batch_size, n_accounts))
+    batch_size = max(1, int(available_mem // total_mem_per_account))
+    batch_size = min(batch_size, n_accounts)
     num_batches = (n_accounts + batch_size - 1) // batch_size
+    
+    print(f"  Batch size: {batch_size} accounts")
+    print(f"  Total batches: {num_batches}")
 
-    print(f"  Memory-based max batch size: {batch_size_memory} accounts")
-    print(f"  Transfer-optimized max batch size: {max_batch_size_transfer} accounts")
-    print(f"  ==> Selected batch size: {batch_size} accounts ({batch_size * mem_per_account_output / 1024**3:.2f} GB per batch)")
-    print(f"  ==> Total batches: {num_batches}")
+    # Copy lookup tables to GPU
+    print("\nCopying lookup tables to GPU...")
+    d_mortality = cuda.to_device(mortality_lookup)
+    d_forward_rate = cuda.to_device(forward_rate)
+    d_ajust_forward = cuda.to_device(ajust_forward)
+    d_rend_dex = cuda.to_device(rend_dex)
+    d_rend_mm = cuda.to_device(rend_mm)
+    d_rend_tsx = cuda.to_device(rend_tsx)
+    d_rend_sp500 = cuda.to_device(rend_sp500)
+    d_rend_eafe = cuda.to_device(rend_eafe)
+    d_min_ferr = cuda.to_device(min_ferr_lookup)
+    d_lapse_part_min = cuda.to_device(lapse_part_min)
+    d_lapse_part_max = cuda.to_device(lapse_part_max)
+    d_lapse_tot_min = cuda.to_device(lapse_tot_min)
+    d_lapse_tot_max = cuda.to_device(lapse_tot_max)
+    d_lapse_tot_fact = cuda.to_device(lapse_tot_fact)
+    d_deposits_pc = cuda.to_device(deposits_pc)
+    d_deposits_var = cuda.to_device(deposits_var)
+    d_deposits_age_max = cuda.to_device(deposits_age_max)
+    d_deposits_i_even = cuda.to_device(deposits_i_even)
+    d_fees = cuda.to_device(fees_lookup)
+    d_acq_vente_rf = cuda.to_device(acq_vente_rf)
+    d_acq_vente_ac = cuda.to_device(acq_vente_ac)
+    d_acq_maintien_rf = cuda.to_device(acq_maintien_rf)
+    d_acq_maintien_ac = cuda.to_device(acq_maintien_ac)
+    d_acq_frais_ac = cuda.to_device(acq_frais_ac)
+    d_acq_frais_rf = cuda.to_device(acq_frais_rf)
+    
+    # Risk-neutral tables
+    d_rn_forward_rate = cuda.to_device(rn_forward_rate)
+    d_rn_rend_dex = cuda.to_device(rn_rend_dex)
+    d_rn_rend_mm = cuda.to_device(rn_rend_mm)
+    d_rn_rend_tsx = cuda.to_device(rn_rend_tsx)
+    d_rn_rend_sp500 = cuda.to_device(rn_rend_sp500)
+    d_rn_rend_eafe = cuda.to_device(rn_rend_eafe)
+    print("✓ Lookup tables on GPU")
 
-    # --- BATCHED EXECUTION ---
-
-    print("\nCopying static lookup tables to GPU...")
-    d_mortality, d_forward_rate, d_ajust_forward, d_rend_dex, d_rend_mm, d_rend_tsx, d_rend_sp500, d_rend_eafe, \
-        d_min_ferr, d_lapse_part_min, d_lapse_part_max, d_lapse_tot_min, d_lapse_tot_max, d_lapse_tot_fact, \
-        d_deposits_pc, d_deposits_var, d_deposits_age_max, d_deposits_i_even, d_fees, d_acq_vente_rf, d_acq_vente_ac, \
-        d_acq_maintien_rf, d_acq_maintien_ac, d_acq_frais_ac, d_acq_frais_rf, d_cous_base_passif, d_cous_tx_passif, \
-        d_cous_base_credit, d_cous_tx_credit, d_cous_base_marche, d_cous_tx_marche, d_cous_base_depense, d_cous_tx_depense, \
-        d_cous_base_decheance, d_cous_tx_decheance, d_cous_base_mortalite, d_cous_tx_mortalite, d_cous_base_depot, \
-        d_cous_tx_depot, d_cous_facteur_80, d_cous_facteur_90 = [cuda.to_device(table) for table in lookup_tables]
-
-    # Create CUDA streams for async pipelined operations
-    stream_compute = cuda.stream()  # For GPU compute
-    stream_transfer = cuda.stream()  # For data transfers (if needed)
+    # Process batches
+    print("\n" + "=" * 80)
+    print("RUNNING TWO-PASS NESTED STOCHASTIC PROJECTION")
+    print("=" * 80)
     
-    # DuckDB-based batch storage strategy (simpler, more efficient)
-    # No scenario dimension - aggregated atomically in kernel!
-    if debug_account is not None:
-        # Debug mode: detailed timesteps for one account
-        estimated_rows = int(max_timesteps * 0.6)  # Estimated timesteps for debug account
-        print(f"\nUsing DEBUG MODE with ATOMIC IN-KERNEL AGGREGATION")
-        print(f"Estimated: ~{estimated_rows:,} timestep rows for account {debug_account}")
-    else:
-        # Production mode: VP totals only (1 row per account)
-        estimated_rows = n_accounts
-        estimated_memory_gb = estimated_rows * n_output_fields * 4 / 1024**3
-        print(f"\nUsing PRODUCTION MODE: VP TOTALS ONLY (1000x data reduction!)")
-        print(f"Output: {n_accounts:,} accounts → {estimated_rows:,} rows (1 VP summary per account)")
+    all_reserves = []
+    all_capital = []
     
-    print(f"Scenarios aggregated atomically inside GPU kernel")
-    print(f"Final assembly will concatenate pre-aggregated batches")
-    
-    # Create temporary Parquet directory (clean up any previous run first)
-    parquet_dir = Path(output_path) / "_temp_parquet"
-    if parquet_dir.exists():
-        shutil.rmtree(parquet_dir)
-        print(f"Cleaned up existing parquet directory")
-    parquet_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Define column names for the table
-    columns = [
-        'ID_COMPTE', 'SCN_EVAL', 'AN_EVAL', 'MOIS_EVAL',
-        'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
-        'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES', 'FRAIS_FIXES',
-        'HON_GEST', 'COMM_MAINTIEN', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
-        'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE', 'COUSSIN_DECHEANCE',
-        'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
-        'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
-        'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH',
-        'VP_PREST_MRV', 'VP_PREST_DECES', 'VP_VALEUR_MARCHANDE', 'VP_PASSIF_REDRESSE',
-        'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE',
-        'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT'
-    ]
-    
-    print(f"Parquet directory: {parquet_dir}")
-    if CUDF_AVAILABLE:
-        print(f"Using cuDF (GPU) for scenario aggregation + fastparquet write")
-        print(f"   GPU kernel → cuDF groupby (GPU) → pandas → fastparquet (100x data reduction)")
-    else:
-        print(f"Using pandas (CPU) for scenario aggregation + fastparquet write")
-        print(f"   GPU kernel → pandas groupby (CPU) → fastparquet (100x data reduction)")
-    
-    # Create thread pool for async parquet writes
-    parquet_writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
-    write_futures = []
-    
-    # Calculate dynamic memory threshold for proactive cleanup (SCALES WITH SYSTEM RAM)
-    # This ensures the code works efficiently on machines with 16GB, 32GB, 64GB+ RAM
-    total_system_ram_gb = psutil.virtual_memory().total / 1024**3
-    # Set threshold at 60% of total RAM (conservative to prevent swapping)
-    # Examples: 16GB RAM → 9.6GB threshold, 32GB RAM → 19.2GB threshold, 64GB RAM → 38.4GB threshold
-    memory_cleanup_threshold_gb = total_system_ram_gb * 0.80
-    print(f"\nMemory Management (Auto-scales with hardware):")
-    print(f"  Total System RAM: {total_system_ram_gb:.1f} GB")
-    print(f"  Proactive cleanup threshold: {memory_cleanup_threshold_gb:.1f} GB (60% of RAM)")
-    print(f"  Aggressive cleanup interval: every 4 batches")
-    
-    total_kernel_duration = 0
-    total_transfer_duration = 0
-
     for i in range(num_batches):
-        batch_start_time = datetime.now()
+        batch_start = datetime.now()
         start_idx = i * batch_size
         end_idx = min((i + 1) * batch_size, n_accounts)
         current_batch_size = end_idx - start_idx
-
-        # Memory snapshot at batch start
-        process = psutil.Process(os.getpid())
-        batch_mem_start = process.memory_info().rss / 1024**3
         
-        logger.info(f"\n--- Processing Batch {i + 1}/{num_batches} (Accounts {start_idx} to {end_idx - 1}) ---")
-        logger.info(f"  Memory at batch start: {batch_mem_start:.2f} GB")
+        logger.info(f"\n--- Batch {i+1}/{num_batches} (Accounts {start_idx}-{end_idx-1}) ---")
         
-        # Report progress if callback provided
-        if progress_callback:
-            try:
-                progress_callback(i + 1, num_batches)
-            except Exception as e:
-                print(f"  Warning: Progress callback failed: {e}")
-
-        # 1. Prepare batch-specific data
+        # Prepare batch data
         batch_account_data = np.ascontiguousarray(all_account_data[start_idx:end_idx])
-
-        # 2. Allocate batch-specific output array on CPU (NO SCENARIO DIM - aggregated in kernel!)
-        # In production mode (no debug), only 1 row per account (VP totals)
-        # In debug mode, max_timesteps rows for the debug account only
-        batch_start_account_id = start_idx + 1
-        batch_end_account_id = end_idx
-        is_debug_batch = debug_account is not None and batch_start_account_id <= debug_account <= batch_end_account_id
+        d_batch_accounts = cuda.to_device(batch_account_data)
         
-        output_timesteps = max_timesteps if is_debug_batch else 1
-        
-        if use_pinned_memory:
-            try:
-                h_batch_output = cuda.pinned_array((current_batch_size, output_timesteps, n_output_fields), dtype=np.float32)
-                h_batch_output[:] = 0  # Initialize to zero
-            except Exception as e:
-                logger.warning(f"  Pinned memory allocation failed ({e}), falling back to regular memory")
-                use_pinned_memory = False  # Disable for remaining batches
-                h_batch_output = np.zeros((current_batch_size, output_timesteps, n_output_fields), dtype=np.float32)
-        else:
-            h_batch_output = np.zeros((current_batch_size, output_timesteps, n_output_fields), dtype=np.float32)
-        logger.info(f"  Batch output array size: {h_batch_output.nbytes / 1024 ** 3:.3f} GB (mode: {'DEBUG' if is_debug_batch else 'PRODUCTION'}")
-
-        # 3. Copy batch data to GPU (async with stream)
-        transfer_start = datetime.now()
-        logger.info("  Copying batch data to GPU...")
-        if use_pinned_memory:
-            # Use pinned memory for input too
-            h_batch_input_pinned = cuda.pinned_array(batch_account_data.shape, dtype=batch_account_data.dtype)
-            h_batch_input_pinned[:] = batch_account_data
-            d_batch_account_data = cuda.to_device(h_batch_input_pinned, stream=stream_compute)
-        else:
-            d_batch_account_data = cuda.to_device(batch_account_data, stream=stream_compute)
-        d_batch_output = cuda.to_device(h_batch_output, stream=stream_compute)
-        stream_compute.synchronize()
-        transfer_end = datetime.now()
-        transfer_to_gpu = (transfer_end - transfer_start).total_seconds()
-        logger.info(f"  Transfer to GPU: {transfer_to_gpu:.2f} seconds")
-
-        # 4. Calculate grid dimensions for the current batch
-        blocks_x = (current_batch_size + threads_per_block[0] - 1) // threads_per_block[0]
-        blocks_y = (nb_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
-        blocks_per_grid = (blocks_x, blocks_y)
-
-        logger.info(f"  Launching kernel for batch:")
-        logger.info(f"    Grid: {blocks_per_grid}, Block: {threads_per_block}")
-
-        # 5. Launch kernel for the batch (using stream)
-        kernel_start = datetime.now()
-        debug_account_id_param = debug_account if is_debug_batch else -1
-        projection_kernel[blocks_per_grid, threads_per_block, stream_compute](
-            # Batch-specific data
-            d_batch_account_data,
-            # Scenario parameters
-            nb_scenarios, nb_an_projection, CONFIG['FREQ_EVAL'], debug_account_id_param,
-            # Lookup tables...
-            d_mortality, d_forward_rate, d_ajust_forward, d_rend_dex, d_rend_mm, d_rend_tsx, d_rend_sp500, d_rend_eafe,
-            d_min_ferr, d_lapse_part_min, d_lapse_part_max, d_lapse_tot_min, d_lapse_tot_max, d_lapse_tot_fact,
-            d_deposits_pc, d_deposits_var, d_deposits_age_max, d_deposits_i_even, d_fees,
-            d_acq_vente_rf, d_acq_vente_ac, d_acq_maintien_rf, d_acq_maintien_ac, d_acq_frais_ac, d_acq_frais_rf,
-            d_cous_base_passif, d_cous_tx_passif, d_cous_base_credit, d_cous_tx_credit, d_cous_base_marche,
-            d_cous_tx_marche,
-            d_cous_base_depense, d_cous_tx_depense, d_cous_base_decheance, d_cous_tx_decheance,
-            d_cous_base_mortalite, d_cous_tx_mortalite, d_cous_base_depot, d_cous_tx_depot,
-            d_cous_facteur_80, d_cous_facteur_90,
-            # Batch-specific output
-            d_batch_output
+        # Allocate state and cashflow tensors (bridge between kernels)
+        d_states = cuda.device_array(
+            (current_batch_size, nb_ext_scenarios, nb_an_projection, STATE_SIZE),
+            dtype=np.float32
         )
-        stream_compute.synchronize()
-        kernel_end = datetime.now()
-        kernel_duration = (kernel_end - kernel_start).total_seconds()
-        total_kernel_duration += kernel_duration
-        logger.info(f"  Kernel execution for batch finished in: {kernel_duration:.2f} seconds")
+        d_cashflows = cuda.device_array(
+            (current_batch_size, nb_ext_scenarios, nb_an_projection, 1),
+            dtype=np.float32
+        )
+        d_metrics = cuda.device_array(
+            (current_batch_size, nb_ext_scenarios, nb_an_projection, 2),
+            dtype=np.float32
+        )
         
-        # 6.5. Divide by n_scenarios to get the mean (scenarios were atomically summed in kernel)
-        divide_start = datetime.now()
-        logger.info(f"  Computing scenario averages (dividing by {nb_scenarios})...")
-        # Divide only value columns (4-39), not ID fields (0-3)
-        # Convert to CuPy array for element-wise operations (zero-copy via __cuda_array_interface__)
-        if CUDF_AVAILABLE:
-            cupy_batch = cp.asarray(d_batch_output)
-            cupy_batch[:, :, 4:] = cupy_batch[:, :, 4:] / float(nb_scenarios)
-            # cupy_batch and d_batch_output share the same memory - no copy needed!
-            del cupy_batch
-        else:
-            # CPU fallback: will divide after transfer
-            pass
+        # === KERNEL A: EXTERNAL GENERATOR ===
+        logger.info("  Launching Kernel A (External Generator)...")
+        blocks_x = (current_batch_size + threads_per_block[0] - 1) // threads_per_block[0]
+        blocks_y = (nb_ext_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
+        grid_A = (blocks_x, blocks_y)
+        
+        kernel_a_start = datetime.now()
+        external_generator_kernel[grid_A, threads_per_block](
+            d_batch_accounts,
+            nb_ext_scenarios, nb_an_projection, CONFIG['FREQ_EVAL'],
+            d_mortality,
+            d_forward_rate, d_ajust_forward, d_rend_dex, d_rend_mm, d_rend_tsx, d_rend_sp500, d_rend_eafe,
+            d_min_ferr, d_lapse_part_min, d_lapse_part_max,
+            d_lapse_tot_min, d_lapse_tot_max, d_lapse_tot_fact,
+            d_deposits_pc, d_deposits_var, d_deposits_age_max, d_deposits_i_even,
+            d_fees,
+            d_acq_vente_rf, d_acq_vente_ac, d_acq_maintien_rf, d_acq_maintien_ac,
+            d_acq_frais_ac, d_acq_frais_rf,
+            d_states,
+            d_cashflows
+        )
         cuda.synchronize()
-        divide_time = (datetime.now() - divide_start).total_seconds()
-        logger.info(f"    Division complete: {divide_time:.3f}s")
-
-        # 7. Process results - GPU path (cuDF) or CPU path (pandas)
-        cpu_proc_start = datetime.now()
-        process = psutil.Process(os.getpid())
+        kernel_a_time = (datetime.now() - kernel_a_start).total_seconds()
+        logger.info(f"  Kernel A complete: {kernel_a_time:.2f}s")
         
-        if CUDF_AVAILABLE:
-            # ===== GPU-ACCELERATED PATH (cuDF) =====
-            logger.info("  Processing results on GPU with cuDF...")
-            
-            # Reshape GPU array directly (stays on GPU! No scenario dim - already aggregated!)
-            reshape_start = datetime.now()
-            total_rows = current_batch_size * output_timesteps
-            d_batch_reshaped = d_batch_output.reshape(total_rows, n_output_fields)
-            reshape_time = (datetime.now() - reshape_start).total_seconds()
-            logger.info(f"    Reshape on GPU: {reshape_time:.3f}s")
-            
-            # Create cuDF DataFrame directly from GPU memory (NO CPU TRANSFER!)
-            prep_start = datetime.now()
-            logger.info(f"    Creating cuDF DataFrame from GPU array...")
-            
-            # Convert Numba device array to CuPy array (zero-copy via __cuda_array_interface__)
-            # Both Numba and CuPy support the CUDA Array Interface protocol
-            cupy_array = cp.asarray(d_batch_reshaped)
-            
-            # Convert to cuDF DataFrame column by column
-            gpu_data = {}
-            for col_idx, col_name in enumerate(columns):
-                gpu_data[col_name] = cudf.Series(cupy_array[:, col_idx])
-            
-            gpu_df = cudf.DataFrame(gpu_data)
-            df_create_time = (datetime.now() - prep_start).total_seconds()
-            logger.info(f"    cuDF DataFrame created on GPU: {df_create_time:.3f}s")
-            
-            # Filter on GPU (MUCH faster than CPU!)
-            filter_start = datetime.now()
-            gpu_df = gpu_df[gpu_df['ID_COMPTE'] > 0]
-            
-            # No filtering here - we need all accounts for VP_FLUX_TOTAL calculation
-            # Debug account filtering will happen AFTER we aggregate to VP-only summary
-            
-            num_rows = len(gpu_df)
-            filter_time = (datetime.now() - filter_start).total_seconds()
-            logger.info(f"    Filtered on GPU to {num_rows:,} valid rows: {filter_time:.3f}s")
-            
-            # Convert ID columns to int32 on GPU
-            type_start = datetime.now()
-            gpu_df['ID_COMPTE'] = gpu_df['ID_COMPTE'].astype('int32')
-            # SCN_EVAL is now always 0 (scenarios aggregated in kernel)
-            gpu_df['AN_EVAL'] = gpu_df['AN_EVAL'].astype('int32')
-            gpu_df['MOIS_EVAL'] = gpu_df['MOIS_EVAL'].astype('int32')
-            type_time = (datetime.now() - type_start).total_seconds()
-            
-            prep_time = (datetime.now() - prep_start).total_seconds()
-            logger.info(f"    cuDF prep total: {prep_time:.3f}s (create:{df_create_time:.3f}s, filter:{filter_time:.3f}s, types:{type_time:.3f}s)")
-            
-            if num_rows > 0:
-                # NO AGGREGATION NEEDED - Scenarios already aggregated in kernel!
-                logger.info(f"    Scenarios already averaged in kernel - skipping aggregation step")
-                
-                # Drop SCN_EVAL column (always 0 after kernel aggregation)
-                gpu_df = gpu_df.drop(columns=['SCN_EVAL'])
-                
-                # Transfer data to CPU (already at final size!)
-                transfer_start = datetime.now()
-                logger.info(f"    Transferring {num_rows:,} pre-aggregated rows to CPU (CuPy → NumPy)...")
-                
-                # Get column list without SCN_EVAL
-                final_columns = [col for col in columns if col != 'SCN_EVAL']
-                
-                # Convert cuDF columns to NumPy
-                cpu_data = {}
-                for col in final_columns:
-                    cpu_data[col] = cp.asnumpy(gpu_df[col].values)
-                
-                transfer_time = (datetime.now() - transfer_start).total_seconds()
-                logger.info(f"    Transferred {num_rows:,} rows to CPU: {transfer_time:.3f}s")
-                
-                # Free GPU memory AND unused CPU pinned memory immediately!
-                del gpu_df, gpu_data, cupy_array, d_batch_reshaped
-                # CRITICAL: Delete the unused h_batch_output pinned array (4GB per batch!)
-                if 'h_batch_output' in locals():
-                    del h_batch_output
-                gc.collect()
-                cuda.synchronize()
-                
-                # Force RMM memory pool to release unused memory
-                try:
-                    import rmm
-                    rmm.mr.get_current_device_resource().deallocate(0, 0)
-                    logger.info(f"    GPU memory freed (RMM pool cleaned)")
-                except:
-                    logger.info(f"    GPU memory freed (Python GC only)")
-                    pass
-                
-                # Proactive memory check before DataFrame creation (uses dynamic threshold)
-                batch_mem_current = process.memory_info().rss / 1024**3
-                if batch_mem_current > memory_cleanup_threshold_gb:
-                    logger.info(f"    [Proactive cleanup triggered at {batch_mem_current:.2f} GB (threshold: {memory_cleanup_threshold_gb:.1f} GB)]")
-                    gc.collect(2)  # Aggressive collection
-                    force_gpu_memory_cleanup(aggressive=True)
-                    batch_mem_after = process.memory_info().rss / 1024**3
-                    logger.info(f"    [Memory reduced to {batch_mem_after:.2f} GB]")
-                
-                # Create pandas DataFrame from NumPy arrays (fast on CPU)
-                df_start = datetime.now()
-                df = pd.DataFrame(cpu_data)
-                del cpu_data
-                gc.collect()  # Immediate cleanup
-                
-                if is_debug_batch:
-                    # DEBUG MODE: Aggregate timestep data to VP-only summary for VP_FLUX_TOTAL
-                    logger.info(f"    Aggregating to VP-only summary (1 row per account)...")
-                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
-                    df_vp_summary = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
-                    logger.info(f"    Reduced to {len(df_vp_summary):,} rows (VP values only)")
-                else:
-                    # PRODUCTION MODE: Already have VP-only data (1 row per account)
-                    logger.info(f"    Already have VP-only data from kernel: {len(df):,} rows")
-                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
-                    df_vp_summary = df[['ID_COMPTE'] + vp_columns]
-                
-                df_time = (datetime.now() - df_start).total_seconds()
-                logger.info(f"    Created pandas DataFrame: {df_time:.3f}s")
-                
-                # Write VP summary (always, for all accounts)
-                write_start = datetime.now()
-                parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                fastparquet_write(
-                    str(parquet_path),
-                    df_vp_summary,
-                    compression='snappy',
-                    row_group_offsets=50000,
-                    file_scheme='simple',
-                    write_index=False,
-                    stats=False
-                )
-                
-                write_time = (datetime.now() - write_start).total_seconds()
-                file_size_mb = parquet_path.stat().st_size / 1024**2
-                total_time = transfer_time + df_time + write_time
-                logger.info(f"    Written VP summary: {file_size_mb:.1f} MB in {total_time:.3f}s ({file_size_mb/total_time:.1f} MB/s)")
-                logger.info(f"      (transfer:{transfer_time:.3f}s, df:{df_time:.3f}s, write:{write_time:.3f}s)")
-                
-                # Track stats
-                write_futures.append((i, file_size_mb, len(df_vp_summary), total_time))
-                
-                # If debug mode, ALSO write detailed timestep data for the specific account
-                if debug_account is not None:
-                    batch_start_account = start_idx + 1
-                    batch_end_account = end_idx
-                    if batch_start_account <= debug_account <= batch_end_account:
-                        logger.info(f"    Debug mode: Writing detailed data for account {debug_account}...")
-                        df_debug = df[df['ID_COMPTE'] == debug_account]
-                        debug_path = parquet_dir / f"debug_batch_{i:04d}.parquet"
-                        fastparquet_write(
-                            str(debug_path),
-                            df_debug,
-                            compression='snappy',
-                            row_group_offsets=50000,
-                            file_scheme='simple',
-                            write_index=False,
-                            stats=False
-                        )
-                        logger.info(f"    Written debug data: {len(df_debug):,} rows")
-                
-                # Free CPU DataFrames
-                del df, df_vp_summary
-                if 'df_debug' in locals():
-                    del df_debug
-                gc.collect()
-            else:
-                logger.info(f"    No valid rows in batch - skipping write")
-                del cupy_array, gpu_data, d_batch_reshaped
-                # Also free the unused pinned array
-                if 'h_batch_output' in locals():
-                    del h_batch_output
-                gc.collect()
-                cuda.synchronize()
-            
-            # Write completed, GPU memory freed
-            transfer_from_gpu = 0.0  # Aggregated data transferred via CuPy
-            total_transfer_duration += transfer_to_gpu  # Upload only
-            logger.info(f"  ✓ GPU-accelerated filtering + fast transfer (scenarios aggregated in kernel, GPU memory freed)")
-            
-        else:
-            # ===== CPU PATH (pandas) =====
-            transfer_back_start = datetime.now()
-            logger.info("  Copying batch results from GPU...")
-            d_batch_output.copy_to_host(h_batch_output, stream=stream_compute)
-            stream_compute.synchronize()
-            transfer_back_end = datetime.now()
-            transfer_from_gpu = (transfer_back_end - transfer_back_start).total_seconds()
-            total_transfer_duration += transfer_to_gpu + transfer_from_gpu
-            logger.info(f"  Transfer from GPU: {transfer_from_gpu:.2f} seconds")
-            
-            # Divide by n_scenarios on CPU (since we skipped it on GPU for CPU path)
-            logger.info(f"  Computing scenario averages (dividing by {nb_scenarios})...")
-            h_batch_output[:, :, 4:] = h_batch_output[:, :, 4:] / float(nb_scenarios)
-            
-            logger.info("  Extracting valid results...")
-            
-            # Reshape directly from pinned memory (no copy needed! No scenario dim!)
-            reshape_start = datetime.now()
-            total_rows = current_batch_size * output_timesteps
-            reshaped = h_batch_output.reshape(total_rows, n_output_fields)
-            reshape_time = (datetime.now() - reshape_start).total_seconds()
-            logger.info(f"    Reshape to 2D ({total_rows:,} x {n_output_fields}): {reshape_time:.3f}s (zero-copy, scenarios pre-aggregated)")
-            
-            # Use pandas DataFrame (optimized for columnar operations)
-            extract_start = datetime.now()
-            logger.info(f"    Creating valid mask for {total_rows:,} rows...")
-            valid_mask = reshaped[:, 0] > 0
-            n_valid = np.sum(valid_mask)
-            mask_time = (datetime.now() - extract_start).total_seconds()
-            logger.info(f"    Found {n_valid:,} valid rows ({n_valid/total_rows*100:.2f}% occupancy) in {mask_time:.3f}s")
-            
-            if n_valid > 0:
-                # CRITICAL OPTIMIZATION: Extract valid rows with NumPy BEFORE creating DataFrame!
-                prep_start = datetime.now()
-                logger.info(f"    Extracting {n_valid:,} valid rows with NumPy (fast)...")
-                
-                # Use NumPy boolean indexing to extract only valid rows (MUCH faster than DataFrame filter!)
-                valid_data = reshaped[valid_mask]
-                extract_time = (datetime.now() - prep_start).total_seconds()
-                logger.info(f"    Extracted valid data: {extract_time:.3f}s")
-                
-                # Free large arrays immediately after extraction
-                del h_batch_output, reshaped, valid_mask
-                gc.collect()
-                
-                num_rows = n_valid
-                
-                # NO AGGREGATION NEEDED - Scenarios already aggregated in kernel!
-                write_start = datetime.now()
-                parquet_path = parquet_dir / f"batch_{i:04d}.parquet"
-                logger.info(f"    Creating DataFrame from pre-aggregated data...")
-                
-                # Create DataFrame directly (no aggregation needed!)
-                df_start = datetime.now()
-                df = pd.DataFrame(valid_data, columns=columns)
-                del valid_data
-                gc.collect()
-                
-                # Convert ID columns to int32
-                df['ID_COMPTE'] = df['ID_COMPTE'].astype('int32')
-                df['AN_EVAL'] = df['AN_EVAL'].astype('int32')
-                df['MOIS_EVAL'] = df['MOIS_EVAL'].astype('int32')
-                
-                # Drop SCN_EVAL column (always 0 after kernel aggregation)
-                df = df.drop(columns=['SCN_EVAL'])
-                
-                if is_debug_batch:
-                    # DEBUG MODE: Aggregate timestep data to VP-only summary
-                    logger.info(f"      Aggregating to VP-only summary (1 row per account)...")
-                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
-                    df_vp_summary = df.groupby('ID_COMPTE', as_index=False)[vp_columns].sum()
-                    logger.info(f"      Reduced to {len(df_vp_summary):,} rows (VP values only)")
-                else:
-                    # PRODUCTION MODE: Already have VP-only data (1 row per account)
-                    logger.info(f"      Already have VP-only data from kernel: {len(df):,} rows")
-                    vp_columns = [col for col in df.columns if col.startswith('VP_')]
-                    df_vp_summary = df[['ID_COMPTE'] + vp_columns]
-                
-                df_time = (datetime.now() - df_start).total_seconds()
-                logger.info(f"      Created DataFrame with {len(df_vp_summary):,} rows in {df_time:.3f}s")
-                
-                # Write VP summary (always, for all accounts)
-                logger.info(f"    Writing VP summary to parquet...")
-                write_start_time = datetime.now()
-                fastparquet_write(
-                    str(parquet_path),
-                    df_vp_summary,
-                    compression='snappy',
-                    row_group_offsets=100000,
-                    file_scheme='simple',
-                    write_index=False,
-                    stats=False
-                )
-                write_time = (datetime.now() - write_start_time).total_seconds()
-                
-                total_time = (datetime.now() - write_start).total_seconds()
-                file_size_mb = parquet_path.stat().st_size / 1024**2
-                logger.info(f"    Written VP summary: {file_size_mb:.1f} MB in {total_time:.3f}s ({file_size_mb/total_time:.1f} MB/s)")
-                logger.info(f"      (df:{df_time:.3f}s, write:{write_time:.3f}s)")
-                
-                # Track stats
-                write_futures.append((i, file_size_mb, len(df_vp_summary), total_time))
-                
-                # If debug mode, ALSO write detailed timestep data for the specific account
-                if debug_account is not None:
-                    batch_start_account = start_idx + 1
-                    batch_end_account = end_idx
-                    if batch_start_account <= debug_account <= batch_end_account:
-                        logger.info(f"    Debug mode: Writing detailed data for account {debug_account}...")
-                        df_debug = df[df['ID_COMPTE'] == debug_account]
-                        debug_path = parquet_dir / f"debug_batch_{i:04d}.parquet"
-                        fastparquet_write(
-                            str(debug_path),
-                            df_debug,
-                            compression='snappy',
-                            row_group_offsets=100000,
-                            file_scheme='simple',
-                            write_index=False,
-                            stats=False
-                        )
-                        logger.info(f"    Written debug data: {len(df_debug):,} rows")
-                
-                # Free DataFrames
-                del df, df_vp_summary
-                if 'df_debug' in locals():
-                    del df_debug
-                gc.collect()
-                gc.collect()
-            else:
-                # No valid data - just clean up
-                del h_batch_output, reshaped, valid_mask
-                logger.info(f"    No valid rows in batch - skipping write")
+        # === KERNEL B: NESTED VALUATOR ===
+        logger.info("  Launching Kernel B (Nested Valuator)...")
+        total_nodes = current_batch_size * nb_ext_scenarios * nb_an_projection
+        threads_per_block_B = 256
+        blocks_B = (total_nodes + threads_per_block_B - 1) // threads_per_block_B
         
-        cpu_proc_end = datetime.now()
-        cpu_proc_time = (cpu_proc_end - cpu_proc_start).total_seconds()
-        logger.info(f"    Total CPU processing: {cpu_proc_time:.2f}s")
-
-        # Cleanup remaining GPU/batch memory
-        del d_batch_account_data
-        del d_batch_output
-        # h_batch_output already deleted in cuDF path (or in CPU path's valid_data extraction)
-        # Clean up input pinned memory if it exists
-        if use_pinned_memory and 'h_batch_input_pinned' in locals():
-            del h_batch_input_pinned
-        # Clean up h_batch_output if it wasn't deleted yet (CPU path with no valid data)
-        if 'h_batch_output' in locals():
-            del h_batch_output
+        kernel_b_start = datetime.now()
+        nested_valuation_kernel[blocks_B, threads_per_block_B](
+            d_states,
+            d_batch_accounts,
+            nb_int_scenarios,
+            nb_an_projection,  # Internal horizon (run-off)
+            shock_capital_pct,
+            d_rn_forward_rate,
+            d_rn_rend_dex, d_rn_rend_mm, d_rn_rend_tsx, d_rn_rend_sp500, d_rn_rend_eafe,
+            d_mortality,
+            d_metrics
+        )
+        cuda.synchronize()
+        kernel_b_time = (datetime.now() - kernel_b_start).total_seconds()
+        logger.info(f"  Kernel B complete: {kernel_b_time:.2f}s")
         
-        # Force garbage collection and GPU memory cleanup after EVERY batch
-        # Use aggressive cleanup every 4 batches to prevent cumulative memory fragmentation
-        # Aggressive mode: full GC + RMM pool reset (slower but defragments memory)
-        # Standard mode: quick GC (fast, handles immediate cleanup)
-        gc_start = datetime.now()
-        is_periodic_aggressive = (i + 1) % 4 == 0
-        force_gpu_memory_cleanup(aggressive=is_periodic_aggressive)
-        gc_time = (datetime.now() - gc_start).total_seconds()
-        batch_mem_end = process.memory_info().rss / 1024**3
-        cleanup_type = "AGGRESSIVE" if is_periodic_aggressive else "standard"
-        logger.info(f"  [Memory cleanup ({cleanup_type}): GPU+GC in {gc_time:.3f}s, mem at end: {batch_mem_end:.2f} GB, delta: {batch_mem_end - batch_mem_start:+.2f} GB]")
-
-        batch_end_time = datetime.now()
-        batch_duration = (batch_end_time - batch_start_time).total_seconds()
-        cpu_processing_time = batch_duration - kernel_duration - transfer_to_gpu - transfer_from_gpu
-        logger.info(f"  Batch {i + 1} total time: {batch_duration:.2f}s (Kernel: {kernel_duration:.2f}s, Transfer: {transfer_to_gpu + transfer_from_gpu:.2f}s, CPU: {cpu_processing_time:.2f}s)")
-
-    # --- SUMMARIZE WRITES ---
-    print("\n" + "="*60)
-    print("PARQUET WRITE SUMMARY (Pre-aggregated data)")
-    print("="*60)
-    
-    wait_start = datetime.now()
-    total_write_time = 0
-    total_file_size_mb = 0
-    total_rows_written = 0
-    
-    # All writes are synchronous - just sum up
-    if len(write_futures) > 0:
-        print(f"\nAll {len(write_futures)} writes completed synchronously")
-        for batch_num, file_size_mb, num_rows, write_time in write_futures:
-            total_write_time += write_time
-            total_file_size_mb += file_size_mb
-            total_rows_written += num_rows
-    
-    # Shutdown thread pool
-    parquet_writer_pool.shutdown(wait=True)
-    
-    wait_duration = (datetime.now() - wait_start).total_seconds()
-    avg_write_time = total_write_time / len(write_futures) if write_futures else 0
-    
-    print(f"\nWrite statistics:")
-    print(f"  Processing time: {wait_duration:.2f}s")
-    print(f"  Total write time: {total_write_time:.2f}s")
-    print(f"  Average write time per batch: {avg_write_time:.3f}s")
-    print(f"  Total data written: {total_file_size_mb:.1f} MB ({total_rows_written:,} rows)")
-    print(f"  Effective speedup from parallelism: {total_write_time/wait_duration:.1f}x")
-    
-    # --- FINAL DATA ASSEMBLY (Optimized for minimal memory usage) ---
-    print("\n" + "="*60)
-    print("FINAL DATA ASSEMBLY (Optimized aggregation)")
-    print("="*60)
-    
-    merge_start = datetime.now()
-    
-    # Count Parquet files
-    parquet_files = sorted(parquet_dir.glob("batch_*.parquet"))
-    print(f"\nFound {len(parquet_files)} Parquet files to concatenate")
-    parquet_pattern = str(parquet_dir / "batch_*.parquet")
-    
-    # OPTIMIZATION: Only load detailed data when debugging a specific account
-    # Otherwise, compute VP_FLUX_TOTAL directly from parquet files using DuckDB aggregation
-    all_results = None
-    
-    # Always load VP summary for all accounts (for VP_FLUX_TOTAL calculation)
-    # This is now very small (1 row per account) regardless of mode
-    print("Loading VP summary for all accounts...")
-    all_results = None  # Will be loaded separately if needed for debug
-    merge_time = 0
-    
-    # In debug mode, also load detailed timestep data
-    if debug_account is not None:
-        debug_pattern = str(parquet_dir / "debug_batch_*.parquet")
-        debug_files = sorted(parquet_dir.glob("debug_batch_*.parquet"))
-        if len(debug_files) > 0:
-            print(f"Debug mode: Loading detailed data for account {debug_account}...")
-            debug_sql = f"""
-            SELECT *
-            FROM read_parquet('{debug_pattern}')
-            ORDER BY AN_EVAL, MOIS_EVAL
-            """
-            all_results = duckdb.execute(debug_sql).df()
-            merge_time = (datetime.now() - merge_start).total_seconds()
-            print(f"  Loaded {len(all_results):,} rows for account {debug_account} in {merge_time:.2f}s")
-            print(f"  Size: {all_results.memory_usage(deep=True).sum() / 1024**3:.2f} GB")
-        else:
-            print(f"  No debug files found (account {debug_account} may not have been processed)")
-
-    # Debug logging for specific account
-    # Note: With scenario averaging, we show the averaged results (not individual scenarios)
-    if debug_account is not None and all_results is not None:
-        print("\n" + "="*60)
-        print(f"DEBUG: DETAILED RESULTS FOR ACCOUNT {debug_account}")
-        print(f"(Showing scenario-averaged results across all {nb_scenarios} scenarios)")
-        print("="*60)
+        # Copy results back
+        logger.info("  Copying results to CPU...")
+        h_metrics = d_metrics.copy_to_host()
         
-        # Data is already filtered for the specific account
-        debug_data = all_results.copy()
+        # Process metrics (average across scenarios and years for summary)
+        # Shape: (current_batch_size, nb_ext_scenarios, nb_an_projection, 2)
+        # Average across external scenarios and years to get per-account metrics
+        batch_reserves = h_metrics[:, :, :, 0].mean(axis=(1, 2))  # Average over scenarios and years
+        batch_capital = h_metrics[:, :, :, 1].mean(axis=(1, 2))
         
-        if len(debug_data) > 0:
-            # Sort by year and month
-            debug_data = debug_data.sort_values(['AN_EVAL', 'MOIS_EVAL'])
-            
-            print(f"\nFound {len(debug_data):,} timesteps for this account (scenario-averaged)")
-            print("\nYear-by-year summary:")
-            print("-" * 120)
-            
-            # Group by year and show key metrics
-            for year in sorted(debug_data['AN_EVAL'].unique()):
-                year_data = debug_data[debug_data['AN_EVAL'] == year]
-                
-                # Sum over all months in the year
-                primes_tot = year_data['PRIMES_GARANTIES'].sum() + year_data['PRIMES_VARIABLES'].sum()
-                prest_tot = year_data['PREST_DECES'].sum() + year_data['PREST_ECH'].sum() + year_data['PREST_MRV'].sum()
-                frais_tot = year_data['FRAIS_ACQUIS'].sum() + year_data['FRAIS_FIXES'].sum()
-                valeur_march = year_data['VALEUR_MARCHANDE'].iloc[-1]  # End of year value
-                passif = year_data['PASSIF_REDRESSE'].iloc[-1]  # End of year value
-                
-                print(f"Year {year:3d} | Months: {len(year_data):2d} | "
-                      f"Premiums: ${primes_tot:12,.2f} | Benefits: ${prest_tot:12,.2f} | "
-                      f"Fees: ${frais_tot:10,.2f} | Market Val: ${valeur_march:12,.2f} | "
-                      f"Liability: ${passif:12,.2f}")
-            
-            print("-" * 120)
-            
-            # Show detailed monthly data for first and last year
-            print(f"\nDetailed monthly data for Year 0:")
-            year_0 = debug_data[debug_data['AN_EVAL'] == 0]
-            print(year_0[['AN_EVAL', 'MOIS_EVAL', 'PRIMES_GARANTIES', 'PRIMES_VARIABLES', 
-                         'PREST_DECES', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE']].to_string(index=False))
-            
-            last_year = debug_data['AN_EVAL'].max()
-            print(f"\nDetailed monthly data for Year {last_year}:")
-            year_last = debug_data[debug_data['AN_EVAL'] == last_year]
-            print(year_last[['AN_EVAL', 'MOIS_EVAL', 'PRIMES_GARANTIES', 'PRIMES_VARIABLES',
-                            'PREST_DECES', 'VALEUR_MARCHANDE', 'PASSIF_REDRESSE']].to_string(index=False))
-            
-            # Show present values
-            print(f"\nPresent Values (discounted to time 0):")
-            vp_cols = [col for col in debug_data.columns if col.startswith('VP_')]
-            if vp_cols:
-                # Sum all PV columns (they're already summed across all timesteps)
-                vp_summary = debug_data[vp_cols].iloc[0]  # First row has cumulative PVs
-                for col in vp_cols:
-                    if abs(vp_summary[col]) > 0.01:  # Only show non-zero values
-                        print(f"  {col:30s}: ${vp_summary[col]:15,.2f}")
-            
-            # Save debug data to CSV
-            output_path.mkdir(parents=True, exist_ok=True)
-            debug_filename = f"DEBUG_account_{debug_account}_scenario_averaged.csv"
-            debug_filepath = output_path.joinpath(debug_filename)
-            debug_data.to_csv(debug_filepath, index=False, sep=';')
-            print(f"\n✓ Debug data saved to: {debug_filepath}")
-            print(f"  Contains {len(debug_data):,} timesteps with all {len(debug_data.columns)} columns")
-        else:
-            print(f"\n⚠️  WARNING: No data found for Account {debug_account}")
-            print(f"    Available account range: {all_results['ID_COMPTE'].min()} to {all_results['ID_COMPTE'].max()}")
+        all_reserves.extend(batch_reserves)
+        all_capital.extend(batch_capital)
         
-        print("="*60 + "\n")
+        # Cleanup
+        del d_batch_accounts, d_states, d_cashflows, d_metrics, h_metrics
+        gc.collect()
+        cuda.synchronize()
+        
+        batch_time = (datetime.now() - batch_start).total_seconds()
+        logger.info(f"  Batch complete: {batch_time:.2f}s (KernelA: {kernel_a_time:.2f}s, KernelB: {kernel_b_time:.2f}s)")
     
-    # Aggregate and save results
-    print("\n" + "="*60)
-    print("AGGREGATING RESULTS")
-    print("="*60)
-    
-    from cpu import (aggregate_flux_projetes, aggregate_vp_flux_compte, aggregate_vp_flux_total)
-
-    agg_start = datetime.now()
-    
-    # ALWAYS compute VP_FLUX_TOTAL from VP summary parquet files
-    # These files contain 1 row per account with only VP columns (very small!)
-    print("Computing VP_FLUX_TOTAL from VP summary parquet files (ultra-fast, low memory)...")
-    
-    # Use the EXACT same VP columns as aggregate_vp_flux_total in cpu.py
-    # NOTE: VP_VALEUR_MARCHANDE is deliberately excluded!
-    vp_flux_cols = [
-        'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES',
-        'VP_PRIMES_VARIABLES', 'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN',
-        'VP_PREST_ECH', 'VP_PREST_MRV', 'VP_PREST_DECES',
-        'VP_PASSIF_REDRESSE', 'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE',
-        'VP_COUSSIN_DEPENSE', 'VP_COUSSIN_DECHEANCE', 'VP_COUSSIN_MORTALITE',
-        'VP_COUSSIN_DEPOT'
-    ]
-    
-    # Build SQL query to sum only the flux VP columns across all accounts
-    vp_sum_expressions = [f"SUM({col}) as {col}" for col in vp_flux_cols]
-    vp_sum_sql = ", ".join(vp_sum_expressions)
-    
-    total_vp_sql = f"""
-    SELECT 
-        {vp_sum_sql}
-    FROM read_parquet('{parquet_pattern}')
-    """
-    
-    vp_totals = duckdb.execute(total_vp_sql).df()
-    
-    # Calculate total VP (sum of flux VP columns only)
-    total_vp = vp_totals.sum(axis=1).iloc[0]
-    
-    # Create VP_FLUX_TOTAL dataframe
-    vp_flux_total = pd.DataFrame({
-        'CATEGORIE': ['TOTAL'],
-        'VP_FLUX_TOT': [total_vp]
+    # Create results DataFrame
+    results_df = pd.DataFrame({
+        'ID_COMPTE': data['population']['ID_COMPTE'].values[:n_accounts],
+        'RESERVE_BE': all_reserves,
+        'CAPITAL_REQ': all_capital,
+        'SCR': [cap - res for res, cap in zip(all_reserves, all_capital)]
     })
     
-    print(f"  ✓ VP_FLUX_TOTAL computed: ${total_vp:,.2f}")
-    
-    # Handle detailed outputs based on debug mode
-    if debug_account is None:
-        # Production mode: No detailed outputs
-        vp_flux_compte = None
-        flux_projetes = None
-        agg_time = (datetime.now() - agg_start).total_seconds()
-        print(f"\nTotal aggregation time: {agg_time:.2f}s (optimized - minimal data processed!)")
-    else:
-        # Debug mode: Create detailed outputs if debug data was loaded
-        if all_results is not None and len(all_results) > 0:
-            print("Scenario averaging already completed by DuckDB")
-            calculs_sommaire = all_results
-            print(f"  → {len(calculs_sommaire):,} rows (account {debug_account} only)")
-            
-            print("Creating VP_FLUX_COMPTE...")
-            vp_flux_compte = aggregate_vp_flux_compte(calculs_sommaire)
-            print(f"  → {len(vp_flux_compte):,} accounts")
-            
-            print("Creating FLUX_PROJETES...")
-            flux_projetes = aggregate_flux_projetes(calculs_sommaire)
-            print(f"  → {len(flux_projetes):,} time periods")
-            
-            agg_time = (datetime.now() - agg_start).total_seconds()
-            print(f"\nTotal aggregation time: {agg_time:.2f}s")
-        else:
-            # No debug data available
-            vp_flux_compte = None
-            flux_projetes = None
-            agg_time = (datetime.now() - agg_start).total_seconds()
-            print(f"\nTotal aggregation time: {agg_time:.2f}s (VP_FLUX_TOTAL only)")
-
-    # Save outputs
-    print("\nSaving outputs...")
+    # Save results
     output_path.mkdir(parents=True, exist_ok=True)
+    results_df.to_csv(output_path / "NESTED_STOCHASTIC_RESULTS.csv", index=False, sep=';')
     
-    # Always save VP_FLUX_TOTAL
-    vp_flux_total.to_csv(output_path.joinpath("VP_FLUX_TOTAL_GPU.csv"), index=False, sep=';')
-    print(f"  ✓ Saved {output_path}/VP_FLUX_TOTAL_GPU.csv")
-    
-    # Only save detailed outputs in debug mode
-    if debug_account is not None and flux_projetes is not None and vp_flux_compte is not None:
-        flux_projetes.to_csv(output_path.joinpath("FLUX_PROJETES_GPU.csv"), index=False, sep=';')
-        vp_flux_compte.to_csv(output_path.joinpath("VP_FLUX_COMPTE_GPU.csv"), index=False, sep=';')
-        print(f"  ✓ Saved {output_path}/FLUX_PROJETES_GPU.csv")
-        print(f"  ✓ Saved {output_path}/VP_FLUX_COMPTE_GPU.csv")
-    else:
-        print(f"  ℹ Skipped FLUX_PROJETES and VP_FLUX_COMPTE (not in debug mode)")
-    
-    # Cleanup Parquet files after aggregation is complete
-    print("\nCleaning up Parquet files...")
-    try:
-        shutil.rmtree(parquet_dir)
-        print(f"  Removed temporary Parquet directory: {parquet_dir}")
-    except Exception as e:
-        print(f"  Warning: Could not remove temporary Parquet files: {e}")
-
     # Print summary
     end_time = datetime.now()
     total_duration = (end_time - start_time).total_seconds()
     
-    # Calculate time breakdowns
-    cpu_extraction_time = total_duration - total_kernel_duration - total_transfer_duration - agg_time
+    print("\n" + "=" * 80)
+    print("NESTED STOCHASTIC PROJECTION COMPLETE")
+    print("=" * 80)
+    print(f"Total time: {total_duration:.2f}s ({total_duration/60:.2f} minutes)")
+    print(f"Accounts processed: {n_accounts}")
+    print(f"External scenarios: {nb_ext_scenarios}")
+    print(f"Internal scenarios per node: {nb_int_scenarios}")
+    print(f"Total nested simulations: {n_accounts * nb_ext_scenarios * nb_an_projection * nb_int_scenarios:,}")
+    print(f"\nResults Summary:")
+    print(f"  Total Best Estimate Reserve: ${results_df['RESERVE_BE'].sum():,.2f}")
+    print(f"  Total Capital Requirement:   ${results_df['CAPITAL_REQ'].sum():,.2f}")
+    print(f"  Total SCR (Capital - Reserve): ${results_df['SCR'].sum():,.2f}")
+    print(f"\n  Average per account:")
+    print(f"    Reserve: ${results_df['RESERVE_BE'].mean():,.2f}")
+    print(f"    Capital: ${results_df['CAPITAL_REQ'].mean():,.2f}")
+    print(f"    SCR:     ${results_df['SCR'].mean():,.2f}")
+    print("=" * 80)
     
-    print("\n" + "=" * 60)
-    print("GPU PROJECTION COMPLETE")
-    print("=" * 60)
-    print(f"Total processing time: {total_duration:.2f} seconds ({total_duration / 60:.2f} minutes)")
-    print(f"\nTime Breakdown:")
-    print(f"  GPU Kernel execution:  {total_kernel_duration:8.2f}s ({100*total_kernel_duration/total_duration:5.1f}%)")
-    print(f"  GPU↔CPU Transfers:     {total_transfer_duration:8.2f}s ({100*total_transfer_duration/total_duration:5.1f}%)")
-    print(f"  CPU Data Extraction:   {cpu_extraction_time:8.2f}s ({100*cpu_extraction_time/total_duration:5.1f}%)")
-    print(f"  Aggregation:           {agg_time:8.2f}s ({100*agg_time/total_duration:5.1f}%)")
-    print(f"\nProcessing Statistics:")
-    print(f"  Accounts processed: {n_accounts}")
-    print(f"  Batch size: {batch_size} accounts")
-    print(f"  Total batches: {num_batches}")
-    print(f"  Scenarios per account: {nb_scenarios}")
-    print(f"  Average time per batch: {total_duration/num_batches:.2f}s")
-    if all_results is not None:
-        print(f"  Total rows loaded: {len(all_results):,}")
-    else:
-        print(f"  Total rows loaded: 0 (optimized mode - data not loaded)")
-    print(f"\nResults:")
-    print(f"  Total PV of flows: ${vp_flux_total['VP_FLUX_TOT'].iloc[0]:,.2f}")
-    print("=" * 60)
-
     return {
-        'flux_projetes': flux_projetes,
-        'vp_flux_compte': vp_flux_compte,
-        'vp_flux_total': vp_flux_total,
+        'results': results_df,
+        'total_duration': total_duration
     }
 
 
@@ -2461,13 +2153,48 @@ def run_projection_gpu(data_path: Path, output_path: Path, nb_an_projection: int
 
 if __name__ == "__main__":
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description='Run GPU-accelerated actuarial projections')
+    parser = argparse.ArgumentParser(
+        description='Run GPU-accelerated actuarial projections',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Standard projection (Tier 1 - Cashflows & VP)
+  python gpu.py --mode standard --max-accounts 10000
+  
+  # Nested stochastic (Tier 2 & 3 - Reserves & Capital)
+  python gpu.py --mode nested --ext-scenarios 100 --int-scenarios 500 --max-accounts 1000
+  
+  # Debug mode
+  python gpu.py --mode standard --debug-account 12345
+        """
+    )
+    
+    # Mode selection
+    parser.add_argument('--mode', type=str, choices=['standard', 'nested'], default='standard',
+                       help='Projection mode: "standard" for cashflows/VP, "nested" for reserves/capital (default: standard)')
+    
+    # Common parameters
     parser.add_argument('--debug-account', type=int, default=None,
-                       help='Account ID to show detailed year-by-year results (for debugging)')
+                       help='Account ID to show detailed results (standard mode only)')
     parser.add_argument('--debug-scenario', type=int, default=None,
                        help='Scenario number (ignored - showing scenario-averaged results)')
     parser.add_argument('--max-accounts', type=int, default=None,
                        help='Maximum number of accounts to process (for testing)')
+    parser.add_argument('--years', type=int, default=100,
+                       help='Number of years to project (default: 100)')
+    
+    # Standard mode parameters
+    parser.add_argument('--scenarios', type=int, default=100,
+                       help='Number of scenarios for standard mode (default: 100)')
+    
+    # Nested mode parameters
+    parser.add_argument('--ext-scenarios', type=int, default=100,
+                       help='Number of external (real-world) scenarios for nested mode (default: 100)')
+    parser.add_argument('--int-scenarios', type=int, default=500,
+                       help='Number of internal (risk-neutral) scenarios per node for nested mode (default: 500)')
+    parser.add_argument('--shock', type=float, default=0.35,
+                       help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
+    
     args = parser.parse_args()
     
     try:
@@ -2477,45 +2204,84 @@ if __name__ == "__main__":
 
         print(f"CUDA Device: {cuda.get_current_device().name}")
         
-        # Show debug mode info
-        if args.debug_account is not None:
-            print(f"\n🔍 DEBUG MODE ENABLED")
-            print(f"   Will show detailed scenario-averaged results for:")
-            print(f"   Account {args.debug_account}")
-            print(f"   (Note: --debug-scenario parameter is ignored, showing averaged results)")
-            print()
-
         DATA_PATH = HERE.joinpath("data_in")
         OUTPUT_PATH = HERE.joinpath("data_out_gpu")
-
-        results = run_projection_gpu(
-            data_path=DATA_PATH,
-            output_path=OUTPUT_PATH,
-            nb_an_projection=100,
-            nb_scenarios=100,
-            max_accounts=200000,
-            threads_per_block=(32, 8),  # (accounts_per_block, scenarios_per_block) - 256 threads per block
-            debug_account=3,
-            debug_scenario=1
-        )
-
-        if results:
-            print("\n" + "=" * 60)
-            print("SAMPLE RESULTS")
-            print("=" * 60)
-            print("\nVP_FLUX_TOTAL:")
-            print(results['vp_flux_total'])
+        
+        # =============================================================================
+        # STANDARD MODE (Original - Single Pass)
+        # =============================================================================
+        if args.mode == 'standard':
+            print("\n" + "=" * 80)
+            print("RUNNING STANDARD PROJECTION MODE (Tier 1: Cashflows & Present Values)")
+            print("=" * 80)
             
-            if results['vp_flux_compte'] is not None:
-                print("\nVP_FLUX_COMPTE (first 5 accounts):")
-                print(results['vp_flux_compte'].head())
+            # Show debug mode info
+            if args.debug_account is not None:
+                print(f"\n🔍 DEBUG MODE ENABLED")
+                print(f"   Will show detailed scenario-averaged results for:")
+                print(f"   Account {args.debug_account}")
+                print()
+
+            results = run_projection_gpu(
+                data_path=DATA_PATH,
+                output_path=OUTPUT_PATH,
+                nb_an_projection=args.years,
+                nb_scenarios=args.scenarios,
+                max_accounts=args.max_accounts,
+                threads_per_block=(32, 8),
+                debug_account=args.debug_account,
+                debug_scenario=args.debug_scenario
+            )
+
+            if results:
+                print("\n" + "=" * 80)
+                print("STANDARD PROJECTION RESULTS")
+                print("=" * 80)
+                print("\nVP_FLUX_TOTAL:")
+                print(results['vp_flux_total'])
+                
+                if results['vp_flux_compte'] is not None:
+                    print("\nVP_FLUX_COMPTE (first 5 accounts):")
+                    print(results['vp_flux_compte'].head())
+                
+                if results['flux_projetes'] is not None:
+                    print("\nFLUX_PROJETES (first 10 periods):")
+                    print(results['flux_projetes'].head(10))
+        
+        # =============================================================================
+        # NESTED MODE (New - Two Pass)
+        # =============================================================================
+        elif args.mode == 'nested':
+            print("\n" + "=" * 80)
+            print("RUNNING NESTED STOCHASTIC MODE (Tier 2 & 3: Reserves & Capital)")
+            print("=" * 80)
             
-            if results['flux_projetes'] is not None:
-                print("\nFLUX_PROJETES (first 10 periods):")
-                print(results['flux_projetes'].head(10))
+            if args.debug_account is not None:
+                print("\n⚠️  Warning: --debug-account is not supported in nested mode (ignored)")
+                print()
+            
+            results = run_projection_gpu_nested(
+                data_path=DATA_PATH,
+                output_path=OUTPUT_PATH,
+                nb_an_projection=args.years,
+                nb_ext_scenarios=args.ext_scenarios,
+                nb_int_scenarios=args.int_scenarios,
+                shock_capital_pct=args.shock,
+                max_accounts=args.max_accounts,
+                threads_per_block=(16, 16)
+            )
+            
+            if results:
+                print("\n" + "=" * 80)
+                print("NESTED STOCHASTIC RESULTS")
+                print("=" * 80)
+                print("\nTop 10 accounts by SCR:")
+                print(results['results'].nlargest(10, 'SCR')[['ID_COMPTE', 'RESERVE_BE', 'CAPITAL_REQ', 'SCR']])
+                
+                print("\nSummary Statistics:")
+                print(results['results'][['RESERVE_BE', 'CAPITAL_REQ', 'SCR']].describe())
 
     except Exception as e:
         print(f"\nAn error occurred: {e}")
         import traceback
-
         traceback.print_exc()
