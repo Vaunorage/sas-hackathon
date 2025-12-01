@@ -2178,7 +2178,7 @@ Examples:
                        help='Account ID to show detailed results (standard mode only)')
     parser.add_argument('--debug-scenario', type=int, default=None,
                        help='Scenario number (ignored - showing scenario-averaged results)')
-    parser.add_argument('--max-accounts', type=int, default=None,
+    parser.add_argument('--max-accounts', type=int, default=2000,
                        help='Maximum number of accounts to process (for testing)')
     parser.add_argument('--years', type=int, default=100,
                        help='Number of years to project (default: 100)')
