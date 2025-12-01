@@ -2206,80 +2206,39 @@ Examples:
         
         DATA_PATH = HERE.joinpath("data_in")
         OUTPUT_PATH = HERE.joinpath("data_out_gpu")
-        
-        # =============================================================================
-        # STANDARD MODE (Original - Single Pass)
-        # =============================================================================
-        if args.mode == 'standard':
-            print("\n" + "=" * 80)
-            print("RUNNING STANDARD PROJECTION MODE (Tier 1: Cashflows & Present Values)")
-            print("=" * 80)
-            
-            # Show debug mode info
-            if args.debug_account is not None:
-                print(f"\n🔍 DEBUG MODE ENABLED")
-                print(f"   Will show detailed scenario-averaged results for:")
-                print(f"   Account {args.debug_account}")
-                print()
 
-            results = run_projection_gpu(
-                data_path=DATA_PATH,
-                output_path=OUTPUT_PATH,
-                nb_an_projection=args.years,
-                nb_scenarios=args.scenarios,
-                max_accounts=args.max_accounts,
-                threads_per_block=(32, 8),
-                debug_account=args.debug_account,
-                debug_scenario=args.debug_scenario
-            )
-
-            if results:
-                print("\n" + "=" * 80)
-                print("STANDARD PROJECTION RESULTS")
-                print("=" * 80)
-                print("\nVP_FLUX_TOTAL:")
-                print(results['vp_flux_total'])
-                
-                if results['vp_flux_compte'] is not None:
-                    print("\nVP_FLUX_COMPTE (first 5 accounts):")
-                    print(results['vp_flux_compte'].head())
-                
-                if results['flux_projetes'] is not None:
-                    print("\nFLUX_PROJETES (first 10 periods):")
-                    print(results['flux_projetes'].head(10))
-        
         # =============================================================================
         # NESTED MODE (New - Two Pass)
         # =============================================================================
-        elif args.mode == 'nested':
+
+        print("\n" + "=" * 80)
+        print("RUNNING NESTED STOCHASTIC MODE (Tier 2 & 3: Reserves & Capital)")
+        print("=" * 80)
+
+        if args.debug_account is not None:
+            print("\n⚠️  Warning: --debug-account is not supported in nested mode (ignored)")
+            print()
+
+        results = run_projection_gpu_nested(
+            data_path=DATA_PATH,
+            output_path=OUTPUT_PATH,
+            nb_an_projection=args.years,
+            nb_ext_scenarios=args.ext_scenarios,
+            nb_int_scenarios=args.int_scenarios,
+            shock_capital_pct=args.shock,
+            max_accounts=args.max_accounts,
+            threads_per_block=(16, 16)
+        )
+
+        if results:
             print("\n" + "=" * 80)
-            print("RUNNING NESTED STOCHASTIC MODE (Tier 2 & 3: Reserves & Capital)")
+            print("NESTED STOCHASTIC RESULTS")
             print("=" * 80)
-            
-            if args.debug_account is not None:
-                print("\n⚠️  Warning: --debug-account is not supported in nested mode (ignored)")
-                print()
-            
-            results = run_projection_gpu_nested(
-                data_path=DATA_PATH,
-                output_path=OUTPUT_PATH,
-                nb_an_projection=args.years,
-                nb_ext_scenarios=args.ext_scenarios,
-                nb_int_scenarios=args.int_scenarios,
-                shock_capital_pct=args.shock,
-                max_accounts=args.max_accounts,
-                threads_per_block=(16, 16)
-            )
-            
-            if results:
-                print("\n" + "=" * 80)
-                print("NESTED STOCHASTIC RESULTS")
-                print("=" * 80)
-                print("\nTop 10 accounts by SCR:")
-                print(results['results'].nlargest(10, 'SCR')[['ID_COMPTE', 'RESERVE_BE', 'CAPITAL_REQ', 'SCR']])
-                
-                print("\nSummary Statistics:")
-                print(results['results'][['RESERVE_BE', 'CAPITAL_REQ', 'SCR']].describe())
+            print("\nTop 10 accounts by SCR:")
+            print(results['results'].nlargest(10, 'SCR')[['ID_COMPTE', 'RESERVE_BE', 'CAPITAL_REQ', 'SCR']])
+
+            print("\nSummary Statistics:")
+            print(results['results'][['RESERVE_BE', 'CAPITAL_REQ', 'SCR']].describe())
 
     except Exception as e:
         print(f"\nAn error occurred: {e}")
