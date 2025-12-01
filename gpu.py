@@ -2190,7 +2190,7 @@ Examples:
     # Nested mode parameters
     parser.add_argument('--ext-scenarios', type=int, default=100,
                        help='Number of external (real-world) scenarios for nested mode (default: 100)')
-    parser.add_argument('--int-scenarios', type=int, default=500,
+    parser.add_argument('--int-scenarios', type=int, default=100,
                        help='Number of internal (risk-neutral) scenarios per node for nested mode (default: 500)')
     parser.add_argument('--shock', type=float, default=0.35,
                        help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
