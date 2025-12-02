@@ -838,7 +838,7 @@ def nested_valuation_kernel_debug(
         # Debug parameters
         debug_int_scenario,
         debug_ext_scenario,
-        debug_year,
+        debug_ext_year,
         # Output arrays
         output_metrics,       # Shape: (Batch_Size, n_ext_scenarios, n_years, 2) -> [Reserve, Capital]
         output_debug          # Shape: (n_internal_years, 10) -> Debug details for specified internal scenario
@@ -884,7 +884,7 @@ def nested_valuation_kernel_debug(
     PC_RFG = acc[34]
     
     # Check if this is the debug node
-    is_debug_node = (acc_idx == 0 and scn_idx == debug_ext_scenario and year_idx == debug_year)
+    is_debug_node = (acc_idx == 0 and scn_idx == debug_ext_scenario and year_idx == debug_ext_year)
     
     # ==================================================
     # PART A: CALCULATE RESERVE (Tier 2 - Best Estimate)
@@ -1262,8 +1262,9 @@ def run_projection_gpu_nested(
         progress_callback: Optional[callable] = None,
         debug_memory: bool = False,
         debug_int_scenario: Optional[int] = None,
-        debug_ext_scenario: int = 0,
-        debug_year: int = 0):
+        debug_ext_scenario: Optional[int] = None,
+        debug_ext_year: Optional[int] = None,
+        debug_int_year: Optional[int] = None):
     """
     Run GPU-accelerated nested stochastic projection using Two-Pass architecture.
     
@@ -1607,8 +1608,12 @@ def run_projection_gpu_nested(
         
         # Check if we're debugging an internal scenario
         if debug_int_scenario is not None and i == 0:  # Only in first batch
+            # Set defaults if not provided
+            _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else 0
+            _debug_ext_year = debug_ext_year if debug_ext_year is not None else 0
+            
             logger.info(f"  DEBUG MODE: Capturing internal scenario {debug_int_scenario} "
-                       f"(ext_scenario={debug_ext_scenario}, year={debug_year})")
+                       f"(ext_scenario={_debug_ext_scenario}, year={_debug_ext_year})")
             
             # Allocate debug output array
             d_debug_output = cuda.device_array((nb_an_projection, 10), dtype=np.float32)
@@ -1623,8 +1628,8 @@ def run_projection_gpu_nested(
                 d_rn_rend_dex, d_rn_rend_mm, d_rn_rend_tsx, d_rn_rend_sp500, d_rn_rend_eafe,
                 d_mortality,
                 debug_int_scenario,
-                debug_ext_scenario,
-                debug_year,
+                _debug_ext_scenario,
+                _debug_ext_year,
                 d_metrics,
                 d_debug_output
             )
@@ -1735,9 +1740,12 @@ def run_projection_gpu_nested(
     # Display debug output if captured
     if debug_output is not None:
         print("\n" + "=" * 80)
+        _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else 0
+        _debug_ext_year = debug_ext_year if debug_ext_year is not None else 0
+        
         print(f"DEBUG: Internal Scenario {debug_int_scenario} Details")
-        print(f"  External Scenario: {debug_ext_scenario}")
-        print(f"  Year: {debug_year}")
+        print(f"  External Scenario: {_debug_ext_scenario}")
+        print(f"  External Year: {_debug_ext_year}")
         print("=" * 80)
         
         # Create debug DataFrame
@@ -1750,6 +1758,12 @@ def run_projection_gpu_nested(
         # Filter out zero rows (policy terminated)
         debug_df = debug_df[debug_df['VM_Before_Return'] > 0]
         
+        # Filter to specific internal year if requested
+        if debug_int_year is not None:
+            debug_df = debug_df[debug_df['Year'] == debug_int_year]
+            if len(debug_df) == 0:
+                print(f"\n(No data for internal year {debug_int_year} - policy may have terminated or invalid year)")
+        
         if len(debug_df) > 0:
             print("\nInternal Scenario Projection:")
             print(debug_df.to_string(index=False, float_format=lambda x: f'{x:,.4f}'))
@@ -1757,7 +1771,7 @@ def run_projection_gpu_nested(
             print(f"\nTotal PV of Cashflows (Reserve): ${debug_df['PV_Cashflow'].sum():,.2f}")
             
             # Save debug output to CSV
-            debug_csv_path = output_path / f"DEBUG_INT_SCENARIO_{debug_int_scenario}_EXT_{debug_ext_scenario}_YEAR_{debug_year}.csv"
+            debug_csv_path = output_path / f"DEBUG_INT_SCENARIO_{debug_int_scenario}_EXT_{_debug_ext_scenario}_YEAR_{_debug_ext_year}.csv"
             debug_df.to_csv(debug_csv_path, index=False, sep=';')
             print(f"\nDebug output saved to: {debug_csv_path}")
         else:
@@ -1791,43 +1805,64 @@ Examples:
   
   # Debug internal scenario (show detailed calculations for a specific internal scenario)
   python gpu.py --mode nested --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
-      --debug-int-scenario 0 --debug-ext-scenario 0 --debug-year 0
+      --debug-int-scenario 0 --debug-ext-scenario 0 --debug-ext-year 0
+  
+  # Debug with internal year filter (show only year 5 of the internal projection)
+  python gpu.py --mode nested --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
+      --debug-int-scenario 0 --debug-ext-scenario 0 --debug-ext-year 0 --debug-int-year 5
   
   # Debug mode (standard)
   python gpu.py --mode standard --debug-account 12345
         """
     )
 
-    parser.add_argument('--debug-account', type=int, default=None,
-                       help='Account ID to show detailed results (standard mode only)')
-    parser.add_argument('--debug-scenario', type=int, default=None,
-                       help='Scenario number (ignored - showing scenario-averaged results)')
     parser.add_argument('--max-accounts', type=int, default=2000,
-                       help='Maximum number of accounts to process (for testing)')
+                        help='Maximum number of accounts to process (for testing)')
     parser.add_argument('--years', type=int, default=100,
-                       help='Number of years to project (default: 100)')
-    
-    # Standard mode parameters
+                        help='Number of years to project (default: 100)')
     parser.add_argument('--scenarios', type=int, default=100,
-                       help='Number of scenarios for standard mode (default: 100)')
-    
+                        help='Number of scenarios for standard mode (default: 100)')
+
     # Nested mode parameters
     parser.add_argument('--ext-scenarios', type=int, default=100,
-                       help='Number of external (real-world) scenarios for nested mode (default: 100)')
+                        help='Number of external (real-world) scenarios for nested mode (default: 100)')
     parser.add_argument('--int-scenarios', type=int, default=100,
-                       help='Number of internal (risk-neutral) scenarios per node for nested mode (default: 500)')
+                        help='Number of internal (risk-neutral) scenarios per node for nested mode (default: 500)')
     parser.add_argument('--shock', type=float, default=0.35,
-                       help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
+                        help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
+
     parser.add_argument('--debug-memory', action='store_true',
-                       help='Enable detailed GPU memory debugging output')
-    parser.add_argument('--debug-int-scenario', type=int, default=None,
-                       help='Internal scenario number to show detailed calculations (nested mode only, e.g., 0 for first internal scenario)')
+                        help='Enable detailed GPU memory debugging output')
+    parser.add_argument('--debug-account', type=int, default=None,
+                        help='Account ID to show detailed results (standard mode only)')
     parser.add_argument('--debug-ext-scenario', type=int, default=None,
-                       help='External scenario number for debug (nested mode only, used with --debug-int-scenario, default: 0)')
-    parser.add_argument('--debug-year', type=int, default=None,
-                       help='Year index for debug (nested mode only, used with --debug-int-scenario, default: 0)')
-    
+                        help='External scenario number for debug (nested mode only, used with --debug-int-scenario)')
+    parser.add_argument('--debug-ext-year', type=int, default=None,
+                        help='External year index for debug (nested mode only, used with --debug-int-scenario)')
+    parser.add_argument('--debug-int-scenario', type=int, default=None,
+                        help='Internal scenario number to show detailed calculations (nested mode only, e.g., 0 for first internal scenario)')
+    parser.add_argument('--debug-int-year', type=int, default=None,
+                        help='Specific internal year to display (nested mode only, requires --debug-int-scenario, default: None = show all years)')
+
     args = parser.parse_args()
+    
+    # Validate debug arguments
+    # 1. If ext scenario/year are specified, int scenario is required
+    if (args.debug_ext_scenario is not None or args.debug_ext_year is not None):
+        if args.debug_int_scenario is None:
+            parser.error("--debug-int-scenario is required when --debug-ext-scenario or --debug-ext-year are specified")
+    
+    # 2. If int year is specified, int scenario is required (can't filter without enabling debug)
+    if args.debug_int_year is not None:
+        if args.debug_int_scenario is None:
+            parser.error("--debug-int-scenario is required when --debug-int-year is specified")
+    
+    # Set defaults for debug arguments if they're being used
+    if args.debug_int_scenario is not None:
+        if args.debug_ext_scenario is None:
+            args.debug_ext_scenario = 0
+        if args.debug_ext_year is None:
+            args.debug_ext_year = 0
     
     try:
         if not cuda.is_available():
@@ -1858,8 +1893,9 @@ Examples:
             threads_per_block=(16, 16),
             debug_memory=args.debug_memory,
             debug_int_scenario=args.debug_int_scenario,
-            debug_ext_scenario=args.debug_ext_scenario if args.debug_ext_scenario is not None else 0,
-            debug_year=args.debug_year if args.debug_year is not None else 0
+            debug_ext_scenario=args.debug_ext_scenario,
+            debug_ext_year=args.debug_ext_year,
+            debug_int_year=args.debug_int_year
         )
 
         if results:
