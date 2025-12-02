@@ -621,9 +621,13 @@ def external_generator_kernel(
         fees_lookup,
         # Lookup tables - Acquisition
         acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf,
+        # Debug parameters
+        debug_ext_scenario,
+        debug_account,
         # Output arrays
         output_states,     # Shape: (Batch_Size, n_scenarios, n_years, STATE_SIZE)
-        output_cashflows   # Shape: (Batch_Size, n_scenarios, n_years, CF_SIZE)
+        output_cashflows,  # Shape: (Batch_Size, n_scenarios, n_years, CF_SIZE)
+        output_ext_debug   # Shape: (n_years, 12) for debug logging
 ):
     """
     KERNEL A: EXTERNAL SCENARIO GENERATOR (Tier 1)
@@ -648,6 +652,9 @@ def external_generator_kernel(
 
     # Account static data indices
     ID_COMPTE = int(acc[0])
+    
+    # Check if this is the debug thread for external scenario logging
+    is_debug_ext = (ID_COMPTE == debug_account and scenario_idx == debug_ext_scenario)
     ANNEE_EVALUATION_INI = int(acc[1])
     MOIS_EVALUATION_INI = int(acc[2])
     ANNEE_NAIS = int(acc[3])
@@ -818,6 +825,21 @@ def external_generator_kernel(
                 # Save cashflows for reporting
                 flux_net = 0.0  # Calculate actual net cashflow
                 output_cashflows[account_idx, scenario_idx, output_year_idx, 0] = flux_net
+                
+                # Save debug info for external scenario if requested
+                if is_debug_ext and output_year_idx < output_ext_debug.shape[0]:
+                    output_ext_debug[output_year_idx, 0] = float(output_year_idx)  # Year
+                    output_ext_debug[output_year_idx, 1] = MT_VM_AV_RETRAIT_FRAIS  # VM before fees
+                    output_ext_debug[output_year_idx, 2] = r_dex  # DEX return
+                    output_ext_debug[output_year_idx, 3] = MT_VM_PROJ  # VM after fees
+                    output_ext_debug[output_year_idx, 4] = PC_RFG  # Fee rate
+                    output_ext_debug[output_year_idx, 5] = float(age)  # Age
+                    output_ext_debug[output_year_idx, 6] = TX_SURVIE  # Survival probability
+                    output_ext_debug[output_year_idx, 7] = qx  # Mortality rate
+                    output_ext_debug[output_year_idx, 8] = lapse  # Lapse rate
+                    output_ext_debug[output_year_idx, 9] = MT_DEX_PROJ  # DEX value
+                    output_ext_debug[output_year_idx, 10] = MT_SP500_PROJ  # SP500 value
+                    output_ext_debug[output_year_idx, 11] = flux_net  # Net cashflow
 
                 output_year_idx += 1
 
@@ -1499,7 +1521,8 @@ def run_projection_gpu_nested(
     
     all_reserves = []
     all_capital = []
-    debug_output = None  # Store debug output if requested
+    debug_output = None  # Store internal scenario debug output if requested
+    external_debug_output = None  # Store external scenario debug output if requested
     debug_account_data = None  # Store full metrics for debug account if requested
     
     for i in range(num_batches):
@@ -1570,6 +1593,23 @@ def run_projection_gpu_nested(
                 f"Try reducing --max-accounts or --ext-scenarios. Original error: {e}"
             )
         
+        # Allocate external debug output if requested
+        d_ext_debug_output = None
+        _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else -1
+        _debug_account = debug_account if debug_account is not None else -1
+        
+        if debug_account is not None and debug_ext_scenario is not None and i == 0:
+            # Check if debug account is in this batch
+            batch_start_account = start_idx + 1
+            batch_end_account = end_idx
+            if batch_start_account <= debug_account <= batch_end_account:
+                logger.info(f"  DEBUG MODE: Capturing external scenario {debug_ext_scenario} for account {debug_account}")
+                d_ext_debug_output = cuda.device_array((nb_an_projection, 12), dtype=np.float32)
+        
+        # Use dummy array if not debugging
+        if d_ext_debug_output is None:
+            d_ext_debug_output = cuda.device_array((1, 12), dtype=np.float32)
+        
         # === KERNEL A: EXTERNAL GENERATOR ===
         logger.info("  Launching Kernel A (External Generator)...")
         log_gpu_memory_debug(f"Batch {i+1} before Kernel A", verbose=debug_memory)
@@ -1589,13 +1629,24 @@ def run_projection_gpu_nested(
             d_fees,
             d_acq_vente_rf, d_acq_vente_ac, d_acq_maintien_rf, d_acq_maintien_ac,
             d_acq_frais_ac, d_acq_frais_rf,
+            _debug_ext_scenario,
+            _debug_account,
             d_states,
-            d_cashflows
+            d_cashflows,
+            d_ext_debug_output
         )
         cuda.synchronize()
         kernel_a_time = (datetime.now() - kernel_a_start).total_seconds()
         logger.info(f"  Kernel A complete: {kernel_a_time:.2f}s")
         log_gpu_memory_debug(f"Batch {i+1} after Kernel A", verbose=debug_memory)
+        
+        # Capture external debug output if requested
+        if debug_account is not None and debug_ext_scenario is not None and i == 0:
+            batch_start_account = start_idx + 1
+            batch_end_account = end_idx
+            if batch_start_account <= debug_account <= batch_end_account:
+                external_debug_output = d_ext_debug_output.copy_to_host()
+                logger.info(f"  Captured external scenario debug data for account {debug_account}, scenario {debug_ext_scenario}")
         
         # === KERNEL B: NESTED VALUATOR ===
         logger.info("  Launching Kernel B (Nested Valuator)...")
@@ -1782,7 +1833,45 @@ def run_projection_gpu_nested(
     print(f"    SCR:     ${results_df['SCR'].mean():,.2f}")
     print("=" * 80)
     
-    # Display debug output if captured
+    # Display external scenario debug output if captured
+    if external_debug_output is not None:
+        print("\n" + "=" * 80)
+        _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else 0
+        
+        print(f"DEBUG: External Scenario {_debug_ext_scenario} Details")
+        print(f"  Account: {debug_account}")
+        print("=" * 80)
+        
+        # Create debug DataFrame
+        ext_debug_df = pd.DataFrame(external_debug_output, columns=[
+            'Year', 'VM_Before_Fees', 'DEX_Return', 'VM_After_Fees',
+            'Fee_Rate', 'Age', 'Survival_Prob', 'Mortality_Rate',
+            'Lapse_Rate', 'DEX_Value', 'SP500_Value', 'Net_Cashflow'
+        ])
+        
+        # Filter out zero rows (policy terminated)
+        ext_debug_df = ext_debug_df[ext_debug_df['VM_Before_Fees'] > 0]
+        
+        if len(ext_debug_df) > 0:
+            print("\nExternal Scenario Projection:")
+            print(ext_debug_df.to_string(index=False, float_format=lambda x: f'{x:,.4f}'))
+            
+            print(f"\nFinal VM: ${ext_debug_df['VM_After_Fees'].iloc[-1]:,.2f}")
+            print(f"Final Age: {ext_debug_df['Age'].iloc[-1]:.0f}")
+            print(f"Final Survival: {ext_debug_df['Survival_Prob'].iloc[-1]:.4f}")
+            
+            # Save external scenario debug output to CSV
+            ext_debug_filename = f"DEBUG_EXT_SCENARIO_{_debug_ext_scenario}_ACCOUNT_{debug_account}.csv"
+            ext_debug_csv_path = output_path / ext_debug_filename
+            ext_debug_df.to_csv(ext_debug_csv_path, index=False, sep=';')
+            print(f"\n✓ External scenario debug output saved: {ext_debug_csv_path}")
+            print(f"  Contains {len(ext_debug_df)} rows with external projection details")
+        else:
+            print("\n(No data - policy may have terminated)")
+        
+        print("=" * 80)
+    
+    # Display internal scenario debug output if captured
     if debug_output is not None:
         print("\n" + "=" * 80)
         _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else 0
@@ -1837,7 +1926,8 @@ def run_projection_gpu_nested(
     return {
         'results': results_df,
         'total_duration': total_duration,
-        'debug_output': debug_output
+        'debug_output': debug_output,
+        'external_debug_output': external_debug_output
     }
 
 
@@ -1857,6 +1947,10 @@ Examples:
   
   # Nested stochastic (Tier 2 & 3 - Reserves & Capital)
   python gpu.py --mode nested --ext-scenarios 100 --int-scenarios 500 --max-accounts 1000
+  
+  # Debug external scenario (show detailed external scenario projection)
+  python gpu.py --mode nested --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
+      --debug-account 1 --debug-ext-scenario 0
   
   # Debug internal scenario (show detailed calculations for a specific internal scenario)
   python gpu.py --mode nested --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
@@ -1889,9 +1983,9 @@ Examples:
     parser.add_argument('--debug-memory', action='store_true',
                         help='Enable detailed GPU memory debugging output')
     parser.add_argument('--debug-account', type=int, default=None,
-                        help='Account ID to show detailed results (standard mode only)')
+                        help='Account ID to show detailed results (both modes). In nested mode, use with --debug-ext-scenario to log external scenario projection')
     parser.add_argument('--debug-ext-scenario', type=int, default=None,
-                        help='External scenario number for debug (nested mode only, used with --debug-int-scenario)')
+                        help='External scenario number for debug (nested mode only, use with --debug-account for external projection or --debug-int-scenario for internal projection)')
     parser.add_argument('--debug-ext-year', type=int, default=None,
                         help='External year index for debug (nested mode only, used with --debug-int-scenario)')
     parser.add_argument('--debug-int-scenario', type=int, default=None,
