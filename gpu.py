@@ -1837,9 +1837,12 @@ def run_projection_gpu_nested(
     if external_debug_output is not None:
         print("\n" + "=" * 80)
         _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else 0
+        _debug_ext_year = debug_ext_year if debug_ext_year is not None else None
         
         print(f"DEBUG: External Scenario {_debug_ext_scenario} Details")
         print(f"  Account: {debug_account}")
+        if _debug_ext_year is not None:
+            print(f"  Filtered to Year: {_debug_ext_year}")
         print("=" * 80)
         
         # Create debug DataFrame
@@ -1852,6 +1855,13 @@ def run_projection_gpu_nested(
         # Filter out zero rows (policy terminated)
         ext_debug_df = ext_debug_df[ext_debug_df['VM_Before_Fees'] > 0]
         
+        # Filter to specific external year if requested
+        _debug_ext_year = debug_ext_year if debug_ext_year is not None else None
+        if _debug_ext_year is not None:
+            ext_debug_df = ext_debug_df[ext_debug_df['Year'] == _debug_ext_year]
+            if len(ext_debug_df) == 0:
+                print(f"\n(No data for external year {_debug_ext_year} - policy may have terminated or invalid year)")
+        
         if len(ext_debug_df) > 0:
             print("\nExternal Scenario Projection:")
             print(ext_debug_df.to_string(index=False, float_format=lambda x: f'{x:,.4f}'))
@@ -1861,11 +1871,15 @@ def run_projection_gpu_nested(
             print(f"Final Survival: {ext_debug_df['Survival_Prob'].iloc[-1]:.4f}")
             
             # Save external scenario debug output to CSV
-            ext_debug_filename = f"DEBUG_EXT_SCENARIO_{_debug_ext_scenario}_ACCOUNT_{debug_account}.csv"
+            ext_debug_filename = f"DEBUG_EXT_SCENARIO_{_debug_ext_scenario}_ACCOUNT_{debug_account}"
+            if _debug_ext_year is not None:
+                ext_debug_filename += f"_YEAR_{_debug_ext_year}"
+            ext_debug_filename += ".csv"
             ext_debug_csv_path = output_path / ext_debug_filename
             ext_debug_df.to_csv(ext_debug_csv_path, index=False, sep=';')
             print(f"\n✓ External scenario debug output saved: {ext_debug_csv_path}")
-            print(f"  Contains {len(ext_debug_df)} rows with external projection details")
+            year_msg = f" for year {_debug_ext_year}" if _debug_ext_year is not None else ""
+            print(f"  Contains {len(ext_debug_df)} rows with external projection details{year_msg}")
         else:
             print("\n(No data - policy may have terminated)")
         
@@ -1996,18 +2010,22 @@ Examples:
     args = parser.parse_args()
     
     # Validate debug arguments
-    # External debugging: --debug-account + --debug-ext-scenario (independent)
-    # Internal debugging: --debug-int-scenario (uses ext-scenario and ext-year for context)
+    # External debugging: --debug-account + --debug-ext-scenario (optional: --debug-ext-year to filter years)
+    # Internal debugging: --debug-int-scenario (requires ext-scenario and ext-year to select the node)
     
-    # 1. --debug-ext-year is only meaningful for internal debugging (specifies which node to debug)
-    if args.debug_ext_year is not None:
-        if args.debug_int_scenario is None:
-            parser.error("--debug-ext-year is only used with --debug-int-scenario (to select which external node to debug)")
-    
-    # 2. --debug-int-year requires --debug-int-scenario
+    # 1. --debug-int-year requires --debug-int-scenario
     if args.debug_int_year is not None:
         if args.debug_int_scenario is None:
             parser.error("--debug-int-year requires --debug-int-scenario")
+    
+    # 2. --debug-ext-year can be used with either:
+    #    a) External debugging (filters external scenario output to specific year)
+    #    b) Internal debugging (selects which external node to debug)
+    if args.debug_ext_year is not None:
+        # For external debugging, need both account and ext-scenario
+        # For internal debugging, need int-scenario
+        if args.debug_int_scenario is None and (args.debug_account is None or args.debug_ext_scenario is None):
+            parser.error("--debug-ext-year requires either --debug-int-scenario OR (--debug-account AND --debug-ext-scenario)")
     
     # Set defaults for internal debugging if enabled
     if args.debug_int_scenario is not None:
