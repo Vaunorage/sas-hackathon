@@ -1777,14 +1777,36 @@ def run_projection_gpu_nested(
     # Save results
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Save main results CSV
-    main_results_path = output_path / "NESTED_STOCHASTIC_RESULTS.csv"
-    results_df.to_csv(main_results_path, index=False, sep=';')
-    print(f"\n✓ Saved main results: {main_results_path}")
+    # =============================================================================
+    # FILE SAVING: CONDITIONAL LOGIC BASED ON DEBUG ARGUMENTS
+    # =============================================================================
     
-    # Save debug account data if requested
+    # 1. ALWAYS SAVED: VP_FLUX_TOTAL_GPU.csv (Grand Total Present Value)
+    print("\n" + "=" * 80)
+    print("SAVING OUTPUT FILES")
+    print("=" * 80)
+    
+    vp_flux_total_path = output_path / "VP_FLUX_TOTAL_GPU.csv"
+    # Create summary with total reserve, capital, and SCR
+    vp_flux_total_df = pd.DataFrame({
+        'CATEGORIE': ['TOTAL'],
+        'VP_RESERVE_BE': [results_df['RESERVE_BE'].sum()],
+        'VP_CAPITAL_REQ': [results_df['CAPITAL_REQ'].sum()],
+        'VP_SCR': [results_df['SCR'].sum()],
+        'AVG_RESERVE_BE': [results_df['RESERVE_BE'].mean()],
+        'AVG_CAPITAL_REQ': [results_df['CAPITAL_REQ'].mean()],
+        'AVG_SCR': [results_df['SCR'].mean()],
+        'N_ACCOUNTS': [len(results_df)]
+    })
+    vp_flux_total_df.to_csv(vp_flux_total_path, index=False, sep=';')
+    print(f"✓ [ALWAYS] Saved VP_FLUX_TOTAL_GPU.csv")
+    print(f"  Total Reserve (BE): ${vp_flux_total_df['VP_RESERVE_BE'].iloc[0]:,.2f}")
+    print(f"  Total Capital Req:  ${vp_flux_total_df['VP_CAPITAL_REQ'].iloc[0]:,.2f}")
+    print(f"  Total SCR:          ${vp_flux_total_df['VP_SCR'].iloc[0]:,.2f}")
+    
+    # 2. CONDITIONAL: VP_FLUX_COMPTE_GPU.csv (Only when debug_account is specified)
     if debug_account is not None and debug_account_data is not None:
-        print(f"\nSaving detailed debug data for account {debug_account}...")
+        print(f"\n✓ [DEBUG_ACCOUNT] Saving VP_FLUX_COMPTE_GPU.csv for account {debug_account}...")
         
         # Create detailed breakdown: EXT_SCENARIO, YEAR, RESERVE, CAPITAL
         debug_rows = []
@@ -1794,22 +1816,22 @@ def run_projection_gpu_nested(
                     'ID_COMPTE': debug_account,
                     'EXT_SCENARIO': ext_scn,
                     'YEAR': year,
-                    'RESERVE_BE': debug_account_data[ext_scn, year, 0],
-                    'CAPITAL_REQ': debug_account_data[ext_scn, year, 1],
-                    'SCR': debug_account_data[ext_scn, year, 1] - debug_account_data[ext_scn, year, 0]
+                    'VP_RESERVE_BE': debug_account_data[ext_scn, year, 0],
+                    'VP_CAPITAL_REQ': debug_account_data[ext_scn, year, 1],
+                    'VP_SCR': debug_account_data[ext_scn, year, 1] - debug_account_data[ext_scn, year, 0]
                 })
         
-        debug_account_df = pd.DataFrame(debug_rows)
-        debug_account_path = output_path / f"DEBUG_ACCOUNT_{debug_account}_NESTED_DETAILS.csv"
-        debug_account_df.to_csv(debug_account_path, index=False, sep=';')
-        print(f"✓ Saved account debug file: {debug_account_path}")
-        print(f"  Contains {len(debug_account_df)} rows ({nb_ext_scenarios} scenarios × {nb_an_projection} years)")
+        vp_flux_compte_df = pd.DataFrame(debug_rows)
+        vp_flux_compte_path = output_path / "VP_FLUX_COMPTE_GPU.csv"
+        vp_flux_compte_df.to_csv(vp_flux_compte_path, index=False, sep=';')
+        print(f"  Saved VP_FLUX_COMPTE_GPU.csv")
+        print(f"  Contains {len(vp_flux_compte_df)} rows ({nb_ext_scenarios} scenarios × {nb_an_projection} years)")
         
         # Show summary for this account
-        print(f"\nAccount {debug_account} Summary:")
-        print(f"  Average Reserve (BE): ${debug_account_data[:, :, 0].mean():,.2f}")
-        print(f"  Average Capital Req:  ${debug_account_data[:, :, 1].mean():,.2f}")
-        print(f"  Average SCR:          ${(debug_account_data[:, :, 1] - debug_account_data[:, :, 0]).mean():,.2f}")
+        print(f"\n  Account {debug_account} Summary:")
+        print(f"    Average Reserve (BE): ${debug_account_data[:, :, 0].mean():,.2f}")
+        print(f"    Average Capital Req:  ${debug_account_data[:, :, 1].mean():,.2f}")
+        print(f"    Average SCR:          ${(debug_account_data[:, :, 1] - debug_account_data[:, :, 0]).mean():,.2f}")
     
     # Print summary
     end_time = datetime.now()
@@ -1833,109 +1855,101 @@ def run_projection_gpu_nested(
     print(f"    SCR:     ${results_df['SCR'].mean():,.2f}")
     print("=" * 80)
     
-    # Display external scenario debug output if captured
-    if external_debug_output is not None:
-        print("\n" + "=" * 80)
-        _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else 0
-        _debug_ext_year = debug_ext_year if debug_ext_year is not None else None
-        
-        print(f"DEBUG: External Scenario {_debug_ext_scenario} Details")
-        print(f"  Account: {debug_account}")
-        if _debug_ext_year is not None:
-            print(f"  Filtered to Year: {_debug_ext_year}")
-        print("=" * 80)
+    # 3. CONDITIONAL: FLUX_PROJETES_GPU.csv (Only when debug_ext_scenario AND debug_ext_year are specified)
+    if external_debug_output is not None and debug_ext_scenario is not None and debug_ext_year is not None:
+        print(f"\n✓ [DEBUG_EXT] Saving FLUX_PROJETES_GPU.csv (external scenario {debug_ext_scenario}, year {debug_ext_year})...")
         
         # Create debug DataFrame
         ext_debug_df = pd.DataFrame(external_debug_output, columns=[
-            'Year', 'VM_Before_Fees', 'DEX_Return', 'VM_After_Fees',
-            'Fee_Rate', 'Age', 'Survival_Prob', 'Mortality_Rate',
-            'Lapse_Rate', 'DEX_Value', 'SP500_Value', 'Net_Cashflow'
+            'ANNEE', 'VM_AVANT_FRAIS', 'REND_DEX', 'VM_APRES_FRAIS',
+            'TAUX_FRAIS', 'AGE', 'PROB_SURVIE', 'TAUX_MORTALITE',
+            'TAUX_LAPSE', 'VALEUR_DEX', 'VALEUR_SP500', 'FLUX_NET'
         ])
         
         # Filter out zero rows (policy terminated)
-        ext_debug_df = ext_debug_df[ext_debug_df['VM_Before_Fees'] > 0]
+        ext_debug_df = ext_debug_df[ext_debug_df['VM_AVANT_FRAIS'] > 0]
         
         # Filter to specific external year if requested
-        _debug_ext_year = debug_ext_year if debug_ext_year is not None else None
-        if _debug_ext_year is not None:
-            ext_debug_df = ext_debug_df[ext_debug_df['Year'] == _debug_ext_year]
-            if len(ext_debug_df) == 0:
-                print(f"\n(No data for external year {_debug_ext_year} - policy may have terminated or invalid year)")
+        ext_debug_df = ext_debug_df[ext_debug_df['ANNEE'] == debug_ext_year]
         
         if len(ext_debug_df) > 0:
-            print("\nExternal Scenario Projection:")
-            print(ext_debug_df.to_string(index=False, float_format=lambda x: f'{x:,.4f}'))
+            # Add account and scenario information
+            ext_debug_df.insert(0, 'ID_COMPTE', debug_account)
+            ext_debug_df.insert(1, 'SCN_EVAL', debug_ext_scenario)
             
-            print(f"\nFinal VM: ${ext_debug_df['VM_After_Fees'].iloc[-1]:,.2f}")
-            print(f"Final Age: {ext_debug_df['Age'].iloc[-1]:.0f}")
-            print(f"Final Survival: {ext_debug_df['Survival_Prob'].iloc[-1]:.4f}")
-            
-            # Save external scenario debug output to CSV
-            ext_debug_filename = f"DEBUG_EXT_SCENARIO_{_debug_ext_scenario}_ACCOUNT_{debug_account}"
-            if _debug_ext_year is not None:
-                ext_debug_filename += f"_YEAR_{_debug_ext_year}"
-            ext_debug_filename += ".csv"
-            ext_debug_csv_path = output_path / ext_debug_filename
-            ext_debug_df.to_csv(ext_debug_csv_path, index=False, sep=';')
-            print(f"\n✓ External scenario debug output saved: {ext_debug_csv_path}")
-            year_msg = f" for year {_debug_ext_year}" if _debug_ext_year is not None else ""
-            print(f"  Contains {len(ext_debug_df)} rows with external projection details{year_msg}")
+            # Save as FLUX_PROJETES_GPU.csv
+            flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
+            ext_debug_df.to_csv(flux_projetes_path, index=False, sep=';')
+            print(f"  Saved FLUX_PROJETES_GPU.csv")
+            print(f"  Contains {len(ext_debug_df)} rows for external scenario {debug_ext_scenario}, year {debug_ext_year}")
+            print(f"  Account: {debug_account}")
+            print(f"  Final VM: ${ext_debug_df['VM_APRES_FRAIS'].iloc[-1]:,.2f}")
+            print(f"  Final Age: {ext_debug_df['AGE'].iloc[-1]:.0f}")
+            print(f"  Final Survival Prob: {ext_debug_df['PROB_SURVIE'].iloc[-1]:.4f}")
         else:
-            print("\n(No data - policy may have terminated)")
-        
-        print("=" * 80)
+            print(f"  ⚠ No data for external year {debug_ext_year} - policy may have terminated or invalid year")
+            print(f"  FLUX_PROJETES_GPU.csv not created")
     
-    # Display internal scenario debug output if captured
-    if debug_output is not None:
-        print("\n" + "=" * 80)
+    # 4. CONDITIONAL: FLUX_PROJETES_INT_GPU.csv (Only when debug_int_scenario is specified)
+    if debug_output is not None and debug_int_scenario is not None:
         _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else 0
         _debug_ext_year = debug_ext_year if debug_ext_year is not None else 0
         
-        print(f"DEBUG: Internal Scenario {debug_int_scenario} Details")
-        print(f"  External Scenario: {_debug_ext_scenario}")
-        print(f"  External Year: {_debug_ext_year}")
-        print("=" * 80)
+        print(f"\n✓ [DEBUG_INT] Saving FLUX_PROJETES_INT_GPU.csv (internal scenario {debug_int_scenario})...")
         
         # Create debug DataFrame
         debug_df = pd.DataFrame(debug_output, columns=[
-            'Year', 'VM_Before_Return', 'Return_Rate', 'VM_After_Return',
-            'Fees', 'VM_After_Fees', 'Cashflow', 'Discount_Rate',
-            'Discount_Factor', 'PV_Cashflow'
+            'ANNEE', 'VM_AVANT_REND', 'TAUX_REND', 'VM_APRES_REND',
+            'FRAIS', 'VM_APRES_FRAIS', 'FLUX', 'TAUX_ESCOMPTE',
+            'FACTEUR_ESCOMPTE', 'VP_FLUX'
         ])
         
         # Filter out zero rows (policy terminated)
-        debug_df = debug_df[debug_df['VM_Before_Return'] > 0]
+        debug_df = debug_df[debug_df['VM_AVANT_REND'] > 0]
         
         # Filter to specific internal year if requested
         if debug_int_year is not None:
-            debug_df = debug_df[debug_df['Year'] == debug_int_year]
-            if len(debug_df) == 0:
-                print(f"\n(No data for internal year {debug_int_year} - policy may have terminated or invalid year)")
+            debug_df = debug_df[debug_df['ANNEE'] == debug_int_year]
         
         if len(debug_df) > 0:
-            print("\nInternal Scenario Projection:")
-            print(debug_df.to_string(index=False, float_format=lambda x: f'{x:,.4f}'))
+            # Add metadata columns
+            debug_df.insert(0, 'ID_COMPTE', debug_account if debug_account is not None else 0)
+            debug_df.insert(1, 'SCN_INT', debug_int_scenario)
+            debug_df.insert(2, 'SCN_EXT', _debug_ext_scenario)
+            debug_df.insert(3, 'ANNEE_EXT', _debug_ext_year)
             
-            print(f"\nTotal PV of Cashflows (Reserve): ${debug_df['PV_Cashflow'].sum():,.2f}")
-            
-            # Save debug output to CSV with comprehensive naming
-            debug_filename = f"DEBUG_INT_SCENARIO_{debug_int_scenario}"
-            if debug_ext_scenario is not None:
-                debug_filename += f"_EXT_SCENARIO_{_debug_ext_scenario}"
-            if debug_ext_year is not None:
-                debug_filename += f"_EXT_YEAR_{_debug_ext_year}"
-            if debug_int_year is not None:
-                debug_filename += f"_INT_YEAR_{debug_int_year}"
-            debug_filename += ".csv"
-            
-            debug_csv_path = output_path / debug_filename
-            debug_df.to_csv(debug_csv_path, index=False, sep=';')
-            print(f"\n✓ Debug output saved: {debug_csv_path}")
+            # Save as FLUX_PROJETES_INT_GPU.csv
+            flux_int_path = output_path / "FLUX_PROJETES_INT_GPU.csv"
+            debug_df.to_csv(flux_int_path, index=False, sep=';')
+            print(f"  Saved FLUX_PROJETES_INT_GPU.csv")
             print(f"  Contains {len(debug_df)} rows with internal projection details")
+            print(f"  Internal Scenario: {debug_int_scenario}")
+            print(f"  External Context: Scenario {_debug_ext_scenario}, Year {_debug_ext_year}")
+            print(f"  Total PV of Cashflows (Reserve): ${debug_df['VP_FLUX'].sum():,.2f}")
+            
+            if debug_int_year is not None:
+                print(f"  Filtered to internal year: {debug_int_year}")
         else:
-            print("\n(No data - policy may have terminated)")
-        
-        print("=" * 80)
+            print(f"  ⚠ No data - policy may have terminated")
+            if debug_int_year is not None:
+                print(f"  or invalid internal year {debug_int_year}")
+            print(f"  FLUX_PROJETES_INT_GPU.csv not created")
+    
+    # Summary of saved files
+    print("\n" + "=" * 80)
+    print("FILE SAVING SUMMARY")
+    print("=" * 80)
+    saved_files = ["VP_FLUX_TOTAL_GPU.csv (always)"]
+    if debug_account is not None and debug_account_data is not None:
+        saved_files.append("VP_FLUX_COMPTE_GPU.csv (debug_account specified)")
+    if external_debug_output is not None and debug_ext_scenario is not None and debug_ext_year is not None:
+        saved_files.append("FLUX_PROJETES_GPU.csv (debug_ext_scenario + debug_ext_year specified)")
+    if debug_output is not None and debug_int_scenario is not None:
+        saved_files.append("FLUX_PROJETES_INT_GPU.csv (debug_int_scenario specified)")
+    
+    for idx, file_name in enumerate(saved_files, 1):
+        print(f"  {idx}. {file_name}")
+    print("=" * 80)
     
     return {
         'results': results_df,
