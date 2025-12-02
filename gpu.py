@@ -1264,7 +1264,8 @@ def run_projection_gpu_nested(
         debug_int_scenario: Optional[int] = None,
         debug_ext_scenario: Optional[int] = None,
         debug_ext_year: Optional[int] = None,
-        debug_int_year: Optional[int] = None):
+        debug_int_year: Optional[int] = None,
+        debug_account: Optional[int] = None):
     """
     Run GPU-accelerated nested stochastic projection using Two-Pass architecture.
     
@@ -1499,6 +1500,7 @@ def run_projection_gpu_nested(
     all_reserves = []
     all_capital = []
     debug_output = None  # Store debug output if requested
+    debug_account_data = None  # Store full metrics for debug account if requested
     
     for i in range(num_batches):
         batch_start = datetime.now()
@@ -1676,6 +1678,16 @@ def run_projection_gpu_nested(
         all_reserves.extend(batch_reserves)
         all_capital.extend(batch_capital)
         
+        # Capture detailed metrics for debug account if requested
+        if debug_account is not None:
+            batch_start_account = start_idx + 1
+            batch_end_account = end_idx
+            if batch_start_account <= debug_account <= batch_end_account:
+                account_batch_idx = debug_account - batch_start_account
+                # Extract full metrics for this account: (nb_ext_scenarios, nb_an_projection, 2)
+                debug_account_data = h_metrics[account_batch_idx]
+                logger.info(f"  Captured debug data for account {debug_account} (batch index {account_batch_idx})")
+        
         # Explicit cleanup to free GPU memory
         if debug_memory:
             print(f"  Starting memory cleanup for batch {i+1}...")
@@ -1713,7 +1725,40 @@ def run_projection_gpu_nested(
     
     # Save results
     output_path.mkdir(parents=True, exist_ok=True)
-    results_df.to_csv(output_path / "NESTED_STOCHASTIC_RESULTS.csv", index=False, sep=';')
+    
+    # Save main results CSV
+    main_results_path = output_path / "NESTED_STOCHASTIC_RESULTS.csv"
+    results_df.to_csv(main_results_path, index=False, sep=';')
+    print(f"\n✓ Saved main results: {main_results_path}")
+    
+    # Save debug account data if requested
+    if debug_account is not None and debug_account_data is not None:
+        print(f"\nSaving detailed debug data for account {debug_account}...")
+        
+        # Create detailed breakdown: EXT_SCENARIO, YEAR, RESERVE, CAPITAL
+        debug_rows = []
+        for ext_scn in range(debug_account_data.shape[0]):
+            for year in range(debug_account_data.shape[1]):
+                debug_rows.append({
+                    'ID_COMPTE': debug_account,
+                    'EXT_SCENARIO': ext_scn,
+                    'YEAR': year,
+                    'RESERVE_BE': debug_account_data[ext_scn, year, 0],
+                    'CAPITAL_REQ': debug_account_data[ext_scn, year, 1],
+                    'SCR': debug_account_data[ext_scn, year, 1] - debug_account_data[ext_scn, year, 0]
+                })
+        
+        debug_account_df = pd.DataFrame(debug_rows)
+        debug_account_path = output_path / f"DEBUG_ACCOUNT_{debug_account}_NESTED_DETAILS.csv"
+        debug_account_df.to_csv(debug_account_path, index=False, sep=';')
+        print(f"✓ Saved account debug file: {debug_account_path}")
+        print(f"  Contains {len(debug_account_df)} rows ({nb_ext_scenarios} scenarios × {nb_an_projection} years)")
+        
+        # Show summary for this account
+        print(f"\nAccount {debug_account} Summary:")
+        print(f"  Average Reserve (BE): ${debug_account_data[:, :, 0].mean():,.2f}")
+        print(f"  Average Capital Req:  ${debug_account_data[:, :, 1].mean():,.2f}")
+        print(f"  Average SCR:          ${(debug_account_data[:, :, 1] - debug_account_data[:, :, 0]).mean():,.2f}")
     
     # Print summary
     end_time = datetime.now()
@@ -1770,10 +1815,20 @@ def run_projection_gpu_nested(
             
             print(f"\nTotal PV of Cashflows (Reserve): ${debug_df['PV_Cashflow'].sum():,.2f}")
             
-            # Save debug output to CSV
-            debug_csv_path = output_path / f"DEBUG_INT_SCENARIO_{debug_int_scenario}_EXT_{_debug_ext_scenario}_YEAR_{_debug_ext_year}.csv"
+            # Save debug output to CSV with comprehensive naming
+            debug_filename = f"DEBUG_INT_SCENARIO_{debug_int_scenario}"
+            if debug_ext_scenario is not None:
+                debug_filename += f"_EXT_SCENARIO_{_debug_ext_scenario}"
+            if debug_ext_year is not None:
+                debug_filename += f"_EXT_YEAR_{_debug_ext_year}"
+            if debug_int_year is not None:
+                debug_filename += f"_INT_YEAR_{debug_int_year}"
+            debug_filename += ".csv"
+            
+            debug_csv_path = output_path / debug_filename
             debug_df.to_csv(debug_csv_path, index=False, sep=';')
-            print(f"\nDebug output saved to: {debug_csv_path}")
+            print(f"\n✓ Debug output saved: {debug_csv_path}")
+            print(f"  Contains {len(debug_df)} rows with internal projection details")
         else:
             print("\n(No data - policy may have terminated)")
         
@@ -1879,7 +1934,7 @@ Examples:
         print("=" * 80)
 
         if args.debug_account is not None:
-            print("\n⚠️  Warning: --debug-account is not supported in nested mode (ignored)")
+            print(f"\n🔍 DEBUG MODE: Will save detailed breakdown for account {args.debug_account}")
             print()
 
         results = run_projection_gpu_nested(
@@ -1895,7 +1950,8 @@ Examples:
             debug_int_scenario=args.debug_int_scenario,
             debug_ext_scenario=args.debug_ext_scenario,
             debug_ext_year=args.debug_ext_year,
-            debug_int_year=args.debug_int_year
+            debug_int_year=args.debug_int_year,
+            debug_account=args.debug_account
         )
 
         if results:
