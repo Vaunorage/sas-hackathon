@@ -826,20 +826,28 @@ def external_generator_kernel(
                 flux_net = 0.0  # Calculate actual net cashflow
                 output_cashflows[account_idx, scenario_idx, output_year_idx, 0] = flux_net
                 
-                # Save debug info for external scenario if requested
+                # Save detailed debug info for external scenario if requested (20 columns)
                 if is_debug_ext and output_year_idx < output_ext_debug.shape[0]:
-                    output_ext_debug[output_year_idx, 0] = float(output_year_idx)  # Year
-                    output_ext_debug[output_year_idx, 1] = MT_VM_AV_RETRAIT_FRAIS  # VM before fees
-                    output_ext_debug[output_year_idx, 2] = r_dex  # DEX return
-                    output_ext_debug[output_year_idx, 3] = MT_VM_PROJ  # VM after fees
-                    output_ext_debug[output_year_idx, 4] = PC_RFG  # Fee rate
-                    output_ext_debug[output_year_idx, 5] = float(age)  # Age
-                    output_ext_debug[output_year_idx, 6] = TX_SURVIE  # Survival probability
-                    output_ext_debug[output_year_idx, 7] = qx  # Mortality rate
-                    output_ext_debug[output_year_idx, 8] = lapse  # Lapse rate
-                    output_ext_debug[output_year_idx, 9] = MT_DEX_PROJ  # DEX value
-                    output_ext_debug[output_year_idx, 10] = MT_SP500_PROJ  # SP500 value
-                    output_ext_debug[output_year_idx, 11] = flux_net  # Net cashflow
+                    output_ext_debug[output_year_idx, 0] = float(output_year_idx)  # ANNEE
+                    output_ext_debug[output_year_idx, 1] = MT_VM_PROJ  # VALEUR_MARCHANDE
+                    output_ext_debug[output_year_idx, 2] = MT_GAR_DECES_PROJ  # GAR_DECES
+                    output_ext_debug[output_year_idx, 3] = MT_GAR_ECH_PROJ  # GAR_ECH
+                    output_ext_debug[output_year_idx, 4] = MT_SRG_PROJ  # SRG
+                    output_ext_debug[output_year_idx, 5] = MT_DEX_PROJ  # VALEUR_DEX
+                    output_ext_debug[output_year_idx, 6] = MT_MM_PROJ  # VALEUR_MM
+                    output_ext_debug[output_year_idx, 7] = MT_TSX_PROJ  # VALEUR_TSX
+                    output_ext_debug[output_year_idx, 8] = MT_SP500_PROJ  # VALEUR_SP500
+                    output_ext_debug[output_year_idx, 9] = MT_EAFE_PROJ  # VALEUR_EAFE
+                    output_ext_debug[output_year_idx, 10] = float(age)  # AGE
+                    output_ext_debug[output_year_idx, 11] = TX_SURVIE  # PROB_SURVIE
+                    output_ext_debug[output_year_idx, 12] = TX_SURVIE_DEB  # PROB_SURVIE_DEBUT
+                    output_ext_debug[output_year_idx, 13] = qx  # TAUX_MORTALITE
+                    output_ext_debug[output_year_idx, 14] = lapse  # TAUX_LAPSE
+                    output_ext_debug[output_year_idx, 15] = r_dex  # REND_DEX
+                    output_ext_debug[output_year_idx, 16] = r_mm  # REND_MM
+                    output_ext_debug[output_year_idx, 17] = PC_RFG  # TAUX_FRAIS
+                    output_ext_debug[output_year_idx, 18] = MT_VM_AV_RETRAIT_FRAIS  # VM_AVANT_FRAIS
+                    output_ext_debug[output_year_idx, 19] = MT_BONI_DECES_PROJ  # BONI_DECES
 
                 output_year_idx += 1
 
@@ -1593,7 +1601,7 @@ def run_projection_gpu_nested(
                 f"Try reducing --max-accounts or --ext-scenarios. Original error: {e}"
             )
         
-        # Allocate external debug output if requested
+        # Allocate external debug output if requested (expanded to 20 columns for detailed state)
         d_ext_debug_output = None
         _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else -1
         _debug_account = debug_account if debug_account is not None else -1
@@ -1604,11 +1612,12 @@ def run_projection_gpu_nested(
             batch_end_account = end_idx
             if batch_start_account <= debug_account <= batch_end_account:
                 logger.info(f"  DEBUG MODE: Capturing external scenario {debug_ext_scenario} for account {debug_account}")
-                d_ext_debug_output = cuda.device_array((nb_an_projection, 12), dtype=np.float32)
+                # Expanded to 20 columns to capture more state information
+                d_ext_debug_output = cuda.device_array((nb_an_projection, 20), dtype=np.float32)
         
         # Use dummy array if not debugging
         if d_ext_debug_output is None:
-            d_ext_debug_output = cuda.device_array((1, 12), dtype=np.float32)
+            d_ext_debug_output = cuda.device_array((1, 20), dtype=np.float32)
         
         # === KERNEL A: EXTERNAL GENERATOR ===
         logger.info("  Launching Kernel A (External Generator)...")
@@ -1855,39 +1864,53 @@ def run_projection_gpu_nested(
     print(f"    SCR:     ${results_df['SCR'].mean():,.2f}")
     print("=" * 80)
     
-    # 3. CONDITIONAL: FLUX_PROJETES_GPU.csv (Only when debug_ext_scenario AND debug_ext_year are specified)
-    if external_debug_output is not None and debug_ext_scenario is not None and debug_ext_year is not None:
-        print(f"\n✓ [DEBUG_EXT] Saving FLUX_PROJETES_GPU.csv (external scenario {debug_ext_scenario}, year {debug_ext_year})...")
+    # 3. CONDITIONAL: FLUX_PROJETES_GPU.csv (Only when debug_ext_scenario is specified)
+    # This file contains detailed time-series state projection for an external scenario
+    if external_debug_output is not None and debug_ext_scenario is not None:
+        print(f"\n✓ [DEBUG_EXT] Saving FLUX_PROJETES_GPU.csv (external scenario {debug_ext_scenario})...")
         
-        # Create debug DataFrame
+        # Create debug DataFrame with expanded 20 columns
         ext_debug_df = pd.DataFrame(external_debug_output, columns=[
-            'ANNEE', 'VM_AVANT_FRAIS', 'REND_DEX', 'VM_APRES_FRAIS',
-            'TAUX_FRAIS', 'AGE', 'PROB_SURVIE', 'TAUX_MORTALITE',
-            'TAUX_LAPSE', 'VALEUR_DEX', 'VALEUR_SP500', 'FLUX_NET'
+            'AN_EVAL', 'VALEUR_MARCHANDE', 'GAR_DECES', 'GAR_ECH', 'SRG',
+            'VALEUR_DEX', 'VALEUR_MM', 'VALEUR_TSX', 'VALEUR_SP500', 'VALEUR_EAFE',
+            'AGE', 'PROB_SURVIE', 'PROB_SURVIE_DEBUT', 'TAUX_MORTALITE', 'TAUX_LAPSE',
+            'REND_DEX', 'REND_MM', 'TAUX_FRAIS', 'VM_AVANT_FRAIS', 'BONI_DECES'
         ])
         
         # Filter out zero rows (policy terminated)
-        ext_debug_df = ext_debug_df[ext_debug_df['VM_AVANT_FRAIS'] > 0]
+        ext_debug_df = ext_debug_df[ext_debug_df['VALEUR_MARCHANDE'] > 0]
         
         # Filter to specific external year if requested
-        ext_debug_df = ext_debug_df[ext_debug_df['ANNEE'] == debug_ext_year]
+        if debug_ext_year is not None:
+            ext_debug_df = ext_debug_df[ext_debug_df['AN_EVAL'] == debug_ext_year]
         
         if len(ext_debug_df) > 0:
             # Add account and scenario information
             ext_debug_df.insert(0, 'ID_COMPTE', debug_account)
             ext_debug_df.insert(1, 'SCN_EVAL', debug_ext_scenario)
             
+            # Add MOIS_EVAL column (default to 12 for yearly data)
+            ext_debug_df.insert(3, 'MOIS_EVAL', 12)
+            
             # Save as FLUX_PROJETES_GPU.csv
             flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
             ext_debug_df.to_csv(flux_projetes_path, index=False, sep=';')
             print(f"  Saved FLUX_PROJETES_GPU.csv")
-            print(f"  Contains {len(ext_debug_df)} rows for external scenario {debug_ext_scenario}, year {debug_ext_year}")
+            print(f"  Contains {len(ext_debug_df)} rows for external scenario {debug_ext_scenario}")
             print(f"  Account: {debug_account}")
-            print(f"  Final VM: ${ext_debug_df['VM_APRES_FRAIS'].iloc[-1]:,.2f}")
+            if debug_ext_year is not None:
+                print(f"  Filtered to year: {debug_ext_year}")
+            print(f"  Columns: AN_EVAL, VALEUR_MARCHANDE, GAR_DECES, GAR_ECH, SRG,")
+            print(f"           Fund values (DEX, MM, TSX, SP500, EAFE), AGE, PROB_SURVIE,")
+            print(f"           TAUX_MORTALITE, TAUX_LAPSE, Returns, Fees")
+            print(f"  Final VM: ${ext_debug_df['VALEUR_MARCHANDE'].iloc[-1]:,.2f}")
             print(f"  Final Age: {ext_debug_df['AGE'].iloc[-1]:.0f}")
             print(f"  Final Survival Prob: {ext_debug_df['PROB_SURVIE'].iloc[-1]:.4f}")
         else:
-            print(f"  ⚠ No data for external year {debug_ext_year} - policy may have terminated or invalid year")
+            if debug_ext_year is not None:
+                print(f"  ⚠ No data for external year {debug_ext_year} - policy may have terminated or invalid year")
+            else:
+                print(f"  ⚠ No data - policy may have terminated")
             print(f"  FLUX_PROJETES_GPU.csv not created")
     
     # 4. CONDITIONAL: FLUX_PROJETES_INT_GPU.csv (Only when debug_int_scenario is specified)
@@ -1939,13 +1962,14 @@ def run_projection_gpu_nested(
     print("\n" + "=" * 80)
     print("FILE SAVING SUMMARY")
     print("=" * 80)
-    saved_files = ["VP_FLUX_TOTAL_GPU.csv (always)"]
+    saved_files = ["VP_FLUX_TOTAL_GPU.csv (always saved - portfolio totals)"]
     if debug_account is not None and debug_account_data is not None:
-        saved_files.append("VP_FLUX_COMPTE_GPU.csv (debug_account specified)")
-    if external_debug_output is not None and debug_ext_scenario is not None and debug_ext_year is not None:
-        saved_files.append("FLUX_PROJETES_GPU.csv (debug_ext_scenario + debug_ext_year specified)")
+        saved_files.append("VP_FLUX_COMPTE_GPU.csv (requires --debug-account)")
+    if external_debug_output is not None and debug_ext_scenario is not None:
+        year_info = f" year {debug_ext_year}" if debug_ext_year is not None else " all years"
+        saved_files.append(f"FLUX_PROJETES_GPU.csv (requires --debug-account + --debug-ext-scenario, contains{year_info})")
     if debug_output is not None and debug_int_scenario is not None:
-        saved_files.append("FLUX_PROJETES_INT_GPU.csv (debug_int_scenario specified)")
+        saved_files.append("FLUX_PROJETES_INT_GPU.csv (requires --debug-int-scenario)")
     
     for idx, file_name in enumerate(saved_files, 1):
         print(f"  {idx}. {file_name}")
@@ -1970,26 +1994,28 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Standard projection (Tier 1 - Cashflows & VP)
-  python gpu.py --mode standard --max-accounts 10000
+  # Basic nested stochastic (only VP_FLUX_TOTAL_GPU.csv saved)
+  python gpu.py --ext-scenarios 100 --int-scenarios 500 --max-accounts 1000
   
-  # Nested stochastic (Tier 2 & 3 - Reserves & Capital)
-  python gpu.py --mode nested --ext-scenarios 100 --int-scenarios 500 --max-accounts 1000
+  # With account-level detail (saves VP_FLUX_COMPTE_GPU.csv)
+  python gpu.py --ext-scenarios 100 --int-scenarios 500 --max-accounts 1000 \\
+      --debug-account 1
   
-  # Debug external scenario (show detailed external scenario projection)
-  python gpu.py --mode nested --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
+  # With external scenario time series (saves FLUX_PROJETES_GPU.csv - all years)
+  python gpu.py --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
       --debug-account 1 --debug-ext-scenario 0
   
-  # Debug internal scenario (show detailed calculations for a specific internal scenario)
-  python gpu.py --mode nested --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
+  # With external scenario + specific year filter
+  python gpu.py --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
+      --debug-account 1 --debug-ext-scenario 0 --debug-ext-year 5
+  
+  # With internal scenario detail (saves FLUX_PROJETES_INT_GPU.csv)
+  python gpu.py --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
       --debug-int-scenario 0 --debug-ext-scenario 0 --debug-ext-year 0
   
-  # Debug with internal year filter (show only year 5 of the internal projection)
-  python gpu.py --mode nested --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
-      --debug-int-scenario 0 --debug-ext-scenario 0 --debug-ext-year 0 --debug-int-year 5
-  
-  # Debug mode (standard)
-  python gpu.py --mode standard --debug-account 12345
+  # Complete debug: all files saved
+  python gpu.py --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
+      --debug-account 1 --debug-ext-scenario 0 --debug-int-scenario 0
         """
     )
 
