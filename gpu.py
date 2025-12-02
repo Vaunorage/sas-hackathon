@@ -1833,9 +1833,19 @@ def log_gpu_memory_debug(step_name: str, verbose: bool = False):
                 print(f"✓  {msg}")
         
         return free_mem, total_mem, used_mem
-    except (NotImplementedError, Exception) as e:
+    except NotImplementedError:
         if verbose:
-            print(f"[GPU Memory @ {step_name}] Cannot query (Error: {e})")
+            print(f"[GPU Memory @ {step_name}] Memory query not available (using RMM allocator)")
+            print(f"  → Use 'nvidia-smi' in another terminal to monitor GPU memory")
+        return None, None, None
+    except Exception as e:
+        if verbose:
+            error_type = type(e).__name__
+            error_msg = str(e) if str(e) else "Unknown error"
+            print(f"[GPU Memory @ {step_name}] Cannot query memory")
+            print(f"  → Error type: {error_type}")
+            print(f"  → Error message: {error_msg}")
+            print(f"  → Use 'nvidia-smi' to monitor GPU memory externally")
         return None, None, None
 
 def run_projection_gpu_nested(
@@ -1900,7 +1910,18 @@ def run_projection_gpu_nested(
         gpu = cuda.get_current_device()
         print(f"GPU Device: {gpu.name.decode()}")
         
-        log_gpu_memory_debug("Initialization", verbose=True)
+        # Try to get memory info and provide guidance if not available
+        free_mem, total_mem, used_mem = log_gpu_memory_debug("Initialization", verbose=True)
+        if free_mem is None:
+            print("")
+            print("=" * 80)
+            print("NOTE: GPU memory cannot be queried programmatically (RMM allocator)")
+            print("To monitor GPU memory usage during execution:")
+            print("  1. Open another terminal")
+            print("  2. Run: watch -n 1 nvidia-smi")
+            print("  3. Monitor GPU memory usage in real-time")
+            print("=" * 80)
+            print("")
     except Exception as e:
         raise RuntimeError(f"Failed to initialize GPU: {e}")
 
