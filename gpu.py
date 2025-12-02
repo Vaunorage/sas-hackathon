@@ -1813,6 +1813,31 @@ def prepare_account_data(population_df):
 # TWO-PASS NESTED STOCHASTIC ORCHESTRATOR
 # =============================================================================
 
+def log_gpu_memory_debug(step_name: str, verbose: bool = False):
+    """Helper function to log GPU memory state for debugging"""
+    try:
+        free_mem, total_mem = cuda.current_context().get_memory_info()
+        used_mem = total_mem - free_mem
+        used_pct = (used_mem / total_mem) * 100
+        
+        msg = (f"[GPU Memory @ {step_name}] "
+               f"Used: {used_mem / 1024**3:.2f} GB / {total_mem / 1024**3:.2f} GB "
+               f"({used_pct:.1f}%), Free: {free_mem / 1024**3:.2f} GB")
+        
+        if verbose or used_pct > 80:
+            if used_pct > 90:
+                print(f"⚠️  WARNING: {msg}")
+            elif used_pct > 80:
+                print(f"⚡ CAUTION: {msg}")
+            else:
+                print(f"✓  {msg}")
+        
+        return free_mem, total_mem, used_mem
+    except (NotImplementedError, Exception) as e:
+        if verbose:
+            print(f"[GPU Memory @ {step_name}] Cannot query (Error: {e})")
+        return None, None, None
+
 def run_projection_gpu_nested(
         data_path: Path, 
         output_path: Path, 
@@ -1833,7 +1858,8 @@ def run_projection_gpu_nested(
         tx_lapse_tot_path: Optional[Path] = None,
         acquisition_path: Optional[Path] = None,
         coussins_escap_path: Optional[Path] = None,
-        progress_callback: Optional[callable] = None):
+        progress_callback: Optional[callable] = None,
+        debug_memory: bool = False):
     """
     Run GPU-accelerated nested stochastic projection using Two-Pass architecture.
     
@@ -1863,6 +1889,7 @@ def run_projection_gpu_nested(
     print(f"External scenarios: {nb_ext_scenarios}")
     print(f"Internal scenarios per node: {nb_int_scenarios}")
     print(f"Capital shock: {shock_capital_pct*100:.1f}%")
+    print(f"Memory debugging: {'ENABLED' if debug_memory else 'DISABLED'}")
     print("=" * 80)
     
     # Check GPU availability
@@ -1873,11 +1900,7 @@ def run_projection_gpu_nested(
         gpu = cuda.get_current_device()
         print(f"GPU Device: {gpu.name.decode()}")
         
-        try:
-            free_mem, total_mem = cuda.current_context().get_memory_info()
-            print(f"GPU Memory: {free_mem / 1024**3:.2f} GB free / {total_mem / 1024**3:.2f} GB total")
-        except NotImplementedError:
-            print(f"GPU Memory: Information not available (using RMM allocator)")
+        log_gpu_memory_debug("Initialization", verbose=True)
     except Exception as e:
         raise RuntimeError(f"Failed to initialize GPU: {e}")
 
@@ -1899,6 +1922,7 @@ def run_projection_gpu_nested(
                          acquisition_path=acquisition_path,
                          coussins_escap_path=coussins_escap_path)
     print("✓ Data loaded successfully")
+    log_gpu_memory_debug("After data load", verbose=debug_memory)
 
     if max_accounts:
         data['population'] = data['population'].head(max_accounts)
@@ -1909,12 +1933,22 @@ def run_projection_gpu_nested(
     # Prepare account data
     all_account_data, _ = prepare_account_data(data['population'])
     print("✓ Account data prepared")
+    log_gpu_memory_debug("After account prep", verbose=debug_memory)
 
     # Create GPU lookup tables
     print("\nCreating GPU lookup tables...")
+    if debug_memory:
+        print("  Creating mortality lookup...")
     mortality_lookup = create_gpu_mortality_lookup(data['mortalite'])
+    if debug_memory:
+        print(f"    Mortality table size: {mortality_lookup.nbytes / 1024**2:.2f} MB")
+    if debug_memory:
+        print("  Creating returns lookup...")
     (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx,
      rend_sp500, rend_eafe) = create_gpu_returns_lookup(data['rendements'])
+    if debug_memory:
+        returns_size = sum(x.nbytes for x in [forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe])
+        print(f"    Returns tables size: {returns_size / 1024**2:.2f} MB")
     min_ferr_lookup = create_gpu_min_ferr_lookup(data['min_ferr'])
     lapse_part_min, lapse_part_max = create_gpu_lapse_part_lookup(data['tx_lapse_part'])
     lapse_tot_min, lapse_tot_max, lapse_tot_fact = create_gpu_lapse_tot_lookup(data['tx_lapse_tot'])
@@ -1923,7 +1957,19 @@ def run_projection_gpu_nested(
     fees_lookup = create_gpu_fees_lookup(data['frais_admin'])
     (acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac,
      acq_frais_ac, acq_frais_rf) = create_gpu_acquisition_lookup(data['acquisition'])
+    
+    if debug_memory:
+        all_lookups_size = sum(x.nbytes for x in [
+            mortality_lookup, forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx,
+            rend_sp500, rend_eafe, min_ferr_lookup, lapse_part_min, lapse_part_max,
+            lapse_tot_min, lapse_tot_max, lapse_tot_fact, deposits_pc, deposits_var,
+            deposits_age_max, deposits_i_even, fees_lookup, acq_vente_rf, acq_vente_ac,
+            acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf
+        ])
+        print(f"  Total CPU lookup tables size: {all_lookups_size / 1024**2:.2f} MB")
+    
     print("✓ All GPU lookup tables created")
+    log_gpu_memory_debug("After lookup table creation", verbose=debug_memory)
 
     # For risk-neutral scenarios, create simplified return tables
     # In practice, these would be calibrated to market prices
@@ -1934,7 +1980,13 @@ def run_projection_gpu_nested(
     rn_rend_tsx = np.full((nb_int_scenarios, nb_an_projection), 0.035, dtype=np.float32)
     rn_rend_sp500 = np.full((nb_int_scenarios, nb_an_projection), 0.035, dtype=np.float32)
     rn_rend_eafe = np.full((nb_int_scenarios, nb_an_projection), 0.03, dtype=np.float32)
+    
+    if debug_memory:
+        rn_size = sum(x.nbytes for x in [rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe])
+        print(f"  Risk-neutral tables size: {rn_size / 1024**2:.2f} MB")
+    
     print("✓ Risk-neutral tables created")
+    log_gpu_memory_debug("After RN tables creation", verbose=debug_memory)
 
     # Calculate memory requirements
     print("\nCalculating memory requirements...")
@@ -1951,15 +2003,29 @@ def run_projection_gpu_nested(
     total_mem_per_account = (state_mem_per_account + cf_mem_per_account + 
                              metrics_mem_per_account + all_account_data.shape[1] * 4)
     
+    # Estimate lookup table memory overhead (always resident on GPU)
+    lookup_overhead = 0
+    # Real-world scenario tables: 6 assets × (nb_ext_scenarios, ~40 years, 12 months) × 4 bytes
+    lookup_overhead += 6 * nb_ext_scenarios * nb_an_projection * 12 * 4
+    # Risk-neutral tables: 6 assets × (nb_int_scenarios, years) × 4 bytes
+    lookup_overhead += 6 * nb_int_scenarios * nb_an_projection * 4
+    # Mortality, lapse, deposits, fees, acquisition tables (conservative estimate)
+    lookup_overhead += 150 * 1024**2  # ~150 MB
+    
     print(f"  State tensor per account: {state_mem_per_account / 1024**2:.2f} MB")
     print(f"  Total memory per account: {total_mem_per_account / 1024**2:.2f} MB")
+    print(f"  Lookup table overhead: {lookup_overhead / 1024**2:.2f} MB")
     
     # Calculate batch size (conservative for nested scenarios)
     try:
         free_mem, total_mem = cuda.current_context().get_memory_info()
-        available_mem = free_mem * 0.7  # Conservative for nested scenarios
+        print(f"  GPU free memory: {free_mem / 1024**3:.2f} GB")
+        print(f"  GPU total memory: {total_mem / 1024**3:.2f} GB")
+        # Reserve memory for lookup tables and CUDA overhead
+        available_mem = max(0, (free_mem - lookup_overhead) * 0.6)  # More conservative
     except NotImplementedError:
-        available_mem = 12 * 1024**3  # Assume 12 GB available
+        print("  Warning: Cannot query GPU memory, using conservative estimate")
+        available_mem = max(0, 12 * 1024**3 - lookup_overhead)  # Assume 12 GB total
     
     batch_size = max(1, int(available_mem // total_mem_per_account))
     batch_size = min(batch_size, n_accounts)
@@ -1970,6 +2036,9 @@ def run_projection_gpu_nested(
 
     # Copy lookup tables to GPU
     print("\nCopying lookup tables to GPU...")
+    if debug_memory:
+        print("  This will allocate permanent GPU memory for all lookups")
+    log_gpu_memory_debug("Before copying lookups to GPU", verbose=debug_memory)
     d_mortality = cuda.to_device(mortality_lookup)
     d_forward_rate = cuda.to_device(forward_rate)
     d_ajust_forward = cuda.to_device(ajust_forward)
@@ -2004,6 +2073,7 @@ def run_projection_gpu_nested(
     d_rn_rend_sp500 = cuda.to_device(rn_rend_sp500)
     d_rn_rend_eafe = cuda.to_device(rn_rend_eafe)
     print("✓ Lookup tables on GPU")
+    log_gpu_memory_debug("After copying lookups to GPU", verbose=True)
 
     # Process batches
     print("\n" + "=" * 80)
@@ -2020,27 +2090,70 @@ def run_projection_gpu_nested(
         current_batch_size = end_idx - start_idx
         
         logger.info(f"\n--- Batch {i+1}/{num_batches} (Accounts {start_idx}-{end_idx-1}) ---")
+        log_gpu_memory_debug(f"Batch {i+1} start", verbose=debug_memory)
+        
+        # Check available memory before allocation
+        try:
+            free_mem_before, _ = cuda.current_context().get_memory_info()
+            estimated_batch_mem = current_batch_size * total_mem_per_account
+            logger.info(f"  Free GPU memory: {free_mem_before / 1024**3:.2f} GB")
+            logger.info(f"  Estimated batch memory: {estimated_batch_mem / 1024**3:.2f} GB")
+            
+            if estimated_batch_mem > free_mem_before * 0.9:
+                raise RuntimeError(
+                    f"Insufficient GPU memory for batch {i+1}. "
+                    f"Need {estimated_batch_mem / 1024**3:.2f} GB but only "
+                    f"{free_mem_before / 1024**3:.2f} GB available. "
+                    f"Try reducing batch size or number of scenarios."
+                )
+        except NotImplementedError:
+            pass  # Cannot check memory, proceed with caution
         
         # Prepare batch data
         batch_account_data = np.ascontiguousarray(all_account_data[start_idx:end_idx])
+        if debug_memory:
+            print(f"  Batch account data size: {batch_account_data.nbytes / 1024**2:.2f} MB")
         d_batch_accounts = cuda.to_device(batch_account_data)
+        log_gpu_memory_debug(f"Batch {i+1} after account data copy", verbose=debug_memory)
         
         # Allocate state and cashflow tensors (bridge between kernels)
-        d_states = cuda.device_array(
-            (current_batch_size, nb_ext_scenarios, nb_an_projection, STATE_SIZE),
-            dtype=np.float32
-        )
-        d_cashflows = cuda.device_array(
-            (current_batch_size, nb_ext_scenarios, nb_an_projection, 1),
-            dtype=np.float32
-        )
-        d_metrics = cuda.device_array(
-            (current_batch_size, nb_ext_scenarios, nb_an_projection, 2),
-            dtype=np.float32
-        )
+        if debug_memory:
+            states_size = current_batch_size * nb_ext_scenarios * nb_an_projection * STATE_SIZE * 4
+            cf_size = current_batch_size * nb_ext_scenarios * nb_an_projection * 1 * 4
+            metrics_size = current_batch_size * nb_ext_scenarios * nb_an_projection * 2 * 4
+            print(f"  Allocating state tensor: {states_size / 1024**2:.2f} MB")
+            print(f"  Allocating cashflow tensor: {cf_size / 1024**2:.2f} MB")
+            print(f"  Allocating metrics tensor: {metrics_size / 1024**2:.2f} MB")
+            print(f"  Total batch allocation: {(states_size + cf_size + metrics_size) / 1024**2:.2f} MB")
+        
+        try:
+            d_states = cuda.device_array(
+                (current_batch_size, nb_ext_scenarios, nb_an_projection, STATE_SIZE),
+                dtype=np.float32
+            )
+            log_gpu_memory_debug(f"Batch {i+1} after states allocation", verbose=debug_memory)
+            
+            d_cashflows = cuda.device_array(
+                (current_batch_size, nb_ext_scenarios, nb_an_projection, 1),
+                dtype=np.float32
+            )
+            log_gpu_memory_debug(f"Batch {i+1} after cashflows allocation", verbose=debug_memory)
+            
+            d_metrics = cuda.device_array(
+                (current_batch_size, nb_ext_scenarios, nb_an_projection, 2),
+                dtype=np.float32
+            )
+            log_gpu_memory_debug(f"Batch {i+1} after metrics allocation", verbose=debug_memory)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to allocate GPU memory for batch {i+1}. "
+                f"This typically means GPU is out of memory. "
+                f"Try reducing --max-accounts or --ext-scenarios. Original error: {e}"
+            )
         
         # === KERNEL A: EXTERNAL GENERATOR ===
         logger.info("  Launching Kernel A (External Generator)...")
+        log_gpu_memory_debug(f"Batch {i+1} before Kernel A", verbose=debug_memory)
         blocks_x = (current_batch_size + threads_per_block[0] - 1) // threads_per_block[0]
         blocks_y = (nb_ext_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
         grid_A = (blocks_x, blocks_y)
@@ -2063,10 +2176,14 @@ def run_projection_gpu_nested(
         cuda.synchronize()
         kernel_a_time = (datetime.now() - kernel_a_start).total_seconds()
         logger.info(f"  Kernel A complete: {kernel_a_time:.2f}s")
+        log_gpu_memory_debug(f"Batch {i+1} after Kernel A", verbose=debug_memory)
         
         # === KERNEL B: NESTED VALUATOR ===
         logger.info("  Launching Kernel B (Nested Valuator)...")
         total_nodes = current_batch_size * nb_ext_scenarios * nb_an_projection
+        if debug_memory:
+            print(f"  Kernel B will process {total_nodes:,} nodes with {nb_int_scenarios} internal scenarios each")
+        log_gpu_memory_debug(f"Batch {i+1} before Kernel B", verbose=debug_memory)
         threads_per_block_B = 256
         blocks_B = (total_nodes + threads_per_block_B - 1) // threads_per_block_B
         
@@ -2085,10 +2202,16 @@ def run_projection_gpu_nested(
         cuda.synchronize()
         kernel_b_time = (datetime.now() - kernel_b_start).total_seconds()
         logger.info(f"  Kernel B complete: {kernel_b_time:.2f}s")
+        log_gpu_memory_debug(f"Batch {i+1} after Kernel B", verbose=debug_memory)
         
         # Copy results back
         logger.info("  Copying results to CPU...")
+        copy_start = datetime.now()
         h_metrics = d_metrics.copy_to_host()
+        copy_time = (datetime.now() - copy_start).total_seconds()
+        if debug_memory:
+            print(f"  Copy to CPU took {copy_time:.2f}s ({h_metrics.nbytes / 1024**2:.2f} MB)")
+        log_gpu_memory_debug(f"Batch {i+1} after copy to CPU", verbose=debug_memory)
         
         # Process metrics (average across scenarios and years for summary)
         # Shape: (current_batch_size, nb_ext_scenarios, nb_an_projection, 2)
@@ -2099,13 +2222,32 @@ def run_projection_gpu_nested(
         all_reserves.extend(batch_reserves)
         all_capital.extend(batch_capital)
         
-        # Cleanup
-        del d_batch_accounts, d_states, d_cashflows, d_metrics, h_metrics
-        gc.collect()
+        # Explicit cleanup to free GPU memory
+        if debug_memory:
+            print(f"  Starting memory cleanup for batch {i+1}...")
+        log_gpu_memory_debug(f"Batch {i+1} before cleanup", verbose=debug_memory)
+        
+        del d_batch_accounts, d_states, d_cashflows, d_metrics
         cuda.synchronize()
+        del h_metrics
+        gc.collect()
+        
+        # Force memory pool cleanup if using RMM
+        try:
+            import rmm
+            rmm.mr.get_current_device_resource().deallocate(0, 0)
+            if debug_memory:
+                print("  RMM memory pool cleanup successful")
+        except (ImportError, AttributeError):
+            pass  # RMM not available or no manual cleanup needed
+        
+        log_gpu_memory_debug(f"Batch {i+1} after cleanup", verbose=True)
         
         batch_time = (datetime.now() - batch_start).total_seconds()
         logger.info(f"  Batch complete: {batch_time:.2f}s (KernelA: {kernel_a_time:.2f}s, KernelB: {kernel_b_time:.2f}s)")
+        
+        if debug_memory:
+            print(f"  Memory should be back to baseline after cleanup")
     
     # Create results DataFrame
     results_df = pd.DataFrame({
@@ -2194,6 +2336,8 @@ Examples:
                        help='Number of internal (risk-neutral) scenarios per node for nested mode (default: 500)')
     parser.add_argument('--shock', type=float, default=0.35,
                        help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
+    parser.add_argument('--debug-memory', action='store_true',
+                       help='Enable detailed GPU memory debugging output')
     
     args = parser.parse_args()
     
@@ -2227,7 +2371,8 @@ Examples:
             nb_int_scenarios=args.int_scenarios,
             shock_capital_pct=args.shock,
             max_accounts=args.max_accounts,
-            threads_per_block=(16, 16)
+            threads_per_block=(16, 16),
+            debug_memory=args.debug_memory
         )
 
         if results:
