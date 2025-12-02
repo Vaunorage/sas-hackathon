@@ -1797,12 +1797,7 @@ Examples:
   python gpu.py --mode standard --debug-account 12345
         """
     )
-    
-    # Mode selection
-    parser.add_argument('--mode', type=str, choices=['standard', 'nested'], default='standard',
-                       help='Projection mode: "standard" for cashflows/VP, "nested" for reserves/capital (default: standard)')
-    
-    # Common parameters
+
     parser.add_argument('--debug-account', type=int, default=None,
                        help='Account ID to show detailed results (standard mode only)')
     parser.add_argument('--debug-scenario', type=int, default=None,
@@ -1843,10 +1838,6 @@ Examples:
         
         DATA_PATH = HERE.joinpath("data_in")
         OUTPUT_PATH = HERE.joinpath("data_out_gpu")
-
-        # =============================================================================
-        # NESTED MODE (New - Two Pass)
-        # =============================================================================
 
         print("\n" + "=" * 80)
         print("RUNNING NESTED STOCHASTIC MODE (Tier 2 & 3: Reserves & Capital)")
