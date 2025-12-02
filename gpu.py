@@ -1996,18 +1996,22 @@ Examples:
     args = parser.parse_args()
     
     # Validate debug arguments
-    # 1. If ext scenario/year are specified, int scenario is required
-    if (args.debug_ext_scenario is not None or args.debug_ext_year is not None):
-        if args.debug_int_scenario is None:
-            parser.error("--debug-int-scenario is required when --debug-ext-scenario or --debug-ext-year are specified")
+    # External debugging: --debug-account + --debug-ext-scenario (independent)
+    # Internal debugging: --debug-int-scenario (uses ext-scenario and ext-year for context)
     
-    # 2. If int year is specified, int scenario is required (can't filter without enabling debug)
+    # 1. --debug-ext-year is only meaningful for internal debugging (specifies which node to debug)
+    if args.debug_ext_year is not None:
+        if args.debug_int_scenario is None:
+            parser.error("--debug-ext-year is only used with --debug-int-scenario (to select which external node to debug)")
+    
+    # 2. --debug-int-year requires --debug-int-scenario
     if args.debug_int_year is not None:
         if args.debug_int_scenario is None:
-            parser.error("--debug-int-scenario is required when --debug-int-year is specified")
+            parser.error("--debug-int-year requires --debug-int-scenario")
     
-    # Set defaults for debug arguments if they're being used
+    # Set defaults for internal debugging if enabled
     if args.debug_int_scenario is not None:
+        # Default to first external scenario and year if not specified
         if args.debug_ext_scenario is None:
             args.debug_ext_scenario = 0
         if args.debug_ext_year is None:
