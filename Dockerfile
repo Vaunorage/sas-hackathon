@@ -26,7 +26,7 @@ RUN uv pip install --force-reinstall "llvmlite==0.43.0" "numba==0.60.0" "numpy<2
 # Copy application files
 COPY flask_app.py .
 COPY cli.py .
-COPY gpu.py .
+COPY calculations/gpu.py .
 COPY cpu.py .
 COPY paths.py .
 COPY extract_csv_from_zips.py .

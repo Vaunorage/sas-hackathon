@@ -1,10 +1,10 @@
 import runpod
-import os
 import tempfile
 from pathlib import Path
 import pandas as pd
 import requests
-import gpu # Import the main gpu projection script
+from calculations import gpu
+
 
 def handler(job):
     """
