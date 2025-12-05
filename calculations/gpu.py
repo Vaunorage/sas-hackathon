@@ -867,7 +867,7 @@ def nested_valuation_kernel_five_chocs(
                     
                     # Save debug info for specified choc and internal scenario
                     if (is_debug_node and choc_idx == debug_choc and i_int == debug_int_scenario and 
-                        t_int < output_debug.shape[1]):
+                        output_debug is not None and t_int < output_debug.shape[1]):
                         output_debug[choc_idx, t_int, 0] = float(t_int)  # Year
                         output_debug[choc_idx, t_int, 1] = vm_before_returns  # VM before returns
                         output_debug[choc_idx, t_int, 2] = mt_vm_av_retrait_frais  # VM after returns
