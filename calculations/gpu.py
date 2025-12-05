@@ -1367,8 +1367,9 @@ def run_projection_gpu_nested(
                 d_rn_forward_rate,
                 d_rn_rend_dex, d_rn_rend_mm, d_rn_rend_tsx, d_rn_rend_sp500, d_rn_rend_eafe,
                 d_mortality,
-                d_metrics
-                # No debug parameters needed - will use defaults (-1, -1, -1, -1, None)
+                d_metrics,
+                # Debug parameters (explicitly pass defaults)
+                -1, -1, -1, -1, None
             )
             cuda.synchronize()
             h_debug_output = None
