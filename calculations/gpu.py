@@ -1359,6 +1359,9 @@ def run_projection_gpu_nested(
             debug_output = h_debug_output  # Store for return
             
         else:
+            # Create dummy debug array (won't be used since debug parameters are -1)
+            d_dummy_debug_output = cuda.device_array((5, nb_an_projection, 15), dtype=np.float32)
+            
             nested_valuation_kernel_five_chocs[blocks_B, threads_per_block_B](
                 d_states,
                 d_batch_accounts,
@@ -1369,7 +1372,7 @@ def run_projection_gpu_nested(
                 d_mortality,
                 d_metrics,
                 # Debug parameters (explicitly pass defaults)
-                -1, -1, -1, -1, None
+                -1, -1, -1, -1, d_dummy_debug_output
             )
             cuda.synchronize()
             h_debug_output = None
