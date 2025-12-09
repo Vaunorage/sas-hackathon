@@ -24,7 +24,8 @@ import numpy as np
 import polars as pl
 import gc
 from pathlib import Path
-from typing import Optional, TypedDict
+from typing import Optional, List
+from dataclasses import dataclass
 from datetime import datetime
 from fastparquet import write as fastparquet_write
 
@@ -34,6 +35,20 @@ try:
     import cupy as cp
 except ImportError:
     print("⚠ CuDF not available - falling back to pandas (CPU). Install with: pip install cudf-cu12")
+
+
+@dataclass
+class ProjectionResult:
+    """Result of run_projection_gpu_nested containing all output DataFrames."""
+    results: pd.DataFrame
+    results_5chocs: Optional[pd.DataFrame]
+    sensitivities: Optional[pd.DataFrame]
+    total_duration: float
+    vp_flux_total: pd.DataFrame
+    chocs_summary: Optional[pd.DataFrame]
+    ext_debug_df: Optional[pd.DataFrame]
+    int_debug_df: Optional[pd.DataFrame]
+    saved_files: List[str]
 
 
 def create_gpu_mortality_lookup(df: pd.DataFrame):
@@ -570,7 +585,12 @@ def save_results(
         debug_params: Optional dictionary with debug filter parameters for context
     
     Returns:
-        List of saved file names
+        Dictionary containing all created DataFrames:
+        - 'saved_files': List of saved file names
+        - 'vp_flux_total': Portfolio totals DataFrame
+        - 'chocs_summary': 5 chocs summary DataFrame (if results_5chocs_df provided)
+        - 'ext_debug_df': External kernel debug DataFrame (if ext_debug provided)
+        - 'int_debug_df': Internal kernel debug DataFrame (if int_debug provided)
     """
     output_path.mkdir(parents=True, exist_ok=True)
     
@@ -593,6 +613,9 @@ def save_results(
     print("=" * 80)
     
     saved_files = []
+    chocs_summary_df = None
+    ext_debug_df = None
+    int_debug_df = None
     
     # ===========================================
     # 1. FINAL SIMULATION RESULTS
@@ -720,7 +743,16 @@ def save_results(
         print(f"  {idx}. {file_name}")
     print("=" * 80)
     
-    return saved_files
+    # Build return dictionary with all created DataFrames
+    result = {
+        'saved_files': saved_files,
+        'vp_flux_total': vp_flux_total_df,
+        'chocs_summary': chocs_summary_df if results_5chocs_df is not None else None,
+        'ext_debug_df': ext_debug_df if ext_debug is not None else None,
+        'int_debug_df': int_debug_df if int_debug is not None else None,
+    }
+    
+    return result
 
 
 def create_all_lookup_tables(data: dict, nb_int_scenarios: int, nb_an_projection: int):
@@ -1033,7 +1065,7 @@ def run_projection_gpu_nested(
         }
     
     # Save all results (including debug output if enabled)
-    save_results(
+    save_result = save_results(
         output_path=output_path,
         results_df=results_df,
         results_5chocs_df=results_5chocs_df,
@@ -1044,12 +1076,17 @@ def run_projection_gpu_nested(
         debug_params=debug_params,
     )
     
-    return {
-        'results': results_df,
-        'results_5chocs': results_5chocs_df,
-        'sensitivities': sensitivities_df if results_5chocs_df is not None else None,
-        'total_duration': total_duration,
-    }
+    return ProjectionResult(
+        results=results_df,
+        results_5chocs=results_5chocs_df,
+        sensitivities=sensitivities_df if results_5chocs_df is not None else None,
+        total_duration=total_duration,
+        vp_flux_total=save_result['vp_flux_total'],
+        chocs_summary=save_result['chocs_summary'],
+        ext_debug_df=save_result['ext_debug_df'],
+        int_debug_df=save_result['int_debug_df'],
+        saved_files=save_result['saved_files'],
+    )
 
 
 # =============================================================================
@@ -1139,10 +1176,10 @@ Examples:
             print("NESTED STOCHASTIC RESULTS")
             print("=" * 80)
             print("\nTop 10 accounts by SCR:")
-            print(results['results'].nlargest(10, 'SCR')[['ID_COMPTE', 'RESERVE_BE', 'CAPITAL_REQ', 'SCR']])
+            print(results.results.nlargest(10, 'SCR')[['ID_COMPTE', 'RESERVE_BE', 'CAPITAL_REQ', 'SCR']])
 
             print("\nSummary Statistics:")
-            print(results['results'][['RESERVE_BE', 'CAPITAL_REQ', 'SCR']].describe())
+            print(results.results[['RESERVE_BE', 'CAPITAL_REQ', 'SCR']].describe())
 
     except Exception as e:
         print(f"\nAn error occurred: {e}")
