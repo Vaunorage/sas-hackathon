@@ -119,7 +119,7 @@ DATA MEMOIRE.CALCULS_3;
  	********************************;
 
 	if _N_ = 1 then do;
-
+		
 		*Mortalité;
 		declare hash h(dataset: "memoire.mortalite");
 			h.defineKey('I_SEXE','age_MORTALITE','annee_reelle','I_PRODUIT_REGR');
@@ -155,7 +155,7 @@ DATA MEMOIRE.CALCULS_3;
 				z.defineKey('scn_eval','an_eval','mois_eval');
 				z.defineData('FORWARD_RATE','rendDEX_an','rendMM_an','rendTSX_an','rendSP500_an','rendEAFE_an','AJUST_FORWARD_RATE_VM_0');
 				z.defineDone();
-			call missing(FORWARD_RATE,rendDEX_an,rendMM_an,rendTSX_an,rendSP500_an,rendEAFE_an,AJUST_FORWARD_RATE_VM_0);
+			call missing(FORWARD_RATE,rendDEX_an,rendMM_an,rendTSX_an,rendSP500_an,rendEAFE_an,AJUST_FORWARD_RATE_VM_0); 
 		%end;
 		%else %do;
 			*rendement et forward rate boucle interne;
@@ -163,7 +163,7 @@ DATA MEMOIRE.CALCULS_3;
 				z.defineKey('scn_eval_int','an_eval_int','mois_eval');
 				z.defineData('FORWARD_RATE','rendDEX_an','rendMM_an','rendTSX_an','rendSP500_an','rendEAFE_an','AJUST_FORWARD_RATE_VM_0');
 				z.defineDone();
-			call missing(FORWARD_RATE,rendDEX_an,rendMM_an,rendTSX_an,rendSP500_an,rendEAFE_an,AJUST_FORWARD_RATE_VM_0);
+			call missing(FORWARD_RATE,rendDEX_an,rendMM_an,rendTSX_an,rendSP500_an,rendEAFE_an,AJUST_FORWARD_RATE_VM_0); 
 		%end;
 		*** FIN MOD BOUCLE INT ***;
 
@@ -207,8 +207,8 @@ DATA MEMOIRE.CALCULS_3;
     	*** Retain sur variables importantes + initialisation des variables à t=0 ***;
 	*****************************************************************************;
 
-	retain 	MT_SP500_PROJ MT_TSX_PROJ MT_EAFE_PROJ MT_DEX_PROJ MT_MM_PROJ MT_VM_PROJ
-		MT_GAR_ECH_PROJ MT_GAR_DECES_PROJ MT_BONI_DECES_PROJ ANNEE_ECH_PROJ MOIS_ECH_PROJ TX_SURVIE
+	retain 	MT_SP500_PROJ MT_TSX_PROJ MT_EAFE_PROJ MT_DEX_PROJ MT_MM_PROJ MT_VM_PROJ  
+		MT_GAR_ECH_PROJ MT_GAR_DECES_PROJ MT_BONI_DECES_PROJ ANNEE_ECH_PROJ MOIS_ECH_PROJ TX_SURVIE 
 		MT_SRG_PROJ MT_BCB_PROJ MT_MRV_MRG_MRA_PROJ TAUX_MRV_MRG_MRA_PROJ MT_MIN_FERR_PROJ TX_ACTUALISATION 0;
 
 	set MEMOIRE.calculs_2;
@@ -239,7 +239,7 @@ DATA MEMOIRE.CALCULS_3;
 	***********************************************;
 
 	if an_eval = 0 then do;
-
+			
 			MT_SP500_PROJ      	  = MT_SP500;
 			MT_TSX_PROJ           = MT_TSX;
 			MT_EAFE_PROJ          = MT_EAFE;
@@ -254,11 +254,11 @@ DATA MEMOIRE.CALCULS_3;
 			MT_SRG_PROJ			  = MT_SRG;
 			MT_BCB_PROJ 		  = MT_BCB;
 			MT_MRV_MRG_MRA_PROJ	  = MT_MRV_MRG_MRA;
-			TAUX_MRV_MRG_MRA_PROJ = TAUX_MRV_MRG_MRA;
-			TX_SURVIE 			  = 1;
-			TX_SURVIE_DEB 		  = 1;
-			TX_ACTUALISATION 	  = 1;
-			TX_ACTUALISATION_DEB  = 1;
+			TAUX_MRV_MRG_MRA_PROJ = TAUX_MRV_MRG_MRA;	
+			TX_SURVIE 			  = 1;			
+			TX_SURVIE_DEB 		  = 1;				
+			TX_ACTUALISATION 	  = 1;	
+			TX_ACTUALISATION_DEB  = 1;	
 			FORWARD_RATE 		  = 0;
 			VALEUR_MARCHANDE	  = MT_VM;
 
@@ -281,8 +281,8 @@ DATA MEMOIRE.CALCULS_3;
 			MT_SRG_PROJ			  = MT_SRG;
 			MT_BCB_PROJ 		  = MT_BCB;
 			MT_MRV_MRG_MRA_PROJ	  = MT_MRV_MRG_MRA;
-			TAUX_MRV_MRG_MRA_PROJ = TAUX_MRV_MRG_MRA;
-			TX_SURVIE 			  = TX_SURVIE_DEB;
+			TAUX_MRV_MRG_MRA_PROJ = TAUX_MRV_MRG_MRA;	
+			TX_SURVIE 			  = TX_SURVIE_DEB;	
 			TX_ACTUALISATION 	  = TX_ACTUALISATION_DEB;
 			VP_FLUX_TOT 		  = 0;
 
@@ -304,7 +304,7 @@ DATA MEMOIRE.CALCULS_3;
 
 		rendSP500_an=.;rendDEX_an=.;rendMM_an=.;rendTSX_an=.;rendEAFE_an=.;FORWARD_RATE=.;AJUST_FORWARD_RATE_VM_0=.;
 		rc = z.find();
-
+		
 		*ajustement du forward rate lorsque VM est a 0 ( pour RGS qui deviennent non liquide);
 		if MT_VM_PROJ = 0 then FORWARD_RATE = FORWARD_RATE + AJUST_FORWARD_RATE_VM_0;
 
@@ -325,7 +325,7 @@ DATA MEMOIRE.CALCULS_3;
 		*on détermine le vecteur dactualisation pour les CF qui ne varient pas;
 		TX_ACTUALISATION_DEB = TX_ACTUALISATION;
 		TX_ACTUALISATION = TX_ACTUALISATION * EXP(-FORWARD_RATE * AJUST_NOUV_AFFAIRES) ;
-
+		
 		******************************************;
 		*** Détermination du taux de déchéance ***;
 		******************************************;
@@ -362,7 +362,7 @@ DATA MEMOIRE.CALCULS_3;
 			*Les niveaux de lapses peuvent varier selon le type de calcul;
 			if vm_vg_ratio <=  0.5   then LAPSE_NIV_TOT=1;
 			else if vm_vg_ratio <=  0.75   then LAPSE_NIV_TOT=2;
-			else LAPSE_NIV_TOT=3;
+			else LAPSE_NIV_TOT=3; 
 
 			*ajustement si client enregistre est rendu en FERR;
 			if I_REGIME_2 = 1 and (AGE_RETRAIT>AGE_DECAISSEMENT or (AGE_RETRAIT=AGE_DECAISSEMENT and mois_eval < mois_nais)) then I_REGIME_2 = 2;
@@ -374,7 +374,7 @@ DATA MEMOIRE.CALCULS_3;
 			*Calcul du taux de lapse total au prorata du ratio VM/VG;
 			if TX_LAPSE_TOT_MIN=TX_LAPSE_TOT_MAX then LAPSE_TOT=TX_LAPSE_TOT_MIN * IFN(AGE>=AGE_DECAISSEMENT,FACT_DIM,1);
 			else do;
-				select (LAPSE_NIV_TOT);
+				select (LAPSE_NIV_TOT); 
 					when (1)  LAPSE_TOT=(vm_vg_ratio-0.00)/0.5;
 					when (2)  LAPSE_TOT=(vm_vg_ratio-0.5)/(0.75-0.5);
 					when (3)  LAPSE_TOT=(vm_vg_ratio-0.75)/(999.99-0.75);
@@ -382,7 +382,7 @@ DATA MEMOIRE.CALCULS_3;
 				end;
 				LAPSE_TOT=(LAPSE_TOT * (TX_LAPSE_TOT_MAX-TX_LAPSE_TOT_MIN)+TX_LAPSE_TOT_MIN) * IFN(AGE>=AGE_DECAISSEMENT,FACT_DIM,1);
 			end;
-
+			
 			**********************************;
 			*** CALCUL DES LAPSES PARTIELS ***;
 			**********************************;
@@ -391,7 +391,7 @@ DATA MEMOIRE.CALCULS_3;
 			*Les niveaux de lapses peuvent varier selon le type de calcul;
 			if vm_vg_ratio <=  0.5   then LAPSE_NIV_PART=1;
 			else if vm_vg_ratio <=  0.75   then LAPSE_NIV_PART=2;
-			else LAPSE_NIV_PART=3;
+			else LAPSE_NIV_PART=3; 
 
 			TX_LAPSE_PART_MAX=.; TX_LAPSE_PART_MIN=.;
 			j.find();
@@ -399,7 +399,7 @@ DATA MEMOIRE.CALCULS_3;
 			*Calcul du taux de lapse partiel au prorata du ratio VM/VG;
 			if TX_LAPSE_PART_MIN=TX_LAPSE_PART_MAX then LAPSE_PART=TX_LAPSE_PART_MIN;
 			else do;
-				select (LAPSE_NIV_PART);
+				select (LAPSE_NIV_PART); 
 					when (1)  LAPSE_PART=(vm_vg_ratio-0.00)/0.5;
 					when (2)  LAPSE_PART=(vm_vg_ratio-0.5)/(0.75-0.5);
 					when (3)  LAPSE_PART=(vm_vg_ratio-0.75)/(999.99-0.75);
@@ -416,7 +416,7 @@ DATA MEMOIRE.CALCULS_3;
 		**************************************************************************;
 		*** Détermination du taux de décès et taux de survie (incluant lapses) ***;
 		**************************************************************************;
-
+		
 		*determination de lage utilise pour le taux join sur la table de mortalite;
 		if IFN((mois_nais - mois_eval) <=0,(mois_nais - mois_eval)+12,(mois_nais - mois_eval)) <= 6 then age_MORTALITE = age +1 ;
 		else age_MORTALITE = age;
@@ -467,10 +467,10 @@ DATA MEMOIRE.CALCULS_3;
 						else if AGE_RETRAIT < 70 then TAUX_MRV_MRG_MRA_PROJ = 0.04;
 						else if AGE_RETRAIT < 75 then TAUX_MRV_MRG_MRA_PROJ = 0.0425;
 						else TAUX_MRV_MRG_MRA_PROJ = 0.05;
-
+						
 						*initialisation du MRV;
 						MT_MRV_MRG_MRA_PROJ = TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ;
-
+	
 					end;
 					*sinon MRV ne peut pas diminuer comme il ny a pas de retraits excedentaires modelises;
 					else MT_MRV_MRG_MRA_PROJ = MAX(MT_MRV_MRG_MRA_PROJ,TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ);
@@ -483,17 +483,17 @@ DATA MEMOIRE.CALCULS_3;
 					else MT_MRV_MRG_MRA_PROJ = MAX(MT_MRV_MRG_MRA_PROJ,TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ);
 				end;
 			end;
-
+			
 			*** Retraits excedentaires ***;
 
 			*Si on sait quil y a eu un retrait excedentaire depuis le debut de lannee on le considere dans levaluation;
 			*on effectue la correction du MRV seulement à la  fin de la premiere annee et seulement si on neffectue pas une evaluation de fin dannee;
-			*En effet, si on fait une evaluation de fin dannee la MRV a deja ete corrige dans lextraction;
+			*En effet, si on fait une evaluation de fin dannee la MRV a deja ete corrige dans lextraction; 
 			*on ne le considere pas pour le calcul de la MSC a lemission;
 			*on met 1 $ pour eviter les erreurs darrondi;
 			if M_MT_MRV_EXCEDENT > 1 and MOIS_EVALUATION_INI ^= 12/&FREQ_EVAL. and an_eval = 2 and mois_eval = 12/&FREQ_EVAL. then MT_MRV_MRG_MRA_PROJ = min(MT_MRV_MRG_MRA_PROJ,TAUX_MRV_MRG_MRA_PROJ*max(MT_SRG_PROJ,MT_VM_PROJ));
 		end;
-
+	
 		*les retraits debutent en janvier de lannee ou le client atteint lage du retrait;
 		*0 retrait si age decaissement non atteint et si VM nulle dans produit regulier;
 		if	AGE_RETRAIT<AGE_DECAISSEMENT  or (AGE_RETRAIT=AGE_DECAISSEMENT and mois_eval >= mois_nais) or (MT_VM_PROJ <= 0 and I_PRODUIT_REGR = 0) then RETRAIT = 0;
@@ -515,13 +515,13 @@ DATA MEMOIRE.CALCULS_3;
 		rc = C.find();
 
 		*pas de depots futurs a partir des retaits si indicateur a 1 + apres le nombre dannee max apres cotisation + si VM a 0;
-		if	PC_DEPOT_ANNUEL = 0 or (I_EVEN_CESSE_DEPOT = 1 and AGE_RETRAIT>=AGE_DECAISSEMENT) or (AGE_MAX_DEPOT < AGE) or (MT_VM_PROJ <= 0 and I_PRODUIT_REGR = 0)
+		if	PC_DEPOT_ANNUEL = 0 or (I_EVEN_CESSE_DEPOT = 1 and AGE_RETRAIT>=AGE_DECAISSEMENT) or (AGE_MAX_DEPOT < AGE) or (MT_VM_PROJ <= 0 and I_PRODUIT_REGR = 0) 
 				then DEPOT_FUTUR = 0;
 		*On prend le depot preautorise annuel si disponible;
 		ELSE IF MT_TPA_DEPOT > 0 THEN DEPOT_FUTUR = MT_TPA_DEPOT;
 		*sinon hypothese en fonction de VM ou montant garanti au deces normalise (ramener a 100%);
 		ELSE  DEPOT_FUTUR = IFN(VAR_DEPOT_FCT=1,MT_VM_PROJ,MT_GAR_DECES/PC_GAR_DECES_1) * PC_DEPOT_ANNUEL;
-
+		
 		*on ajuste selon la frequence;
 		DEPOT_FUTUR = DEPOT_FUTUR/&FREQ_EVAL.;
 
@@ -579,7 +579,7 @@ DATA MEMOIRE.CALCULS_3;
 		*** impact des depôts ***;
 		if MT_VM_AP_RETRAIT > 0 then do;
 			MT_VM_AP_RETRAIT_DEPOT 	= MT_VM_AP_RETRAIT 	+ DEPOT_FUTUR;
-			MT_GAR_ECH_PROJ 		= MT_GAR_ECH_PROJ 	+ DEPOT_FUTUR * PC_GAR_ECH_DEP_FUT;
+			MT_GAR_ECH_PROJ 		= MT_GAR_ECH_PROJ 	+ DEPOT_FUTUR * PC_GAR_ECH_DEP_FUT; 
 			MT_GAR_DECES_PROJ 		= MT_GAR_DECES_PROJ + DEPOT_FUTUR;
 
 			if MT_SRG_PROJ>0 then MT_SRG_PROJ = MT_SRG_PROJ + DEPOT_FUTUR;
@@ -599,7 +599,7 @@ DATA MEMOIRE.CALCULS_3;
 		VP_PREST_DECES =  PREST_DECES * TX_ACTUALISATION ;
 
 		*traitement garantie a echeance qui survient par la suite;
-		IF (annee_reelle = ANNEE_ECH_PROJ and mois_eval = MOIS_ECH_PROJ) or
+		IF (annee_reelle = ANNEE_ECH_PROJ and mois_eval = MOIS_ECH_PROJ) or 
 			(age = AGE_FIN_CONTRAT and mois_eval = IFN(mois_nais=12/&FREQ_EVAL.,12,mois_nais-12/&FREQ_EVAL.)) then do;
 
 			PREST_ECH 	= -MAX(0,MT_GAR_ECH_PROJ-MT_VM_AP_RETRAIT) * TX_SURVIE;
@@ -626,10 +626,10 @@ DATA MEMOIRE.CALCULS_3;
 
 		*reinitialisation SRG/BCB apres prestation a echeance;
 		if I_PRODUIT_REGR = 1 then do;*il faut que ce soit produit avec SRG pour faire le calcul sinon division par 0;
-			if  age <MAX_RESET_SRG and
-				MT_SRG_PROJ < MT_VM_PROJ and
+			if  age <MAX_RESET_SRG and 
+				MT_SRG_PROJ < MT_VM_PROJ and 
 				annee_reelle > ANNEE_COTIS and
-				INT((annee_reelle-ANNEE_COTIS)/FREQ_RESET_SRG) = (annee_reelle-ANNEE_COTIS)/FREQ_RESET_SRG and
+				INT((annee_reelle-ANNEE_COTIS)/FREQ_RESET_SRG) = (annee_reelle-ANNEE_COTIS)/FREQ_RESET_SRG and 
 				mois_eval = MOIS_COTIS then do;
 
 					MT_SRG_PROJ = MT_VM_PROJ;
@@ -641,8 +641,8 @@ DATA MEMOIRE.CALCULS_3;
 		if AGE<AGE_DECAISSEMENT and mois_eval = 12 then  MT_SRG_PROJ = MT_SRG_PROJ + PC_BONI_SRG * MT_BCB_PROJ;
 
 		*reinitialisation garantie au deces automatique survient par la suite;
-		if  age <MAX_RESET_DECES and
-			(MT_GAR_DECES_PROJ+MT_BONI_DECES_PROJ) < (MT_VM_PROJ * PC_GAR_DECES_1) and
+		if  age <MAX_RESET_DECES and 
+			(MT_GAR_DECES_PROJ+MT_BONI_DECES_PROJ) < (MT_VM_PROJ * PC_GAR_DECES_1) and 
 			annee_reelle > ANNEE_COTIS and
 			((INT((annee_reelle-ANNEE_COTIS)/FREQ_RESET_DECES) = (annee_reelle-ANNEE_COTIS)/FREQ_RESET_DECES and mois_eval = MOIS_COTIS)
 			or  (age = MAX_RESET_DECES-1 and mois_eval = IFN(mois_nais=12/&FREQ_EVAL.,12,mois_nais-12/&FREQ_EVAL.))) then do;
@@ -653,8 +653,8 @@ DATA MEMOIRE.CALCULS_3;
 		end;
 
 		*reinitialisation garantie à echeance facultative survient au final mais seulement en juin et decembre car cest 2x par an max;
-		if 	mois_eval in (6,12) and
-			I_RESET_FACUL_ECH = 1 and
+		if 	mois_eval in (6,12) and 
+			I_RESET_FACUL_ECH = 1 and 
 			age <=MAX_RESET_FACUL_ECH and
 			MT_GAR_ECH_PROJ>0 and
 			(MT_VM_PROJ * PC_GAR_ECH) >=RATIO_VM_VG_RESET_ECH * MT_GAR_ECH_PROJ then do;
@@ -684,7 +684,7 @@ DATA MEMOIRE.CALCULS_3;
 		*********************************************;
 		*** Joint via hash de certaines variables ***;
 		*********************************************;
-
+	
 		if MT_VM_AV_RETRAIT_FRAIS = 0 then do;
 			PC_COMMISSION_VENTE_RF=0;
 			PC_COMMISSION_VENTE_AC=0;
@@ -723,13 +723,13 @@ DATA MEMOIRE.CALCULS_3;
 
 		VP_COMM_VENTE = COMM_VENTE * TX_ACTUALISATION;
 
-		FRAIS_ACQUIS= PC_FRAIS_AN * MT_VM_AP_RETRAIT * LAPSE * TX_SURVIE_DEB * (1-Qx);
-		VP_FRAIS_ACQUIS = FRAIS_ACQUIS * TX_ACTUALISATION;
+		FRAIS_ACQUIS= PC_FRAIS_AN * MT_VM_AP_RETRAIT * LAPSE * TX_SURVIE_DEB * (1-Qx); 
+		VP_FRAIS_ACQUIS = FRAIS_ACQUIS * TX_ACTUALISATION;						
 
 		********************************;
 		*** Frais fixes et variables ***;
 		********************************;
-
+	
 		*calcul des depenses fixes liees au contrat (frais administratif en $);
 		FRAIS_FIXES = - IFN(MT_VM_AV_RETRAIT <= 0 AND VP_PREST_MRV = 0, 0, FRAIS / &FREQ_EVAL. * AJUST_NOUV_AFFAIRES) * TX_SURVIE_DEB;
 
@@ -749,7 +749,7 @@ DATA MEMOIRE.CALCULS_3;
 		*** Primes variables ***;
 		************************;
 
-		PRIMES_VARIABLES =  MT_VM_AV_RETRAIT_FRAIS * EXP(-(PC_RFG-PC_REVENU_FDS)/ &FREQ_EVAL. * AJUST_NOUV_AFFAIRES)
+		PRIMES_VARIABLES =  MT_VM_AV_RETRAIT_FRAIS * EXP(-(PC_RFG-PC_REVENU_FDS)/ &FREQ_EVAL. * AJUST_NOUV_AFFAIRES) 
 						    * -(EXP(-PC_REVENU_FDS/&FREQ_EVAL. * AJUST_NOUV_AFFAIRES)-1) * TX_SURVIE_DEB;
 		VP_PRIMES_VARIABLES = PRIMES_VARIABLES * TX_ACTUALISATION;
 
@@ -793,7 +793,7 @@ DATA MEMOIRE.CALCULS_3;
 			****************************************;
 			*** Determination des coussins ESCAP ***;
 			****************************************;
-
+		
 			*determination des variables pour le join;
 
 			*regroupements de garanties;
@@ -827,7 +827,7 @@ DATA MEMOIRE.CALCULS_3;
 			BASE_PASSIF_REDRESSE = .;TX_PASSIF_REDRESSE = .;BASE_COUSSIN_CREDIT = .;TX_COUSSIN_CREDIT= .;BASE_COUSSIN_MARCHE = .;TX_COUSSIN_MARCHE= .;
 			BASE_COUSSIN_DEPENSE = .;TX_COUSSIN_DEPENSE= .;BASE_COUSSIN_DECHEANCE = .;TX_COUSSIN_DECHEANCE= .;BASE_COUSSIN_MORTALITE = .;TX_COUSSIN_MORTALITE= .;
 			BASE_COUSSIN_DEPOT = .;TX_COUSSIN_DEPOT= .;
-			FACTEUR_AGE_80= .;FACTEUR_AGE_90= .;
+			FACTEUR_AGE_80= .;FACTEUR_AGE_90= .;		
 
 			rc = B.find();
 
@@ -836,7 +836,7 @@ DATA MEMOIRE.CALCULS_3;
 				TX_COUSSIN_CREDIT = 0;
 				TX_COUSSIN_MARCHE = 0;
 				TX_COUSSIN_DECHEANCE = 0;
-				TX_COUSSIN_DEPOT = 0;
+				TX_COUSSIN_DEPOT = 0;	
 			end;
 
 			*CALCUL DES COUSSINS ET VP DES COUSSINS;
@@ -906,7 +906,7 @@ option nonotes nosource;
 					mois_eval = mois_simul * 12 / &FREQ_EVAL_EXT.;
 
 				   *âge a chaque mois, minimum 1 an pour les tables de mortalité;
-					age = MAX(INT(YRDIF(MDY(MOIS_NAIS,01,ANNEE_NAIS),MDY(mois_eval,01,annee_reelle),'AGE')),1);
+					age = MAX(INT(YRDIF(MDY(MOIS_NAIS,01,ANNEE_NAIS),MDY(mois_eval,01,annee_reelle),'AGE')),1); 
 
 					*on conserve seulement les annees et mois pertinents;
 			 		if age <= AGE_FIN_CONTRAT and (an_eval >1 or (an_eval = 1 and mois_eval >= MOIS_EVALUATION_INI) or  (an_eval = 0 and mois_eval = 12)) then output;
@@ -917,7 +917,7 @@ option nonotes nosource;
 	run;
 
 	%calculs(TYPE = EXTERNE,TYPE_2 = 0,FREQ_EVAL=&FREQ_EVAL_EXT.);
-
+	
 	*** AJOUT BOUCLE INT ***;
 
 	**********************;
@@ -930,22 +930,22 @@ option nonotes nosource;
 	run;
 
 	%do l = 1 %to &NB_CHOC.;
-
+		
 		* on separe les calculs en plusieurs tables pour que ca soit plus performant (table entierement stockee en memoire);
 		%do k = 1 %to &NB_SC.;
 
 			%do m = 1 %to &NB_AN_PROJECTION.;
-
+		
 				%do n = 1 %to &FREQ_EVAL_EXT.;
-
+						
 					* on explose la table de population en fonction du nb de scenario  et du nb dannee de projection pour faciliter le merge;
-					data MEMOIRE.calculs_2(drop= age annee_reelle mois_simul UNITE_COUVERTURE DEPOT_FUTUR REM_COMP_INV VALEUR_MARCHANDE VALEUR_GARANTIE DEPOT_FUTUR_SURVIE	VP_PASSIF_REDRESSE VP_COUSSIN_CREDIT 												VP_COUSSIN_MARCHE VP_COUSSIN_DEPENSE VP_COUSSIN_DECHEANCE VP_COUSSIN_MORTALITE VP_COUSSIN_DEPOT
+					data MEMOIRE.calculs_2(drop= age annee_reelle mois_simul UNITE_COUVERTURE DEPOT_FUTUR REM_COMP_INV VALEUR_MARCHANDE VALEUR_GARANTIE DEPOT_FUTUR_SURVIE	VP_PASSIF_REDRESSE VP_COUSSIN_CREDIT 												VP_COUSSIN_MARCHE VP_COUSSIN_DEPENSE VP_COUSSIN_DECHEANCE VP_COUSSIN_MORTALITE VP_COUSSIN_DEPOT 
 											PASSIF_REDRESSE COUSSIN_CREDIT COUSSIN_MARCHE COUSSIN_DEPENSE COUSSIN_DECHEANCE COUSSIN_MORTALITE COUSSIN_DEPOT
 											BASE_PASSIF_REDRESSE TX_PASSIF_REDRESSE BASE_COUSSIN_CREDIT TX_COUSSIN_CREDIT BASE_COUSSIN_MARCHE TX_COUSSIN_MARCHE
 											 BASE_COUSSIN_DEPENSE TX_COUSSIN_DEPENSE BASE_COUSSIN_DECHEANCE TX_COUSSIN_DECHEANCE BASE_COUSSIN_MORTALITE TX_COUSSIN_MORTALITE
 											 BASE_COUSSIN_DEPOT TX_COUSSIN_DEPOT  FACTEUR_AGE_80 FACTEUR_AGE_90 CODE_CAT_PRODUIT CAT_COUSSIN_1 CAT_COUSSIN_2 VP_VALEUR_MARCHANDE
-											MT_SP500_PROJ MT_TSX_PROJ MT_EAFE_PROJ MT_DEX_PROJ MT_MM_PROJ MT_VM_PROJ
-											MT_GAR_ECH_PROJ MT_GAR_DECES_PROJ MT_BONI_DECES_PROJ ANNEE_ECH_PROJ MOIS_ECH_PROJ TX_SURVIE
+											MT_SP500_PROJ MT_TSX_PROJ MT_EAFE_PROJ MT_DEX_PROJ MT_MM_PROJ MT_VM_PROJ  
+											MT_GAR_ECH_PROJ MT_GAR_DECES_PROJ MT_BONI_DECES_PROJ ANNEE_ECH_PROJ MOIS_ECH_PROJ TX_SURVIE 
 											MT_SRG_PROJ MT_BCB_PROJ MT_MRV_MRG_MRA_PROJ TAUX_MRV_MRG_MRA_PROJ MT_MIN_FERR_PROJ TX_ACTUALISATION
 
 											rename=(age_int = age annee_reelle_int = annee_reelle));
@@ -982,9 +982,9 @@ option nonotes nosource;
 									MT_SRG			  	= MT_SRG_PROJ;
 									MT_BCB 		  		= MT_BCB_PROJ;
 									MT_MRV_MRG_MRA	  	= MT_MRV_MRG_MRA_PROJ;
-									TAUX_MRV_MRG_MRA 	= TAUX_MRV_MRG_MRA_PROJ;
+									TAUX_MRV_MRG_MRA 	= TAUX_MRV_MRG_MRA_PROJ;	
 									TX_SURVIE_DEB 		= TX_SURVIE;
-									TX_ACTUALISATION_DEB 	= TX_ACTUALISATION;
+									TX_ACTUALISATION_DEB 	= TX_ACTUALISATION;	
 
 									*on conserve seulement les annees et mois pertinents;
 							 		if age_int <= AGE_FIN_CONTRAT then output;
@@ -995,14 +995,14 @@ option nonotes nosource;
 					run;
 
 					%calculs(TYPE = INTERNE,TYPE_2 = &k. ,FREQ_EVAL=&FREQ_EVAL_INT.);
-
+	
 					*cumul des resultats pour sommaire;
 					proc summary data = MEMOIRE.calculs_3 nway missing;
-					 	class ID_COMPTE an_eval mois_eval_ext scn_eval;
+					 	class ID_COMPTE an_eval mois_eval_ext scn_eval; 
 						var VP_FLUX_TOT	;
 						output out = MEMOIRE.calculs_3(drop = _Type_ _freq_ rename =(mois_eval_ext = mois_eval)) mean=;
 					run;
-
+					
 					*join des resultats du choc de la boucle interne;
 					data MEMOIRE.CALCULS_EXTERNE(drop = VP_FLUX_TOT);
 						if _N_ = 1 then do;
@@ -1021,7 +1021,7 @@ option nonotes nosource;
 						if VP_FLUX_TOT_&l. = . then VP_FLUX_TOT_&l.=VP_FLUX_TOT;
 
 					run;
-
+					
 				%end;
 			%end;
 		%end;*fin de la boucle interne dun choc;
@@ -1031,11 +1031,11 @@ option nonotes nosource;
 
 	*cumul des resultats pour sommaire;
 	proc summary data = MEMOIRE.CALCULS_EXTERNE nway missing;
-	 	class ID_COMPTE an_eval mois_eval;
+	 	class ID_COMPTE an_eval mois_eval; 
 		var VP_FRAIS_ACQUIS VP_COMM_VENTE VP_PRIMES_GARANTIES VP_PRIMES_VARIABLES VP_FRAIS_FIXES VP_HON_GEST VP_COMM_MAINTIEN VP_PREST_ECH VP_PREST_MRV VP_PREST_DECES VP_VALEUR_MARCHANDE
 			FRAIS_ACQUIS COMM_VENTE PRIMES_GARANTIES PRIMES_VARIABLES FRAIS_FIXES HON_GEST COMM_MAINTIEN  PREST_ECH PREST_MRV PREST_DECES UNITE_COUVERTURE DEPOT_FUTUR REM_COMP_INV VALEUR_MARCHANDE
 			VALEUR_GARANTIE DEPOT_FUTUR_SURVIE
-			VP_PASSIF_REDRESSE VP_COUSSIN_CREDIT VP_COUSSIN_MARCHE VP_COUSSIN_DEPENSE VP_COUSSIN_DECHEANCE VP_COUSSIN_MORTALITE VP_COUSSIN_DEPOT
+			VP_PASSIF_REDRESSE VP_COUSSIN_CREDIT VP_COUSSIN_MARCHE VP_COUSSIN_DEPENSE VP_COUSSIN_DECHEANCE VP_COUSSIN_MORTALITE VP_COUSSIN_DEPOT 
 			PASSIF_REDRESSE COUSSIN_CREDIT COUSSIN_MARCHE COUSSIN_DEPENSE COUSSIN_DECHEANCE COUSSIN_MORTALITE COUSSIN_DEPOT
 			VP_FLUX_TOT_1 VP_FLUX_TOT_2 VP_FLUX_TOT_3 VP_FLUX_TOT_4 VP_FLUX_TOT_5
 
@@ -1049,7 +1049,7 @@ option nonotes nosource;
 
 	*les tables qui seront reutilisee sont supprimees;
 	proc delete data  = MEMOIRE.calculs_2 MEMOIRE.calculs_3 MEMOIRE.CALCULS_EXTERNE; run;
-
+	
 %end;
 
 *on remet limpression dans le log;
@@ -1062,8 +1062,8 @@ option notes source;
 
 *flux projetés par produit pour toutes la période;
 proc summary data = SERVEUR.CALCULS_SOMMAIRE nway missing;
- 	class an_eval mois_eval;
-	var FRAIS_ACQUIS COMM_VENTE PRIMES_GARANTIES PRIMES_VARIABLES FRAIS_FIXES HON_GEST COMM_MAINTIEN PREST_ECH PREST_MRV
+ 	class an_eval mois_eval; 
+	var FRAIS_ACQUIS COMM_VENTE PRIMES_GARANTIES PRIMES_VARIABLES FRAIS_FIXES HON_GEST COMM_MAINTIEN PREST_ECH PREST_MRV 
 		PREST_DECES UNITE_COUVERTURE DEPOT_FUTUR REM_COMP_INV VALEUR_MARCHANDE VALEUR_GARANTIE DEPOT_FUTUR_SURVIE
 		PASSIF_REDRESSE COUSSIN_CREDIT COUSSIN_MARCHE COUSSIN_DEPENSE COUSSIN_DECHEANCE COUSSIN_MORTALITE COUSSIN_DEPOT
 		VP_FLUX_TOT_1 VP_FLUX_TOT_2 VP_FLUX_TOT_3 VP_FLUX_TOT_4 VP_FLUX_TOT_5;
@@ -1074,7 +1074,7 @@ run;
 PROC SUMMARY DATA=SERVEUR.CALCULS_SOMMAIRE NWAY MISSING;
 	CLASS ID_COMPTE;
 	VAR VP_FRAIS_ACQUIS VP_COMM_VENTE VP_PRIMES_GARANTIES VP_PRIMES_VARIABLES VP_FRAIS_FIXES VP_HON_GEST VP_COMM_MAINTIEN VP_PREST_ECH VP_PREST_MRV VP_PREST_DECES
-		VP_PASSIF_REDRESSE VP_COUSSIN_CREDIT VP_COUSSIN_MARCHE VP_COUSSIN_DEPENSE VP_COUSSIN_DECHEANCE VP_COUSSIN_MORTALITE VP_COUSSIN_DEPOT
+		VP_PASSIF_REDRESSE VP_COUSSIN_CREDIT VP_COUSSIN_MARCHE VP_COUSSIN_DEPENSE VP_COUSSIN_DECHEANCE VP_COUSSIN_MORTALITE VP_COUSSIN_DEPOT 
 		VP_VALEUR_MARCHANDE
 		VP_FLUX_TOT_1 VP_FLUX_TOT_2 VP_FLUX_TOT_3 VP_FLUX_TOT_4 VP_FLUX_TOT_5;
 	OUTPUT OUT=SERVEUR.VP_FLUX_COMPTE (DROP = _TYPE_ _FREQ_) SUM=;
@@ -1083,7 +1083,7 @@ RUN;
 data SERVEUR.VP_FLUX_TOTAL;
 	set SERVEUR.VP_FLUX_COMPTE;
 	CATEGORIE = "TOTAL";
-	VP_FLUX_TOT = VP_FRAIS_ACQUIS  + VP_COMM_VENTE + VP_PRIMES_GARANTIES + VP_PRIMES_VARIABLES + VP_FRAIS_FIXES + VP_HON_GEST + VP_COMM_MAINTIEN
+	VP_FLUX_TOT = VP_FRAIS_ACQUIS  + VP_COMM_VENTE + VP_PRIMES_GARANTIES + VP_PRIMES_VARIABLES + VP_FRAIS_FIXES + VP_HON_GEST + VP_COMM_MAINTIEN 
 				+ VP_PREST_ECH + VP_PREST_MRV + VP_PREST_DECES;
 run;
 
