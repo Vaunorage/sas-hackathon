@@ -12,6 +12,104 @@ from pyarrow import parquet as pq
 CUDF_AVAILABLE = False
 
 
+class AccountIdx:
+    """Constants for account data array indexing in GPU kernels."""
+    
+    # Account identifiers
+    ID_COMPTE = 0
+    ANNEE_EVALUATION_INI = 1
+    MOIS_EVALUATION_INI = 2
+    ANNEE_NAIS = 3
+    MOIS_NAIS = 4
+    
+    # Product information
+    I_SEXE = 5
+    I_PRODUIT_REGR = 6
+    ID_PRODUIT = 7
+    ID_LAPSE = 8
+    I_REGIME_2 = 9
+    ID_DEPOT = 10
+    ID_ACQUI = 11
+    
+    # Age thresholds
+    AGE_ECH_MIN = 12
+    AGE_FIN_CONTRAT = 13
+    AGE_DECAISSEMENT = 14
+    
+    # Financial amounts
+    MT_VM = 15
+    MT_GAR_DECES = 16
+    MT_GAR_ECH = 17
+    MT_SRG = 18
+    MT_BCB = 19
+    
+    # Asset allocations
+    MT_DEX = 20
+    MT_MM = 21
+    MT_TSX = 22
+    MT_SP500 = 23
+    MT_EAFE = 24
+    
+    # Additional amounts
+    MT_BONI_DECES = 25
+    MT_MRV_MRG_MRA = 26
+    TAUX_MRV_MRG_MRA = 27
+    
+    # Dates
+    ANNEE_ECH = 28
+    MOIS_ECH = 29
+    
+    # Percentage rates
+    PC_HONORAIRES_GEST = 30
+    PC_FRAIS_GARANTIE = 31
+    PC_GAR_DECES_1 = 32
+    PC_BONI_DECES = 33
+    PC_RFG = 34
+    PC_REVENU_FDS = 35
+    PC_GAR_ECH = 36
+    PC_GAR_ECH_DEP_FUT = 37
+    
+    # Additional fields
+    AJUSTEMENT_COMMISSION = 38
+    MT_RF = 39
+    MT_VM_ORIG = 40
+    ANNEE_COTIS = 41
+    MOIS_COTIS = 42
+    MAX_BONI_DECES = 43
+    I_FRAIS_SUR_SRG = 44
+
+    # Total number of fields
+    TOTAL_FIELDS = 45
+
+
+def validate_account_data_structure(account_data_columns):
+    """Validate that account data matches expected structure."""
+    expected_columns = [
+        'ID_COMPTE', 'ANNEE_EVALUATION_INI', 'MOIS_EVALUATION_INI',
+        'ANNEE_NAIS', 'MOIS_NAIS', 'I_SEXE', 'I_PRODUIT_REGR',
+        'ID_PRODUIT', 'ID_LAPSE', 'I_REGIME_2', 'ID_DEPOT', 'ID_ACQUI',
+        'AGE_ECH_MIN', 'AGE_FIN_CONTRAT', 'AGE_DECAISSEMENT',
+        'MT_VM', 'MT_GAR_DECES', 'MT_GAR_ECH', 'MT_SRG', 'MT_BCB',
+        'MT_DEX', 'MT_MM', 'MT_TSX', 'MT_SP500', 'MT_EAFE',
+        'MT_BONI_DECES', 'MT_MRV_MRG_MRA', 'TAUX_MRV_MRG_MRA',
+        'ANNEE_ECH', 'MOIS_ECH',
+        'PC_HONORAIRES_GEST', 'PC_FRAIS_GARANTIE', 'PC_GAR_DECES_1',
+        'PC_BONI_DECES', 'PC_RFG', 'PC_REVENU_FDS', 'PC_GAR_ECH',
+        'PC_GAR_ECH_DEP_FUT', 'AJUSTEMENT_COMMISSION', 'MT_RF', 'MT_VM',
+        'ANNEE_COTIS', 'MOIS_COTIS', 'MAX_BONI_DECES', 'I_FRAIS_SUR_SRG'
+    ]
+    
+    if len(account_data_columns) != len(expected_columns):
+        raise ValueError(f"Expected {len(expected_columns)} columns, got {len(account_data_columns)}")
+    
+    for i, (actual, expected) in enumerate(zip(account_data_columns, expected_columns)):
+        if actual != expected:
+            raise ValueError(f"Column mismatch at index {i}: expected '{expected}', got '{actual}'")
+    
+    print(f"✓ Account data structure validated: {len(expected_columns)} fields")
+    return True
+
+
 def setup_logger(name='gpu_projection', level=logging.INFO):
     """Setup logger with timestamp formatting for debugging."""
     logger = logging.getLogger(name)
@@ -202,22 +300,62 @@ def load_all_data(data_path: Path,
 
 
 def prepare_account_data(population_df):
-    """Convert account DataFrame to numpy array for GPU."""
-    # Define the columns to extract in order
+    """Convert account DataFrame to numpy array for GPU using AccountIdx constants."""
+    
+    # Define the columns to extract in order - MUST match AccountIdx order exactly
     columns = [
-        'ID_COMPTE', 'ANNEE_EVALUATION_INI', 'MOIS_EVALUATION_INI',
-        'ANNEE_NAIS', 'MOIS_NAIS', 'I_SEXE', 'I_PRODUIT_REGR',
-        'ID_PRODUIT', 'ID_LAPSE', 'I_REGIME_2', 'ID_DEPOT', 'ID_ACQUI',
-        'AGE_ECH_MIN', 'AGE_FIN_CONTRAT', 'AGE_DECAISSEMENT',
-        'MT_VM', 'MT_GAR_DECES', 'MT_GAR_ECH', 'MT_SRG', 'MT_BCB',
-        'MT_DEX', 'MT_MM', 'MT_TSX', 'MT_SP500', 'MT_EAFE',
-        'MT_BONI_DECES', 'MT_MRV_MRG_MRA', 'TAUX_MRV_MRG_MRA',
-        'ANNEE_ECH', 'MOIS_ECH',
-        'PC_HONORAIRES_GEST', 'PC_FRAIS_GARANTIE', 'PC_GAR_DECES_1',
-        'PC_BONI_DECES', 'PC_RFG', 'PC_REVENU_FDS', 'PC_GAR_ECH',
-        'PC_GAR_ECH_DEP_FUT', 'AJUSTEMENT_COMMISSION', 'MT_RF', 'MT_VM',
-        'ANNEE_COTIS', 'MOIS_COTIS', 'MAX_BONI_DECES', 'I_FRAIS_SUR_SRG'
+        'ID_COMPTE',              # AccountIdx.ID_COMPTE = 0
+        'ANNEE_EVALUATION_INI',   # AccountIdx.ANNEE_EVALUATION_INI = 1
+        'MOIS_EVALUATION_INI',    # AccountIdx.MOIS_EVALUATION_INI = 2
+        'ANNEE_NAIS',             # AccountIdx.ANNEE_NAIS = 3
+        'MOIS_NAIS',              # AccountIdx.MOIS_NAIS = 4
+        'I_SEXE',                 # AccountIdx.I_SEXE = 5
+        'I_PRODUIT_REGR',         # AccountIdx.I_PRODUIT_REGR = 6
+        'ID_PRODUIT',             # AccountIdx.ID_PRODUIT = 7
+        'ID_LAPSE',               # AccountIdx.ID_LAPSE = 8
+        'I_REGIME_2',             # AccountIdx.I_REGIME_2 = 9
+        'ID_DEPOT',               # AccountIdx.ID_DEPOT = 10
+        'ID_ACQUI',               # AccountIdx.ID_ACQUI = 11
+        'AGE_ECH_MIN',            # AccountIdx.AGE_ECH_MIN = 12
+        'AGE_FIN_CONTRAT',        # AccountIdx.AGE_FIN_CONTRAT = 13
+        'AGE_DECAISSEMENT',       # AccountIdx.AGE_DECAISSEMENT = 14
+        'MT_VM',                  # AccountIdx.MT_VM = 15
+        'MT_GAR_DECES',           # AccountIdx.MT_GAR_DECES = 16
+        'MT_GAR_ECH',             # AccountIdx.MT_GAR_ECH = 17
+        'MT_SRG',                 # AccountIdx.MT_SRG = 18
+        'MT_BCB',                 # AccountIdx.MT_BCB = 19
+        'MT_DEX',                 # AccountIdx.MT_DEX = 20
+        'MT_MM',                  # AccountIdx.MT_MM = 21
+        'MT_TSX',                 # AccountIdx.MT_TSX = 22
+        'MT_SP500',               # AccountIdx.MT_SP500 = 23
+        'MT_EAFE',                # AccountIdx.MT_EAFE = 24
+        'MT_BONI_DECES',          # AccountIdx.MT_BONI_DECES = 25
+        'MT_MRV_MRG_MRA',         # AccountIdx.MT_MRV_MRG_MRA = 26
+        'TAUX_MRV_MRG_MRA',       # AccountIdx.TAUX_MRV_MRG_MRA = 27
+        'ANNEE_ECH',              # AccountIdx.ANNEE_ECH = 28
+        'MOIS_ECH',               # AccountIdx.MOIS_ECH = 29
+        'PC_HONORAIRES_GEST',     # AccountIdx.PC_HONORAIRES_GEST = 30
+        'PC_FRAIS_GARANTIE',      # AccountIdx.PC_FRAIS_GARANTIE = 31
+        'PC_GAR_DECES_1',         # AccountIdx.PC_GAR_DECES_1 = 32
+        'PC_BONI_DECES',          # AccountIdx.PC_BONI_DECES = 33
+        'PC_RFG',                 # AccountIdx.PC_RFG = 34
+        'PC_REVENU_FDS',          # AccountIdx.PC_REVENU_FDS = 35
+        'PC_GAR_ECH',             # AccountIdx.PC_GAR_ECH = 36
+        'PC_GAR_ECH_DEP_FUT',     # AccountIdx.PC_GAR_ECH_DEP_FUT = 37
+        'AJUSTEMENT_COMMISSION',  # AccountIdx.AJUSTEMENT_COMMISSION = 38
+        'MT_RF',                  # AccountIdx.MT_RF = 39
+        'MT_VM',                  # AccountIdx.MT_VM_ORIG = 40 (duplicate MT_VM for orig)
+        'ANNEE_COTIS',            # AccountIdx.ANNEE_COTIS = 41
+        'MOIS_COTIS',             # AccountIdx.MOIS_COTIS = 42
+        'MAX_BONI_DECES',         # AccountIdx.MAX_BONI_DECES = 43
+        'I_FRAIS_SUR_SRG'         # AccountIdx.I_FRAIS_SUR_SRG = 44
     ]
+
+    print(f"  Preparing account data with {len(columns)} fields...")
+    
+    # Validate that we have the correct number of columns
+    if len(columns) != AccountIdx.TOTAL_FIELDS:
+        raise ValueError(f"Column count mismatch: {len(columns)} vs {AccountIdx.TOTAL_FIELDS}")
 
     # Fill missing columns with defaults
     for col in columns:
@@ -236,8 +374,14 @@ def prepare_account_data(population_df):
             elif col in ['MOIS_COTIS', 'I_FRAIS_SUR_SRG']:
                 population_df[col] = 0
 
+    # Validate the final column structure
+    validate_account_data_structure(columns)
+
     account_data = population_df[columns].values.astype(np.float32)
     account_ids = population_df['ID_COMPTE'].values.astype(np.int32)
+    
+    print(f"  ✓ Account data prepared: {account_data.shape[0]} accounts × {account_data.shape[1]} fields")
+    print(f"  ✓ Field validation: AccountIdx constants match data structure")
 
     return account_data, account_ids
 

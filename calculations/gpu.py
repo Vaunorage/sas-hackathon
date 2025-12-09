@@ -1,7 +1,21 @@
 import os
+
+from calculations.kernels import (
+    external_generator_kernel, nested_valuation_kernel_five_chocs, STATE_SIZE,
+    EXT_DEBUG_SIZE, INT_DEBUG_SIZE,
+)
+from calculations.constants import (
+    MAX_SEXE, MAX_AGE, MAX_LAPSE_LEVELS, MAX_DURATION, DEFAULT_AGE_MAX_DEPOSIT,
+    RN_DEFAULT_FORWARD_RATE, RN_DEFAULT_REND_DEX, RN_DEFAULT_REND_MM,
+    RN_DEFAULT_REND_TSX, RN_DEFAULT_REND_SP500, RN_DEFAULT_REND_EAFE,
+    NUM_CHOCS, CHOC_NAMES, METRICS_RESERVE_IDX, METRICS_CAPITAL_IDX, METRICS_OUTPUT_SIZE,
+    LOOKUP_TABLE_OVERHEAD_MB, DEFAULT_GPU_MEMORY_GB, MEMORY_SAFETY_FACTOR, MEMORY_BATCH_THRESHOLD,
+    DEFAULT_THREADS_PER_BLOCK_1D,
+)
+
 os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
 
-from calculations.utils import logger, CONFIG, load_all_data, prepare_account_data, log_gpu_memory_debug
+from calculations.utils import logger, CONFIG, load_all_data, prepare_account_data
 from numba import cuda
 from paths import HERE
 import argparse
@@ -10,9 +24,8 @@ import numpy as np
 import polars as pl
 import gc
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypedDict
 from datetime import datetime
-import math
 from fastparquet import write as fastparquet_write
 
 # Try to import cuDF for GPU-accelerated DataFrame operations
@@ -25,14 +38,13 @@ except ImportError:
 
 def create_gpu_mortality_lookup(df: pd.DataFrame):
     """Create flattened array for mortality lookup on GPU."""
+    from calculations.constants import DEFAULT_MORTALITY_RATE
     # Create a 4D array indexed by: [i_sexe, age, year, i_produit_regr]
-    max_sexe = 2
-    max_age = 121
     max_year = df['ANNEE_REELLE'].max() + 1
     max_produit = df['I_PRODUIT_REGR'].max() + 1
 
     # Initialize with default value
-    lookup = np.full((max_sexe, max_age, max_year, max_produit), 0.001, dtype=np.float32)
+    lookup = np.full((MAX_SEXE, MAX_AGE, max_year, max_produit), DEFAULT_MORTALITY_RATE, dtype=np.float32)
 
     for _, row in df.iterrows():
         i_sexe = int(row['I_SEXE'])
@@ -76,8 +88,7 @@ def create_gpu_returns_lookup(df: pd.DataFrame):
 
 def create_gpu_min_ferr_lookup(df: pd.DataFrame):
     """Create array for minimum FERR lookup."""
-    max_age = 121
-    lookup = np.zeros(max_age, dtype=np.float32)
+    lookup = np.zeros(MAX_AGE, dtype=np.float32)
     for _, row in df.iterrows():
         age = int(row['AGE'])
         lookup[age] = float(row['MIN_FERR'])
@@ -86,13 +97,11 @@ def create_gpu_min_ferr_lookup(df: pd.DataFrame):
 
 def create_gpu_lapse_part_lookup(df: pd.DataFrame):
     """Create arrays for partial lapse lookup."""
-    max_age = 121
     max_id_lapse = df['ID_LAPSE'].max() + 1
     max_regime = df['I_REGIME_2'].max() + 1
-    max_niv = 4
 
-    tx_min = np.zeros((max_age, max_id_lapse, max_regime, max_niv), dtype=np.float32)
-    tx_max = np.zeros((max_age, max_id_lapse, max_regime, max_niv), dtype=np.float32)
+    tx_min = np.zeros((MAX_AGE, max_id_lapse, max_regime, MAX_LAPSE_LEVELS), dtype=np.float32)
+    tx_max = np.zeros((MAX_AGE, max_id_lapse, max_regime, MAX_LAPSE_LEVELS), dtype=np.float32)
 
     for _, row in df.iterrows():
         age = int(row['AGE'])
@@ -107,13 +116,11 @@ def create_gpu_lapse_part_lookup(df: pd.DataFrame):
 
 def create_gpu_lapse_tot_lookup(df: pd.DataFrame):
     """Create arrays for total lapse lookup."""
-    max_duree = 11
     max_id_lapse = df['ID_LAPSE'].max() + 1
-    max_niv = 4
 
-    tx_min = np.zeros((max_duree, max_id_lapse, max_niv), dtype=np.float32)
-    tx_max = np.zeros((max_duree, max_id_lapse, max_niv), dtype=np.float32)
-    fact_dim = np.ones((max_duree, max_id_lapse, max_niv), dtype=np.float32)
+    tx_min = np.zeros((MAX_DURATION, max_id_lapse, MAX_LAPSE_LEVELS), dtype=np.float32)
+    tx_max = np.zeros((MAX_DURATION, max_id_lapse, MAX_LAPSE_LEVELS), dtype=np.float32)
+    fact_dim = np.ones((MAX_DURATION, max_id_lapse, MAX_LAPSE_LEVELS), dtype=np.float32)
 
     for _, row in df.iterrows():
         duree = int(row['DUREE_MAX10'])
@@ -142,13 +149,12 @@ def create_gpu_fees_lookup(df: pd.DataFrame):
 
 def create_gpu_deposits_lookup(df: pd.DataFrame):
     """Create arrays for deposits lookup."""
-    max_duree = 11
     max_id_depot = df['ID_DEPOT'].max() + 1
 
-    pc_depot = np.zeros((max_duree, max_id_depot), dtype=np.float32)
-    var_fct = np.zeros((max_duree, max_id_depot), dtype=np.int32)
-    age_max = np.full((max_duree, max_id_depot), 999, dtype=np.int32)
-    i_even = np.zeros((max_duree, max_id_depot), dtype=np.int32)
+    pc_depot = np.zeros((MAX_DURATION, max_id_depot), dtype=np.float32)
+    var_fct = np.zeros((MAX_DURATION, max_id_depot), dtype=np.int32)
+    age_max = np.full((MAX_DURATION, max_id_depot), DEFAULT_AGE_MAX_DEPOSIT, dtype=np.int32)
+    i_even = np.zeros((MAX_DURATION, max_id_depot), dtype=np.int32)
 
     for _, row in df.iterrows():
         duree = int(row['DUREE_MAX10'])
@@ -163,15 +169,14 @@ def create_gpu_deposits_lookup(df: pd.DataFrame):
 
 def create_gpu_acquisition_lookup(df: pd.DataFrame):
     """Create arrays for acquisition lookup."""
-    max_duree = 11
     max_id_acqui = df['ID_ACQUI'].max() + 1
 
-    pc_vente_rf = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
-    pc_vente_ac = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
-    pc_maintien_rf = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
-    pc_maintien_ac = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
-    pc_frais_ac = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
-    pc_frais_rf = np.zeros((max_duree, max_id_acqui), dtype=np.float32)
+    pc_vente_rf = np.zeros((MAX_DURATION, max_id_acqui), dtype=np.float32)
+    pc_vente_ac = np.zeros((MAX_DURATION, max_id_acqui), dtype=np.float32)
+    pc_maintien_rf = np.zeros((MAX_DURATION, max_id_acqui), dtype=np.float32)
+    pc_maintien_ac = np.zeros((MAX_DURATION, max_id_acqui), dtype=np.float32)
+    pc_frais_ac = np.zeros((MAX_DURATION, max_id_acqui), dtype=np.float32)
+    pc_frais_rf = np.zeros((MAX_DURATION, max_id_acqui), dtype=np.float32)
 
     for _, row in df.iterrows():
         duree = int(row['DUREE_MAX10'])
@@ -186,742 +191,663 @@ def create_gpu_acquisition_lookup(df: pd.DataFrame):
     return pc_vente_rf, pc_vente_ac, pc_maintien_rf, pc_maintien_ac, pc_frais_ac, pc_frais_rf
 
 
-# =============================================================================
-# GPU KERNELS - TWO-PASS NESTED STOCHASTIC ARCHITECTURE
-# =============================================================================
+def initialize_gpu():
+    """
+    Initialize GPU and check availability.
+    
+    Returns:
+        Tuple of (gpu_device, free_mem, total_mem) or raises RuntimeError
+    """
+    try:
+        if not cuda.is_available():
+            raise RuntimeError("CUDA is not available")
+        
+        gpu = cuda.get_current_device()
+        print(f"GPU Device: {gpu.name.decode()}")
+        
+        try:
+            free_mem, total_mem = cuda.current_context().get_memory_info()
+            print(f"GPU Memory: {free_mem / 1024**3:.2f} GB free / {total_mem / 1024**3:.2f} GB total")
+        except NotImplementedError:
+            free_mem, total_mem = None, None
+        
+        return gpu, free_mem, total_mem
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize GPU: {e}")
 
-# State variables passed between Kernel A and Kernel B
-# Index mapping for state tensor
-STATE_MT_VM = 0
-STATE_MT_GAR_DECES = 1
-STATE_MT_GAR_ECH = 2
-STATE_MT_SRG = 3
-STATE_AGE = 4
-STATE_TX_SURVIE = 5
-STATE_MT_DEX = 6
-STATE_MT_MM = 7
-STATE_MT_TSX = 8
-STATE_MT_SP500 = 9
-STATE_MT_EAFE = 10
-STATE_MT_BONI_DECES = 11
-STATE_SIZE = 12  # Total number of state variables
 
-@cuda.jit
-def external_generator_kernel(
-        # Account data
-        account_data,  # Shape: (n_accounts, n_account_fields)
-        # Scenario parameters
-        n_scenarios,
-        n_years,
-        freq_eval,
-        # Lookup tables - Mortality
-        mortality_lookup,
-        # Lookup tables - Returns
-        forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe,
-        # Lookup tables - Lapse
-        min_ferr_lookup,
-        lapse_part_min, lapse_part_max,
-        lapse_tot_min, lapse_tot_max, lapse_tot_fact,
-        # Lookup tables - Deposits
-        deposits_pc, deposits_var, deposits_age_max, deposits_i_even,
-        # Lookup tables - Fees
-        fees_lookup,
-        # Lookup tables - Acquisition
-        acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf,
-        # Debug parameters
-        debug_ext_scenario,
+def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projection: int, 
+                         nb_int_scenarios: int, account_data_cols: int):
+    """
+    Calculate optimal batch size based on memory requirements.
+    
+    Returns:
+        Tuple of (batch_size, num_batches, total_mem_per_account, lookup_overhead)
+    """
+    print("\nCalculating memory requirements...")
+    
+    # State tensor: (Batch, Ext_Scenarios, Years, STATE_SIZE)
+    state_mem_per_account = nb_ext_scenarios * nb_an_projection * STATE_SIZE * 4  # float32
+    
+    # Cashflow tensor: (Batch, Ext_Scenarios, Years, 1)
+    cf_mem_per_account = nb_ext_scenarios * nb_an_projection * 1 * 4
+    
+    # Metrics tensor: (Batch, Ext_Scenarios, Years, NUM_CHOCS, METRICS_OUTPUT_SIZE) - chocs × (Reserve & Capital)
+    metrics_mem_per_account = nb_ext_scenarios * nb_an_projection * NUM_CHOCS * METRICS_OUTPUT_SIZE * 4
+    
+    total_mem_per_account = (state_mem_per_account + cf_mem_per_account + 
+                             metrics_mem_per_account + account_data_cols * 4)
+    
+    # Estimate lookup table memory overhead (always resident on GPU)
+    lookup_overhead = 0
+    lookup_overhead += 6 * nb_ext_scenarios * nb_an_projection * 12 * 4
+    lookup_overhead += 6 * nb_int_scenarios * nb_an_projection * 4
+    lookup_overhead += LOOKUP_TABLE_OVERHEAD_MB * 1024**2
+    
+    print(f"  State tensor per account: {state_mem_per_account / 1024**2:.2f} MB")
+    print(f"  Total memory per account: {total_mem_per_account / 1024**2:.2f} MB")
+    print(f"  Lookup table overhead: {lookup_overhead / 1024**2:.2f} MB")
+    
+    # Calculate batch size (conservative for nested scenarios)
+    try:
+        free_mem, total_mem = cuda.current_context().get_memory_info()
+        print(f"  GPU free memory: {free_mem / 1024**3:.2f} GB")
+        print(f"  GPU total memory: {total_mem / 1024**3:.2f} GB")
+        available_mem = max(0, (free_mem - lookup_overhead) * MEMORY_SAFETY_FACTOR)
+    except NotImplementedError:
+        print("  Warning: Cannot query GPU memory, using conservative estimate")
+        available_mem = max(0, DEFAULT_GPU_MEMORY_GB * 1024**3 - lookup_overhead)
+    
+    batch_size = max(1, int(available_mem // total_mem_per_account))
+    batch_size = min(batch_size, n_accounts)
+    num_batches = (n_accounts + batch_size - 1) // batch_size
+    
+    print(f"  Batch size: {batch_size} accounts")
+    print(f"  Total batches: {num_batches}")
+    
+    return batch_size, num_batches, total_mem_per_account, lookup_overhead
+
+
+class ProcessBatchResult(TypedDict):
+    """Typed result from process_batch function."""
+    batch_reserves: np.ndarray
+    batch_capital: np.ndarray
+    batch_reserves_5chocs: np.ndarray
+    batch_capital_5chocs: np.ndarray
+    ext_debug: Optional[np.ndarray]  # Debug output from external kernel
+    int_debug: Optional[np.ndarray]  # Debug output from internal kernel
+
+
+def check_gpu_memory(batch_size: int, mem_per_account: float, batch_idx: int = 0):
+    """Log GPU memory status and raise if insufficient for batch."""
+    try:
+        free_mem, _ = cuda.current_context().get_memory_info()
+        estimated_mem = batch_size * mem_per_account
+        logger.info(f"  Free GPU memory: {free_mem / 1024 ** 3:.2f} GB")
+        logger.info(f"  Estimated batch memory: {estimated_mem / 1024 ** 3:.2f} GB")
+        
+        if estimated_mem > free_mem * MEMORY_BATCH_THRESHOLD:
+            raise RuntimeError(
+                f"Insufficient GPU memory for batch {batch_idx + 1}. "
+                f"Need {estimated_mem / 1024**3:.2f} GB but only "
+                f"{free_mem / 1024**3:.2f} GB available. "
+                f"Try reducing batch size or number of scenarios."
+            )
+    except NotImplementedError:
+        pass
+
+
+def process_batch(
+    batch_account_data: np.ndarray,
+    nb_ext_scenarios: int,
+    nb_an_projection: int,
+    nb_int_scenarios: int,
+    total_mem_per_account: float,
+    threads_per_block: tuple,
+    gpu_lookups: dict,
+    batch_idx: int = 0,
+    num_batches: int = 1,
+    debug_account: int = -1,
+    debug_scenario: int = -1,
+    debug_year: int = -1,
+    debug_month: int = -1,
+    debug_int_scenario: int = -1,
+    debug_int_year: int = -1,
+) -> ProcessBatchResult:
+    """
+    Process a single batch through both kernels.
+    
+    Args:
+        batch_account_data: 2D array of account data for this batch (n_batch_accounts, n_features)
+        nb_ext_scenarios: Number of external scenarios
+        nb_an_projection: Number of projection years
+        nb_int_scenarios: Number of internal scenarios
+        total_mem_per_account: Estimated GPU memory per account (bytes)
+        threads_per_block: CUDA thread block dimensions for Kernel A
+        gpu_lookups: Dictionary of GPU device arrays with lookup tables
+        batch_idx: Index of current batch (for logging)
+        num_batches: Total number of batches (for logging)
+        debug_account: Account index to debug (-1 = disabled)
+        debug_scenario: External scenario index to debug (-1 = disabled)
+        debug_year: Year (an_eval) to debug (-1 = disabled)
+        debug_month: Month (mois_eval) to debug (-1 = disabled)
+        debug_int_scenario: Internal scenario to debug (-1 = disabled)
+        debug_int_year: Internal year to debug (-1 = disabled)
+    
+    Returns:
+        ProcessBatchResult with batch results
+    """
+    batch_start = datetime.now()
+    current_batch_size = len(batch_account_data)
+    
+    logger.info(f"\n--- Batch {batch_idx + 1}/{num_batches} ({current_batch_size} accounts) ---")
+    check_gpu_memory(current_batch_size, total_mem_per_account, batch_idx)
+    
+    # Prepare batch data
+    batch_account_data_contiguous = np.ascontiguousarray(batch_account_data)
+    d_batch_accounts = cuda.to_device(batch_account_data_contiguous)
+    
+    # Allocate tensors
+    try:
+        d_states = cuda.device_array(
+            (current_batch_size, nb_ext_scenarios, nb_an_projection, STATE_SIZE),
+            dtype=np.float32
+        )
+        d_cashflows = cuda.device_array(
+            (current_batch_size, nb_ext_scenarios, nb_an_projection, 1),
+            dtype=np.float32
+        )
+        d_metrics = cuda.device_array(
+            (current_batch_size, nb_ext_scenarios, nb_an_projection, NUM_CHOCS, METRICS_OUTPUT_SIZE),
+            dtype=np.float32
+        )
+        
+        # Allocate debug arrays if debug filters are specified
+        d_ext_debug = None
+        d_int_debug = None
+        enable_ext_debug = debug_account >= 0 or debug_scenario >= 0 or debug_year >= 0 or debug_month >= 0
+        enable_int_debug = enable_ext_debug  # Internal debug only if external debug is enabled
+        
+        if enable_ext_debug:
+            logger.info(f"  Debug mode: account={debug_account}, scenario={debug_scenario}, year={debug_year}, month={debug_month}")
+            # Single row for external debug output
+            d_ext_debug = cuda.device_array((EXT_DEBUG_SIZE,), dtype=np.float32)
+        
+        if enable_int_debug:
+            logger.info(f"  Internal debug: int_scenario={debug_int_scenario}, int_year={debug_int_year}")
+            # One row per choc for internal debug output
+            d_int_debug = cuda.device_array((NUM_CHOCS, INT_DEBUG_SIZE), dtype=np.float32)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to allocate GPU memory for batch {batch_idx+1}. "
+            f"Try reducing --max-accounts or --ext-scenarios. Original error: {e}"
+        )
+    
+    # === KERNEL A: EXTERNAL GENERATOR ===
+    logger.info("  Launching Kernel A (External Generator)...")
+    blocks_x = (current_batch_size + threads_per_block[0] - 1) // threads_per_block[0]
+    blocks_y = (nb_ext_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
+    grid_A = (blocks_x, blocks_y)
+    
+    kernel_a_start = datetime.now()
+    external_generator_kernel[grid_A, threads_per_block](
+        d_batch_accounts,
+        nb_ext_scenarios, nb_an_projection,
+        CONFIG['FREQ_EVAL'],
+        gpu_lookups['mortality'],
+        gpu_lookups['returns'],
+        gpu_lookups['lapse'],
+        gpu_lookups['policy'],
+        gpu_lookups['commission'],
+        d_states,
+        d_cashflows,
+        d_ext_debug,
         debug_account,
-        # Output arrays
-        output_states,     # Shape: (Batch_Size, n_scenarios, n_years, STATE_SIZE)
-        output_cashflows,  # Shape: (Batch_Size, n_scenarios, n_years, CF_SIZE)
-        output_ext_debug   # Shape: (n_years, 12) for debug logging
+        debug_scenario,
+        debug_year,
+        debug_month,
+    )
+    cuda.synchronize()
+    kernel_a_time = (datetime.now() - kernel_a_start).total_seconds()
+    logger.info(f"  Kernel A complete: {kernel_a_time:.2f}s")
+    
+    # === KERNEL B: NESTED VALUATOR WITH 5 CHOCS ===
+    logger.info(f"  Launching Kernel B (Five Chocs Nested Valuator)...")
+    total_nodes = current_batch_size * nb_ext_scenarios * nb_an_projection
+    threads_per_block_B = DEFAULT_THREADS_PER_BLOCK_1D
+    blocks_B = (total_nodes + threads_per_block_B - 1) // threads_per_block_B
+    
+    kernel_b_start = datetime.now()
+    
+    nested_valuation_kernel_five_chocs[blocks_B, threads_per_block_B](
+        d_states,
+        d_batch_accounts,
+        nb_int_scenarios,
+        nb_an_projection,
+        gpu_lookups['rn_returns'],
+        gpu_lookups['mortality'],
+        d_metrics,
+        d_int_debug,
+        debug_int_scenario,
+        debug_int_year,
+        debug_account,
+        debug_scenario,
+        debug_year,
+    )
+    cuda.synchronize()
+    
+    kernel_b_time = (datetime.now() - kernel_b_start).total_seconds()
+    logger.info(f"  Kernel B complete: {kernel_b_time:.2f}s")
+    
+    # Copy results back
+    logger.info("  Copying results to CPU...")
+    h_metrics = d_metrics.copy_to_host()
+    
+    # Copy debug arrays if enabled
+    h_ext_debug = None
+    h_int_debug = None
+    if d_ext_debug is not None:
+        logger.info("  Copying external debug output to CPU...")
+        h_ext_debug = d_ext_debug.copy_to_host()
+    if d_int_debug is not None:
+        logger.info("  Copying internal debug output to CPU...")
+        h_int_debug = d_int_debug.copy_to_host()
+    
+    # Process metrics
+    batch_reserves_5chocs = h_metrics[:, :, :, :, METRICS_RESERVE_IDX].mean(axis=(1, 2))
+    batch_capital_5chocs = h_metrics[:, :, :, :, METRICS_CAPITAL_IDX].mean(axis=(1, 2))
+    batch_reserves = batch_reserves_5chocs[:, 0]
+    batch_capital = batch_capital_5chocs[:, 0]
+    
+    # Cleanup
+    del d_batch_accounts, d_states, d_cashflows, d_metrics
+    if d_ext_debug is not None:
+        del d_ext_debug
+    if d_int_debug is not None:
+        del d_int_debug
+    cuda.synchronize()
+    del h_metrics
+    gc.collect()
+    
+    try:
+        import rmm
+        rmm.mr.get_current_device_resource().deallocate(0, 0)
+    except (ImportError, AttributeError):
+        pass
+    
+    batch_time = (datetime.now() - batch_start).total_seconds()
+    logger.info(f"  Batch complete: {batch_time:.2f}s (KernelA: {kernel_a_time:.2f}s, KernelB: {kernel_b_time:.2f}s)")
+    
+    return {
+        'batch_reserves': batch_reserves,
+        'batch_capital': batch_capital,
+        'batch_reserves_5chocs': batch_reserves_5chocs,
+        'batch_capital_5chocs': batch_capital_5chocs,
+        'ext_debug': h_ext_debug,
+        'int_debug': h_int_debug,
+    }
+
+
+def create_results_dataframes(
+    population_ids: np.ndarray,
+    all_reserves: list,
+    all_capital: list,
+    all_reserves_5chocs: list,
+    all_capital_5chocs: list,
+    n_accounts: int
 ):
     """
-    KERNEL A: EXTERNAL SCENARIO GENERATOR (Tier 1)
+    Create results DataFrames from accumulated batch results.
     
-    Runs the external (real-world) scenarios and saves intermediate states at each timestep.
-    These states will be used by Kernel B to perform nested valuations.
-    
-    Output:
-    - State tensor: All policy state variables at each external scenario node
-    - Cashflow tensor: Nominal cashflows for reporting (Tier 1 results)
+    Returns:
+        Tuple of (results_df, results_5chocs_df, sensitivities_df)
     """
-    # Get global thread ID
-    account_idx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
-    scenario_idx = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
-
-    # Boundary check
-    if account_idx >= account_data.shape[0] or scenario_idx >= n_scenarios:
-        return
-
-    # Load account data into registers
-    acc = account_data[account_idx]
-
-    # Account static data indices
-    ID_COMPTE = int(acc[0])
+    results_df = pd.DataFrame({
+        'ID_COMPTE': population_ids[:n_accounts],
+        'RESERVE_BE': all_reserves,
+        'CAPITAL_REQ': all_capital,
+        'SCR': [cap - res for res, cap in zip(all_reserves, all_capital)]
+    })
     
-    # Check if this is the debug thread for external scenario logging
-    is_debug_ext = (ID_COMPTE == debug_account and scenario_idx == debug_ext_scenario)
-    ANNEE_EVALUATION_INI = int(acc[1])
-    MOIS_EVALUATION_INI = int(acc[2])
-    ANNEE_NAIS = int(acc[3])
-    MOIS_NAIS = int(acc[4])
-    I_SEXE = int(acc[5])
-    I_PRODUIT_REGR = int(acc[6])
-    ID_PRODUIT = int(acc[7])
-    ID_LAPSE = int(acc[8])
-    I_REGIME_2 = int(acc[9])
-    ID_DEPOT = int(acc[10])
-    ID_ACQUI = int(acc[11])
-    AGE_ECH_MIN = int(acc[12])
-    AGE_FIN_CONTRAT = int(acc[13])
-    AGE_DECAISSEMENT = int(acc[14])
+    results_5chocs_df = None
+    sensitivities_df = None
+    
+    if all_reserves_5chocs:
+        all_reserves_5chocs_array = np.array(all_reserves_5chocs)
+        all_capital_5chocs_array = np.array(all_capital_5chocs)
+        choc_rows = []
+        
+        for acc_idx in range(n_accounts):
+            account_id = population_ids[acc_idx]
+            for choc_idx, choc_name in enumerate(CHOC_NAMES):
+                reserve = all_reserves_5chocs_array[acc_idx, choc_idx]
+                capital = all_capital_5chocs_array[acc_idx, choc_idx]
+                choc_rows.append({
+                    'ID_COMPTE': account_id,
+                    'CHOC_TYPE': choc_name,
+                    'CHOC_IDX': choc_idx,
+                    'RESERVE_BE': reserve,
+                    'CAPITAL_REQ': capital,
+                    'SCR': capital - reserve
+                })
+        
+        results_5chocs_df = pd.DataFrame(choc_rows)
+        
+        base_reserves = all_reserves_5chocs_array[:, 0]
+        base_capital = all_capital_5chocs_array[:, 0]
+        
+        sensitivities_df = pd.DataFrame({
+            'ID_COMPTE': population_ids[:n_accounts],
+            'DELTA_SP500_RESERVE': all_reserves_5chocs_array[:, 1] - base_reserves,
+            'DELTA_TSX_RESERVE': all_reserves_5chocs_array[:, 2] - base_reserves,
+            'DELTA_EAFE_RESERVE': all_reserves_5chocs_array[:, 3] - base_reserves,
+            'DELTA_DEX_RESERVE': all_reserves_5chocs_array[:, 4] - base_reserves,
+            'DELTA_SP500_CAPITAL': all_capital_5chocs_array[:, 1] - base_capital,
+            'DELTA_TSX_CAPITAL': all_capital_5chocs_array[:, 2] - base_capital,
+            'DELTA_EAFE_CAPITAL': all_capital_5chocs_array[:, 3] - base_capital,
+            'DELTA_DEX_CAPITAL': all_capital_5chocs_array[:, 4] - base_capital,
+        })
+        
+        logger.info(f"Created 5 chocs results with {len(results_5chocs_df)} rows and sensitivities for {len(sensitivities_df)} accounts")
+    
+    return results_df, results_5chocs_df, sensitivities_df
 
-    # Initialize state variables
-    MT_VM_PROJ = acc[15]
-    MT_GAR_DECES_PROJ = acc[16]
-    MT_GAR_ECH_PROJ = acc[17]
-    MT_SRG_PROJ = acc[18]
-    MT_BCB_PROJ = acc[19]
-    MT_DEX_PROJ = acc[20]
-    MT_MM_PROJ = acc[21]
-    MT_TSX_PROJ = acc[22]
-    MT_SP500_PROJ = acc[23]
-    MT_EAFE_PROJ = acc[24]
-    MT_BONI_DECES_PROJ = acc[25]
-    MT_MRV_MRG_MRA_PROJ = acc[26]
-    TAUX_MRV_MRG_MRA_PROJ = acc[27]
-    MT_MIN_FERR_PROJ = 0.0
 
-    TX_SURVIE = 1.0
-
-    PC_HONORAIRES_GEST = acc[30]
-    PC_FRAIS_GARANTIE = acc[31]
-    PC_GAR_DECES_1 = acc[32]
-    PC_BONI_DECES = acc[33]
-    PC_RFG = acc[34]
-    PC_REVENU_FDS = acc[35]
-    PC_GAR_ECH = acc[36]
-    PC_GAR_ECH_DEP_FUT = acc[37]
-    MT_VM_ORIG = acc[40]
-
-    ANNEE_COTIS = int(acc[41]) if acc[41] > 0 else ANNEE_EVALUATION_INI
-    MOIS_COTIS = int(acc[42]) if acc[42] > 0 else 1
-
-    # Scenario-specific processing
-    scn_eval = scenario_idx + 1
-
-    output_year_idx = 0
-    AJUST_NOUV_AFFAIRES = 1.0
-
-    # TIME LOOP - External Projection
-    for an_eval in range(0, n_years + 1):
-        for mois_simul in range(1, freq_eval + 1):
-            # Calculate real year and month
-            annee_reelle = ANNEE_EVALUATION_INI + an_eval - 1
-            mois_eval = mois_simul * 12 // freq_eval
-
-            # Calculate age
-            age = annee_reelle - ANNEE_NAIS
-            if mois_eval < MOIS_NAIS:
-                age -= 1
-            if age < 1:
-                age = 1
-
-            # Check if we should keep this period
-            keep = (age <= AGE_FIN_CONTRAT and
-                    (an_eval > 1 or
-                     (an_eval == 1 and mois_eval >= MOIS_EVALUATION_INI) or
-                     (an_eval == 0 and mois_eval == 12)))
-
-            if not keep:
-                continue
-
-            # Check if policy is still active
-            if TX_SURVIE == 0 or (MT_VM_PROJ == 0 and I_PRODUIT_REGR == 0):
-                break
-
-            # Calculate duration from issue date
-            current_date = annee_reelle + mois_eval / 12.0
-            issue_date = ANNEE_COTIS + MOIS_COTIS / 12.0
-            duree = int(current_date - issue_date) + 1
-            duree_max10 = min(duree, 10)
-
-            TX_SURVIE_DEB = TX_SURVIE
-
-            # === COMPLETE SAS PROJECTION LOGIC ===
-            
-            # Initialize year 0 (SAS lines 241-265)
-            if an_eval == 0:
-                MT_SP500_PROJ = acc[23]  # MT_SP500
-                MT_TSX_PROJ = acc[22]    # MT_TSX
-                MT_EAFE_PROJ = acc[24]   # MT_EAFE
-                MT_DEX_PROJ = acc[20]    # MT_DEX
-                MT_MM_PROJ = acc[21]     # MT_MM
-                MT_VM_PROJ = MT_SP500_PROJ + MT_TSX_PROJ + MT_EAFE_PROJ + MT_DEX_PROJ + MT_MM_PROJ
-                TX_ACTUALISATION = 1.0
-                continue
-            
-            # Mortality lookup (SAS lines 420-429)
-            month_diff = MOIS_NAIS - mois_eval
-            if month_diff <= 0:
-                month_diff += 12
-            age_mort = age + 1 if month_diff <= 6 else age
-            age_mort = min(age_mort, 120)
-            
-            if (I_SEXE < mortality_lookup.shape[0] and
-                    age_mort < mortality_lookup.shape[1] and
-                    annee_reelle < mortality_lookup.shape[2] and
-                    I_PRODUIT_REGR < mortality_lookup.shape[3]):
-                qx = mortality_lookup[I_SEXE, age_mort, annee_reelle, I_PRODUIT_REGR]
-            else:
-                qx = 0.001
-            qx = 1.0 - math.pow(1.0 - qx, (1.0 / freq_eval * AJUST_NOUV_AFFAIRES))
-
-            # Returns lookup and application (SAS lines 305-327)
-            if (scn_eval < forward_rate.shape[0] and
-                    an_eval < forward_rate.shape[1] and
-                    mois_eval < forward_rate.shape[2]):
-                FORWARD_RATE = forward_rate[scn_eval, an_eval, mois_eval]
-                AJUST_FORWARD_RATE_VM_0 = ajust_forward[scn_eval, an_eval, mois_eval]
-                r_dex = rend_dex[scn_eval, an_eval, mois_eval]
-                r_mm = rend_mm[scn_eval, an_eval, mois_eval]
-                r_tsx = rend_tsx[scn_eval, an_eval, mois_eval]
-                r_sp500 = rend_sp500[scn_eval, an_eval, mois_eval]
-                r_eafe = rend_eafe[scn_eval, an_eval, mois_eval]
-            else:
-                FORWARD_RATE = 0.02
-                AJUST_FORWARD_RATE_VM_0 = 0.0
-                r_dex = r_mm = r_tsx = r_sp500 = r_eafe = 0.02
-
-            # Adjust forward rate for VM=0 case (SAS line 309)
-            if MT_VM_PROJ == 0:
-                FORWARD_RATE += AJUST_FORWARD_RATE_VM_0
-
-            # Apply returns to each asset (SAS lines 316-321)
-            MT_SP500_PROJ *= math.exp(r_sp500 * AJUST_NOUV_AFFAIRES)
-            MT_TSX_PROJ *= math.exp(r_tsx * AJUST_NOUV_AFFAIRES)
-            MT_EAFE_PROJ *= math.exp(r_eafe * AJUST_NOUV_AFFAIRES)
-            MT_DEX_PROJ *= math.exp(r_dex * AJUST_NOUV_AFFAIRES)
-            MT_MM_PROJ *= math.exp(r_mm * AJUST_NOUV_AFFAIRES)
-
-            MT_VM_AV_RETRAIT_FRAIS = (MT_SP500_PROJ + MT_TSX_PROJ + MT_EAFE_PROJ +
-                                      MT_DEX_PROJ + MT_MM_PROJ)
-            
-            # Update discount factor (SAS lines 326-327)
-            TX_ACTUALISATION *= math.exp(-FORWARD_RATE * AJUST_NOUV_AFFAIRES)
-
-            # Complete lapse calculation (SAS lines 330-413)
-            lapse = 0.0
-            if MT_VM_PROJ == 0:
-                # No lapse for zero VM RGS products
-                VM_VG_RATIO = 0.0
-                LAPSE_NIV_TOT = 0
-                LAPSE_NIV_PART = 0
-                LAPSE_TOT = 0.0
-                LAPSE_PART = 0.0
-            else:
-                # Calculate VM/VG ratio (SAS lines 350-355)
-                vm_mid_period = (MT_VM_PROJ + MT_VM_AV_RETRAIT_FRAIS) / 2.0
-                pc_gar_ech_ratio = PC_GAR_ECH / max(MT_GAR_ECH_PROJ, 0.01) if MT_GAR_ECH_PROJ > 0 else 1.0
-                pc_gar_deces_ratio = PC_GAR_DECES_1 / max(MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ, 0.01) if (MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ) > 0 else 1.0
-                srg_ratio = 1.0 / max(MT_SRG_PROJ, 0.01) if MT_SRG_PROJ > 0 else 1.0
-                
-                min_ratio = min(pc_gar_ech_ratio, pc_gar_deces_ratio, srg_ratio)
-                VM_VG_RATIO = min(10.0, vm_mid_period * min_ratio)
-                
-                # Determine lapse levels (SAS lines 363-365, 392-394)
-                if VM_VG_RATIO <= 0.5:
-                    LAPSE_NIV_TOT = 1
-                    LAPSE_NIV_PART = 1
-                elif VM_VG_RATIO <= 0.75:
-                    LAPSE_NIV_TOT = 2
-                    LAPSE_NIV_PART = 2
-                else:
-                    LAPSE_NIV_TOT = 3
-                    LAPSE_NIV_PART = 3
-                
-                # Lookup lapse rates with bounds checking
-                if (duree_max10 < lapse_tot_min.shape[0] and ID_LAPSE < lapse_tot_min.shape[1] and
-                        LAPSE_NIV_TOT < lapse_tot_min.shape[2]):
-                    tx_lapse_tot_min = lapse_tot_min[duree_max10, ID_LAPSE, LAPSE_NIV_TOT]
-                    tx_lapse_tot_max = lapse_tot_max[duree_max10, ID_LAPSE, LAPSE_NIV_TOT]
-                    fact_dim = lapse_tot_fact[duree_max10, ID_LAPSE, LAPSE_NIV_TOT]
-                else:
-                    tx_lapse_tot_min = tx_lapse_tot_max = 0.01
-                    fact_dim = 1.0
-                
-                # Calculate total lapse (SAS lines 374-383)
-                if tx_lapse_tot_min == tx_lapse_tot_max:
-                    LAPSE_TOT = tx_lapse_tot_min
-                else:
-                    if LAPSE_NIV_TOT == 1:
-                        lapse_interp = (VM_VG_RATIO - 0.0) / 0.5
-                    elif LAPSE_NIV_TOT == 2:
-                        lapse_interp = (VM_VG_RATIO - 0.5) / 0.25
-                    else:
-                        lapse_interp = (VM_VG_RATIO - 0.75) / 999.24
-                    LAPSE_TOT = lapse_interp * (tx_lapse_tot_max - tx_lapse_tot_min) + tx_lapse_tot_min
-                
-                # Age adjustment for FERR
-                age_factor = fact_dim if age >= AGE_DECAISSEMENT else 1.0
-                LAPSE_TOT *= age_factor
-                
-                # Partial lapse calculation (similar logic)
-                if (age < lapse_part_min.shape[0] and ID_LAPSE < lapse_part_min.shape[1] and
-                        I_REGIME_2 < lapse_part_min.shape[2] and LAPSE_NIV_PART < lapse_part_min.shape[3]):
-                    tx_lapse_part_min = lapse_part_min[age, ID_LAPSE, I_REGIME_2, LAPSE_NIV_PART]
-                    tx_lapse_part_max = lapse_part_max[age, ID_LAPSE, I_REGIME_2, LAPSE_NIV_PART]
-                else:
-                    tx_lapse_part_min = tx_lapse_part_max = 0.005
-                
-                if tx_lapse_part_min == tx_lapse_part_max:
-                    LAPSE_PART = tx_lapse_part_min
-                else:
-                    if LAPSE_NIV_PART == 1:
-                        lapse_interp = (VM_VG_RATIO - 0.0) / 0.5
-                    elif LAPSE_NIV_PART == 2:
-                        lapse_interp = (VM_VG_RATIO - 0.5) / 0.25
-                    else:
-                        lapse_interp = (VM_VG_RATIO - 0.75) / 999.24
-                    LAPSE_PART = lapse_interp * (tx_lapse_part_max - tx_lapse_part_min) + tx_lapse_part_min
-            
-            # Convert annual rates to frequency basis (SAS line 412)
-            lapse = 1.0 - math.pow(1.0 - LAPSE_TOT - LAPSE_PART, 1.0 / freq_eval * AJUST_NOUV_AFFAIRES)
-
-            # Update survival probability (SAS lines 432-433)
-            TX_SURVIE *= (1.0 - qx) * (1.0 - lapse)
-
-            # Apply management fees (SAS line 537)
-            MT_VM_AV_RETRAIT = MT_VM_AV_RETRAIT_FRAIS * math.exp(-PC_RFG / freq_eval * AJUST_NOUV_AFFAIRES)
-            
-            # Calculate guarantee fees (SAS lines 540-551)
-            PRIMES_GARANTIES = 0.0
-            if PC_FRAIS_GARANTIE > 0:
-                fee_base = MT_VM_AV_RETRAIT  # Default: fees on VM
-                # Note: I_FRAIS_SUR_SRG logic would go here if needed
-                PRIMES_GARANTIES = min(fee_base * PC_FRAIS_GARANTIE / freq_eval * AJUST_NOUV_AFFAIRES, MT_VM_AV_RETRAIT) * TX_SURVIE_DEB
-                MT_VM_AV_RETRAIT = max(MT_VM_AV_RETRAIT - PRIMES_GARANTIES / TX_SURVIE_DEB, 0.0)
-            
-            # FERR minimum calculation (SAS lines 444-449)
-            if age < min_ferr_lookup.shape[0]:
-                min_ferr_rate = min_ferr_lookup[age]
-            else:
-                min_ferr_rate = 0.05  # Default 5% for older ages
-            
-            if (an_eval == 1 and mois_eval == MOIS_EVALUATION_INI) or mois_eval == 12 // freq_eval:
-                MT_MIN_FERR_PROJ = MT_VM_PROJ * min_ferr_rate
-            
-            # Calculate retirement age (SAS line 442)
-            AGE_RETRAIT = age + 1
-            
-            # Withdrawals calculation (SAS lines 498-507)
-            RETRAIT = 0.0
-            if (AGE_RETRAIT >= AGE_DECAISSEMENT and 
-                not (AGE_RETRAIT == AGE_DECAISSEMENT and mois_eval >= MOIS_NAIS) and
-                not (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)):
-                
-                # Simplified withdrawal calculation - use FERR minimum
-                RETRAIT = MT_MIN_FERR_PROJ
-                RETRAIT = min(RETRAIT, 999999.0) / freq_eval  # Monthly basis
-            
-            # Apply withdrawals to guarantees and VM (SAS lines 564-577)
-            if MT_VM_AV_RETRAIT <= RETRAIT:
-                MT_GAR_ECH_PROJ = 0.0
-                MT_GAR_DECES_PROJ = 0.0
-                MT_BONI_DECES_PROJ = 0.0
-                MT_SRG_PROJ = 0.0
-            else:
-                withdrawal_factor = 1.0 - RETRAIT / MT_VM_AV_RETRAIT
-                MT_GAR_ECH_PROJ *= withdrawal_factor
-                MT_GAR_DECES_PROJ *= withdrawal_factor
-                MT_BONI_DECES_PROJ *= withdrawal_factor
-                MT_SRG_PROJ = max(MT_SRG_PROJ - RETRAIT, 0.0)
-            
-            # VM after withdrawals (SAS line 577)
-            MT_VM_AP_RETRAIT = max(MT_VM_AV_RETRAIT - RETRAIT, 0.0)
-            
-            # Death benefits calculation (SAS line 598)
-            PREST_DECES = qx * max(0.0, MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ - MT_VM_AP_RETRAIT) * TX_SURVIE_DEB
-            
-            # Update final VM
-            MT_VM_PROJ = MT_VM_AP_RETRAIT
-
-            # Portfolio rebalance (SAS lines 678-682)
-            if MT_VM_ORIG > 0 and MT_VM_PROJ > 0:
-                orig_total = acc[23] + acc[22] + acc[24] + acc[20] + acc[21]  # Original total
-                if orig_total > 0:
-                    MT_SP500_PROJ = MT_VM_PROJ * acc[23] / orig_total
-                    MT_TSX_PROJ = MT_VM_PROJ * acc[22] / orig_total
-                    MT_EAFE_PROJ = MT_VM_PROJ * acc[24] / orig_total
-                    MT_DEX_PROJ = MT_VM_PROJ * acc[20] / orig_total
-                    MT_MM_PROJ = MT_VM_PROJ * acc[21] / orig_total
-
-            # === SAVE STATE TO GLOBAL MEMORY ===
-            if an_eval < n_years and output_year_idx < output_states.shape[2]:
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_VM] = MT_VM_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_GAR_DECES] = MT_GAR_DECES_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_GAR_ECH] = MT_GAR_ECH_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_SRG] = MT_SRG_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_AGE] = float(age)
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_TX_SURVIE] = TX_SURVIE
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_DEX] = MT_DEX_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_MM] = MT_MM_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_TSX] = MT_TSX_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_SP500] = MT_SP500_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_EAFE] = MT_EAFE_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_MT_BONI_DECES] = MT_BONI_DECES_PROJ
-
-                # Calculate external scenario cashflows for reporting  
-                # Management fee revenue
-                hon_gest_ext = MT_VM_AV_RETRAIT_FRAIS * PC_HONORAIRES_GEST / freq_eval * TX_SURVIE_DEB
-                
-                # Guarantee fees
-                vp_primes_garanties = PRIMES_GARANTIES * TX_ACTUALISATION
-                
-                # Death benefit cost
-                vp_prest_deces = PREST_DECES * TX_ACTUALISATION
-                
-                # Net cashflow for external scenario
-                flux_net = hon_gest_ext + vp_primes_garanties + vp_prest_deces
-                output_cashflows[account_idx, scenario_idx, output_year_idx, 0] = flux_net
-                
-                # Save detailed debug info for external scenario if requested (20 columns)
-                if is_debug_ext and output_year_idx < output_ext_debug.shape[0]:
-                    output_ext_debug[output_year_idx, 0] = float(output_year_idx)  # ANNEE
-                    output_ext_debug[output_year_idx, 1] = MT_VM_PROJ  # VALEUR_MARCHANDE
-                    output_ext_debug[output_year_idx, 2] = MT_GAR_DECES_PROJ  # GAR_DECES
-                    output_ext_debug[output_year_idx, 3] = MT_GAR_ECH_PROJ  # GAR_ECH
-                    output_ext_debug[output_year_idx, 4] = MT_SRG_PROJ  # SRG
-                    output_ext_debug[output_year_idx, 5] = MT_DEX_PROJ  # VALEUR_DEX
-                    output_ext_debug[output_year_idx, 6] = MT_MM_PROJ  # VALEUR_MM
-                    output_ext_debug[output_year_idx, 7] = MT_TSX_PROJ  # VALEUR_TSX
-                    output_ext_debug[output_year_idx, 8] = MT_SP500_PROJ  # VALEUR_SP500
-                    output_ext_debug[output_year_idx, 9] = MT_EAFE_PROJ  # VALEUR_EAFE
-                    output_ext_debug[output_year_idx, 10] = float(age)  # AGE
-                    output_ext_debug[output_year_idx, 11] = TX_SURVIE  # PROB_SURVIE
-                    output_ext_debug[output_year_idx, 12] = TX_SURVIE_DEB  # PROB_SURVIE_DEBUT
-                    output_ext_debug[output_year_idx, 13] = qx  # TAUX_MORTALITE
-                    output_ext_debug[output_year_idx, 14] = lapse  # TAUX_LAPSE
-                    output_ext_debug[output_year_idx, 15] = r_dex  # REND_DEX
-                    output_ext_debug[output_year_idx, 16] = r_mm  # REND_MM
-                    output_ext_debug[output_year_idx, 17] = PC_RFG  # TAUX_FRAIS
-                    output_ext_debug[output_year_idx, 18] = MT_VM_AV_RETRAIT_FRAIS  # VM_AVANT_FRAIS
-                    output_ext_debug[output_year_idx, 19] = MT_BONI_DECES_PROJ  # BONI_DECES
-
-                output_year_idx += 1
-
-# =============================================================================
-# NESTED VALUATION KERNEL WITH FIVE CHOCS
-# =============================================================================
-
-@cuda.jit
-def nested_valuation_kernel_five_chocs(
-        # Input states from Kernel A
-        input_states,        # Shape: (Batch_Size, n_ext_scenarios, n_years, STATE_SIZE)
-        account_data,        # Account static data for internal calculations
-        # Internal scenario parameters
-        n_internal_scenarios,
-        n_internal_years,
-        # Risk Neutral / Internal Tables
-        rn_forward_rate,     # Risk Neutral Returns
-        rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe,
-        mortality_lookup,    # Reuse mortality table
-        # Output arrays
-        output_metrics,       # Shape: (Batch_Size, n_ext_scenarios, n_years, 5, 2) -> [Choc, Reserve/Capital]
-        # Optional debug parameters - use None/negative values to disable debug mode
-        debug_int_scenario=-1,   # -1 means no debug
-        debug_ext_scenario=-1,
-        debug_ext_year=-1,
-        debug_choc=-1,
-        output_debug=None     # Pass None for no debug output
+def save_results(
+    output_path: Path,
+    results_df: pd.DataFrame,
+    results_5chocs_df: Optional[pd.DataFrame],
+    sensitivities_df: Optional[pd.DataFrame],
+    n_accounts: int,
+    ext_debug: Optional[np.ndarray] = None,
+    int_debug: Optional[np.ndarray] = None,
+    debug_params: Optional[dict] = None,
 ):
     """
-    KERNEL B: NESTED VALUATOR WITH 5 CHOCS
+    Save all results (final simulation results and debug output) to CSV files.
     
-    Implements the 5 chocs pattern from SAS code:
-    - Choc 0: Base scenario (no shock)
-    - Choc 1: SP500 shock (-10%)
-    - Choc 2: TSX shock (-10%)  
-    - Choc 3: EAFE shock (-10%)
-    - Choc 4: DEX shock (-10%)
+    Args:
+        output_path: Directory to save CSV files
+        results_df: Main results DataFrame with reserves/capital per account
+        results_5chocs_df: Optional DataFrame with 5 chocs results
+        sensitivities_df: Optional DataFrame with sensitivities/Greeks
+        n_accounts: Number of accounts processed
+        ext_debug: Optional external kernel debug array (EXT_DEBUG_SIZE,) - single row
+        int_debug: Optional internal kernel debug array (NUM_CHOCS, INT_DEBUG_SIZE) - one row per choc
+        debug_params: Optional dictionary with debug filter parameters for context
     
-    For each external node, runs all 5 chocs with internal scenarios.
-    
-    Debug mode: When debug parameters are provided (>= 0) and output_debug is not None,
-    detailed debug information is captured for the specified node and scenario.
+    Returns:
+        List of saved file names
     """
-    # Thread setup - one thread per external node
-    global_idx = cuda.grid(1)
+    output_path.mkdir(parents=True, exist_ok=True)
     
-    # Unpack indices from flat index
-    total_years = input_states.shape[2]
-    total_scens = input_states.shape[1]
+    # Column names for debug CSV files
+    EXT_DEBUG_COLUMNS = [
+        'VM', 'AGE', 'QX', 'LAPSE_TOT', 'LAPSE_PART', 'TX_SURVIE',
+        'FORWARD_RATE', 'REND_SP500', 'REND_TSX', 'REND_EAFE', 'REND_DEX',
+        'RETRAIT', 'PREST_DECES', 'PRIMES_GARANTIES', 'VM_VG_RATIO'
+    ]
     
-    year_idx = global_idx % total_years
-    rem = global_idx // total_years
-    scn_idx = rem % total_scens
-    acc_idx = rem // total_scens
+    INT_DEBUG_COLUMNS = [
+        'START_VM', 'VM_CHOC', 'AVG_PV_FLUX', 'RESERVE', 'CAPITAL',
+        'START_TX_SURVIE', 'START_AGE',
+        # Values captured at specific internal scenario/year
+        'INT_CURR_VM', 'INT_FEES', 'INT_PV_PATH', 'INT_R_PORTFOLIO', 'INT_FWD_RATE'
+    ]
     
-    if acc_idx >= input_states.shape[0]:
-        return
-
-    # Load starting state from Kernel A output
-    start_vm = input_states[acc_idx, scn_idx, year_idx, STATE_MT_VM]
-    start_gar_deces = input_states[acc_idx, scn_idx, year_idx, STATE_MT_GAR_DECES]
-    start_gar_ech = input_states[acc_idx, scn_idx, year_idx, STATE_MT_GAR_ECH]
-    start_srg = input_states[acc_idx, scn_idx, year_idx, STATE_MT_SRG]
-    start_age = input_states[acc_idx, scn_idx, year_idx, STATE_AGE]
-    start_tx_survie = input_states[acc_idx, scn_idx, year_idx, STATE_TX_SURVIE]
+    print("\n" + "=" * 80)
+    print("SAVING OUTPUT FILES")
+    print("=" * 80)
     
-    # Load individual asset values from state
-    start_mt_dex = input_states[acc_idx, scn_idx, year_idx, STATE_MT_DEX]
-    start_mt_mm = input_states[acc_idx, scn_idx, year_idx, STATE_MT_MM]
-    start_mt_tsx = input_states[acc_idx, scn_idx, year_idx, STATE_MT_TSX]
-    start_mt_sp500 = input_states[acc_idx, scn_idx, year_idx, STATE_MT_SP500]
-    start_mt_eafe = input_states[acc_idx, scn_idx, year_idx, STATE_MT_EAFE]
-    start_boni_deces = input_states[acc_idx, scn_idx, year_idx, STATE_MT_BONI_DECES]
-    
-    # Check if policy is active
-    if start_vm <= 0 or start_tx_survie <= 0:
-        # Zero out all chocs
-        for choc in range(5):
-            output_metrics[acc_idx, scn_idx, year_idx, choc, 0] = 0.0
-            output_metrics[acc_idx, scn_idx, year_idx, choc, 1] = 0.0
-        return
-
-    # Load account parameters
-    acc = account_data[acc_idx]
-    ID_COMPTE = int(acc[0])
-    PC_HONORAIRES_GEST = acc[30]
-    PC_FRAIS_GARANTIE = acc[31]
-    PC_RFG = acc[34]
-    PC_REVENU_FDS = acc[35]
-    FREQ_EVAL = 12.0  # Monthly evaluation
-    
-    # Check if this is the debug node and debug is enabled
-    debug_enabled = (output_debug is not None and debug_int_scenario >= 0 and 
-                    debug_ext_scenario >= 0 and debug_ext_year >= 0 and debug_choc >= 0)
-    is_debug_node = (debug_enabled and acc_idx == 0 and 
-                    scn_idx == debug_ext_scenario and year_idx == debug_ext_year)
+    saved_files = []
     
     # ===========================================
-    # LOOP THROUGH ALL 5 CHOCS
+    # 1. FINAL SIMULATION RESULTS
     # ===========================================
     
-    for choc_idx in range(5):
-        # Apply shock according to SAS logic (lines 219-234)
-        if choc_idx == 0:
-            # Base scenario - no shock
-            mt_sp500_choc = start_mt_sp500
-            mt_tsx_choc = start_mt_tsx
-            mt_eafe_choc = start_mt_eafe
-            mt_dex_choc = start_mt_dex
-            mt_mm_choc = start_mt_mm
-        elif choc_idx == 1:
-            # Choc SP500 (-10%)
-            mt_sp500_choc = start_mt_sp500 * 0.9
-            mt_tsx_choc = start_mt_tsx
-            mt_eafe_choc = start_mt_eafe
-            mt_dex_choc = start_mt_dex
-            mt_mm_choc = start_mt_mm
-        elif choc_idx == 2:
-            # Choc TSX (-10%)
-            mt_sp500_choc = start_mt_sp500
-            mt_tsx_choc = start_mt_tsx * 0.9
-            mt_eafe_choc = start_mt_eafe
-            mt_dex_choc = start_mt_dex
-            mt_mm_choc = start_mt_mm
-        elif choc_idx == 3:
-            # Choc EAFE (-10%)
-            mt_sp500_choc = start_mt_sp500
-            mt_tsx_choc = start_mt_tsx
-            mt_eafe_choc = start_mt_eafe * 0.9
-            mt_dex_choc = start_mt_dex
-            mt_mm_choc = start_mt_mm
-        elif choc_idx == 4:
-            # Choc DEX (-10%)
-            mt_sp500_choc = start_mt_sp500
-            mt_tsx_choc = start_mt_tsx
-            mt_eafe_choc = start_mt_eafe
-            mt_dex_choc = start_mt_dex * 0.9
-            mt_mm_choc = start_mt_mm
+    # 1a. VP_FLUX_TOTAL_GPU.csv - Portfolio totals
+    vp_flux_total_path = output_path / "VP_FLUX_TOTAL_GPU.csv"
+    vp_flux_total_df = pd.DataFrame({
+        'CATEGORIE': ['TOTAL'],
+        'VP_RESERVE_BE': [results_df['RESERVE_BE'].sum()],
+        'VP_CAPITAL_REQ': [results_df['CAPITAL_REQ'].sum()],
+        'VP_SCR': [results_df['SCR'].sum()],
+        'AVG_RESERVE_BE': [results_df['RESERVE_BE'].mean()],
+        'AVG_CAPITAL_REQ': [results_df['CAPITAL_REQ'].mean()],
+        'AVG_SCR': [results_df['SCR'].mean()],
+        'N_ACCOUNTS': [len(results_df)]
+    })
+    vp_flux_total_df.to_csv(vp_flux_total_path, index=False, sep=';')
+    print(f"✓ Saved VP_FLUX_TOTAL_GPU.csv")
+    print(f"  Total Reserve (BE): ${vp_flux_total_df['VP_RESERVE_BE'].iloc[0]:,.2f}")
+    print(f"  Total Capital Req:  ${vp_flux_total_df['VP_CAPITAL_REQ'].iloc[0]:,.2f}")
+    print(f"  Total SCR:          ${vp_flux_total_df['VP_SCR'].iloc[0]:,.2f}")
+    saved_files.append("VP_FLUX_TOTAL_GPU.csv (portfolio totals)")
+    
+    # 1b. Five Chocs Results
+    if results_5chocs_df is not None:
+        print(f"\n✓ [FIVE_CHOCS] Saving five chocs results...")
         
-        # Rebalance total VM after shock (SAS line 233)
-        vm_choc_start = mt_sp500_choc + mt_tsx_choc + mt_eafe_choc + mt_dex_choc + mt_mm_choc
+        chocs_detailed_path = output_path / "VP_FLUX_5CHOCS_DETAILED_GPU.csv"
+        results_5chocs_df.to_csv(chocs_detailed_path, index=False, sep=';')
+        print(f"  Saved VP_FLUX_5CHOCS_DETAILED_GPU.csv")
+        print(f"  Contains {len(results_5chocs_df)} rows (5 chocs × {n_accounts} accounts)")
         
-        # =====================================
-        # INTERNAL SCENARIOS FOR THIS CHOC
-        # =====================================
+        sensitivities_path = output_path / "VP_FLUX_SENSITIVITIES_GPU.csv"
+        sensitivities_df.to_csv(sensitivities_path, index=False, sep=';')
+        print(f"  Saved VP_FLUX_SENSITIVITIES_GPU.csv")
+        print(f"  Contains {len(sensitivities_df)} rows with Greeks/Deltas")
         
-        sum_pv_flux_choc = 0.0
+        chocs_summary_df = results_5chocs_df.groupby('CHOC_TYPE').agg({
+            'RESERVE_BE': ['sum', 'mean'],
+            'CAPITAL_REQ': ['sum', 'mean'], 
+            'SCR': ['sum', 'mean']
+        }).round(2)
+        chocs_summary_df.columns = ['_'.join(col).strip() for col in chocs_summary_df.columns]
+        chocs_summary_df = chocs_summary_df.reset_index()
         
-        for i_int in range(n_internal_scenarios):
-            # Choose implementation based on debug mode
-            if debug_enabled:
-                # Full detailed calculation for debug mode
-                # Initialize internal state with shocked values
-                curr_mt_sp500 = mt_sp500_choc
-                curr_mt_tsx = mt_tsx_choc
-                curr_mt_eafe = mt_eafe_choc
-                curr_mt_dex = mt_dex_choc
-                curr_mt_mm = mt_mm_choc
-                curr_vm = vm_choc_start
-                curr_age = int(start_age)
-                curr_tx_survie = start_tx_survie
-                curr_gar_deces = start_gar_deces
-                curr_gar_ech = start_gar_ech
-                curr_srg = start_srg
-                curr_boni_deces = start_boni_deces
-                
-                pv_path = 0.0
-                
-                # Internal time loop (project to run-off)
-                for t_int in range(n_internal_years):
-                    if curr_vm <= 0 or curr_tx_survie <= 0:
-                        break
-                    
-                    # Store values before applying returns
-                    vm_before_returns = curr_vm
-                    tx_survie_deb = curr_tx_survie
-                    
-                    # Apply Risk Neutral Returns to each asset class
-                    if (i_int < rn_rend_sp500.shape[0] and t_int < rn_rend_sp500.shape[1]):
-                        r_sp500 = rn_rend_sp500[i_int, t_int]
-                        r_tsx = rn_rend_tsx[i_int, t_int] if i_int < rn_rend_tsx.shape[0] else 0.02
-                        r_eafe = rn_rend_eafe[i_int, t_int] if i_int < rn_rend_eafe.shape[0] else 0.02
-                        r_dex = rn_rend_dex[i_int, t_int] if i_int < rn_rend_dex.shape[0] else 0.02
-                        r_mm = rn_rend_mm[i_int, t_int] if i_int < rn_rend_mm.shape[0] else 0.02
-                    else:
-                        r_sp500 = r_tsx = r_eafe = r_dex = r_mm = 0.02
-                    
-                    # Project each asset (SAS lines 316-321)
-                    curr_mt_sp500 *= math.exp(r_sp500)
-                    curr_mt_tsx *= math.exp(r_tsx)
-                    curr_mt_eafe *= math.exp(r_eafe)
-                    curr_mt_dex *= math.exp(r_dex)
-                    curr_mt_mm *= math.exp(r_mm)
-                    
-                    # VM before retrait after returns (SAS line 323)
-                    mt_vm_av_retrait_frais = curr_mt_sp500 + curr_mt_tsx + curr_mt_eafe + curr_mt_dex + curr_mt_mm
-                    
-                    # Apply management fees (SAS line 537)
-                    mt_vm_av_retrait = mt_vm_av_retrait_frais * math.exp(-PC_RFG / FREQ_EVAL)
-                    
-                    # Apply guarantee fees (SAS lines 540-548)
-                    primes_garanties = 0.0
-                    if PC_FRAIS_GARANTIE > 0:
-                        primes_garanties = min(mt_vm_av_retrait * PC_FRAIS_GARANTIE / FREQ_EVAL, mt_vm_av_retrait) * tx_survie_deb
-                        mt_vm_av_retrait = max(mt_vm_av_retrait - primes_garanties / tx_survie_deb, 0.0)
-                    
-                    # Simplified mortality (would need full lookup in production)
-                    qx = 0.001 * (1.0 + curr_age * 0.001)  # Simple age-dependent mortality
-                    qx = 1.0 - math.pow(1.0 - qx, 1.0 / FREQ_EVAL)
-                    
-                    # Simplified lapse (would need full calculation in production)
-                    lapse = 0.01 * (1.0 + max(0, 1.0 - curr_vm / max(curr_gar_deces, 1.0)))
-                    lapse = 1.0 - math.pow(1.0 - lapse, 1.0 / FREQ_EVAL)
-                    
-                    # Update survival probability (SAS line 433)
-                    curr_tx_survie *= (1.0 - qx) * (1.0 - lapse)
-                    
-                    # Update VM
-                    curr_vm = mt_vm_av_retrait
-                    
-                    # Portfolio rebalancing (SAS lines 678-682)
-                    if vm_choc_start > 0 and curr_vm > 0:
-                        curr_mt_sp500 = curr_vm * (mt_sp500_choc / vm_choc_start)
-                        curr_mt_tsx = curr_vm * (mt_tsx_choc / vm_choc_start)
-                        curr_mt_eafe = curr_vm * (mt_eafe_choc / vm_choc_start)
-                        curr_mt_dex = curr_vm * (mt_dex_choc / vm_choc_start)
-                        curr_mt_mm = curr_vm * (mt_mm_choc / vm_choc_start)
-                    
-                    # Calculate complete cashflows matching SAS logic
-                    # Management fees revenue (SAS lines 739-741)
-                    hon_gest = mt_vm_av_retrait_frais * (math.exp(PC_HONORAIRES_GEST / FREQ_EVAL) - 1.0) * tx_survie_deb
-                    
-                    # Commission maintenance (SAS lines 743-745)
-                    # Note: Simplified - full version needs acquisition lookup
-                    comm_maintien = mt_vm_av_retrait_frais * 0.001 * tx_survie_deb  # Placeholder
-                    
-                    # Variable premiums (SAS lines 752-754)
-                    primes_variables = (mt_vm_av_retrait_frais * math.exp(-(PC_RFG - PC_REVENU_FDS) / FREQ_EVAL) *
-                                       -(math.exp(-PC_REVENU_FDS / FREQ_EVAL) - 1.0) * tx_survie_deb)
-                    
-                    # Death benefit payout
-                    prest_deces = qx * max(0.0, curr_gar_deces + curr_boni_deces - curr_vm) * tx_survie_deb
-                    
-                    # Total net cashflow (SAS line 757)
-                    flux = (hon_gest + comm_maintien + primes_variables + 
-                           primes_garanties + prest_deces)  # Note: death benefits are negative
-                    
-                    # Discount to present value
-                    if (i_int < rn_forward_rate.shape[0] and t_int < rn_forward_rate.shape[1]):
-                        fwd = rn_forward_rate[i_int, t_int]
-                    else:
-                        fwd = 0.02
-                    
-                    df = math.exp(-fwd * (t_int + 1))
-                    pv_flux = flux * df
-                    pv_path += pv_flux
-                    
-                    # Save debug info for specified choc and internal scenario
-                    if (is_debug_node and choc_idx == debug_choc and i_int == debug_int_scenario and 
-                        output_debug is not None and t_int < output_debug.shape[1]):
-                        output_debug[choc_idx, t_int, 0] = float(t_int)  # Year
-                        output_debug[choc_idx, t_int, 1] = vm_before_returns  # VM before returns
-                        output_debug[choc_idx, t_int, 2] = mt_vm_av_retrait_frais  # VM after returns
-                        output_debug[choc_idx, t_int, 3] = mt_vm_av_retrait  # VM after mgmt fees
-                        output_debug[choc_idx, t_int, 4] = curr_vm  # Final VM
-                        output_debug[choc_idx, t_int, 5] = curr_mt_sp500  # SP500 value
-                        output_debug[choc_idx, t_int, 6] = curr_mt_tsx   # TSX value
-                        output_debug[choc_idx, t_int, 7] = curr_mt_eafe  # EAFE value
-                        output_debug[choc_idx, t_int, 8] = curr_mt_dex   # DEX value
-                        output_debug[choc_idx, t_int, 9] = curr_mt_mm    # MM value
-                        output_debug[choc_idx, t_int, 10] = curr_tx_survie  # Survival prob
-                        output_debug[choc_idx, t_int, 11] = qx           # Mortality rate
-                        output_debug[choc_idx, t_int, 12] = lapse        # Lapse rate
-                        output_debug[choc_idx, t_int, 13] = flux         # Cashflow
-                        output_debug[choc_idx, t_int, 14] = pv_flux      # PV of cashflow
-                    
-                    curr_age += 1
-            else:
-                # Simplified calculation for production mode
-                curr_vm = vm_choc_start
-                pv_path = 0.0
-                
-                for t_int in range(n_internal_years):
-                    if curr_vm <= 0:
-                        break
-                    
-                    # Apply returns (simplified)
-                    r_portfolio = rn_rend_dex[i_int % rn_rend_dex.shape[0], t_int % rn_rend_dex.shape[1]] if rn_rend_dex.size > 0 else 0.02
-                    curr_vm *= math.exp(r_portfolio)
-                    
-                    # Apply fees
-                    fees = curr_vm * PC_RFG / FREQ_EVAL
-                    curr_vm -= fees
-                    
-                    # Discount cashflow
-                    fwd = rn_forward_rate[i_int % rn_forward_rate.shape[0], t_int % rn_forward_rate.shape[1]] if rn_forward_rate.size > 0 else 0.02
-                    df = math.exp(-fwd * (t_int + 1))
-                    pv_path += fees * df
+        chocs_summary_path = output_path / "VP_FLUX_5CHOCS_SUMMARY_GPU.csv"
+        chocs_summary_df.to_csv(chocs_summary_path, index=False, sep=';')
+        print(f"  Saved VP_FLUX_5CHOCS_SUMMARY_GPU.csv")
+        
+        print(f"\n  Key Portfolio Sensitivities (Total):")
+        total_sensitivities = sensitivities_df.sum()
+        print(f"    SP500 Delta (Reserve): ${total_sensitivities['DELTA_SP500_RESERVE']:,.2f}")
+        print(f"    TSX Delta (Reserve):   ${total_sensitivities['DELTA_TSX_RESERVE']:,.2f}")
+        print(f"    EAFE Delta (Reserve):  ${total_sensitivities['DELTA_EAFE_RESERVE']:,.2f}")
+        print(f"    DEX Delta (Reserve):   ${total_sensitivities['DELTA_DEX_RESERVE']:,.2f}")
+        
+        saved_files.extend([
+            "VP_FLUX_5CHOCS_DETAILED_GPU.csv (5 chocs × accounts)",
+            "VP_FLUX_SENSITIVITIES_GPU.csv (Greeks/Deltas per account)",
+            "VP_FLUX_5CHOCS_SUMMARY_GPU.csv (aggregated by choc type)"
+        ])
+    
+    # ===========================================
+    # 2. DEBUG OUTPUT (if enabled)
+    # ===========================================
+    
+    if ext_debug is not None:
+        print(f"\n✓ [DEBUG] Saving external kernel debug output...")
+        
+        # Create single-row DataFrame with debug filter context
+        row = {}
+        if debug_params:
+            row['DEBUG_ACCOUNT'] = debug_params.get('account', -1)
+            row['DEBUG_SCENARIO'] = debug_params.get('scenario', -1)
+            row['DEBUG_YEAR'] = debug_params.get('year', -1)
+            row['DEBUG_MONTH'] = debug_params.get('month', -1)
+        
+        for col_idx, col_name in enumerate(EXT_DEBUG_COLUMNS):
+            row[col_name] = ext_debug[col_idx]
+        
+        ext_debug_df = pd.DataFrame([row])
+        ext_debug_path = output_path / "DEBUG_EXTERNAL_KERNEL.csv"
+        ext_debug_df.to_csv(ext_debug_path, index=False, sep=';')
+        print(f"  Saved DEBUG_EXTERNAL_KERNEL.csv (1 row)")
+        if debug_params:
+            print(f"  Filter: account={debug_params.get('account', -1)}, scenario={debug_params.get('scenario', -1)}, year={debug_params.get('year', -1)}, month={debug_params.get('month', -1)}")
+        saved_files.append("DEBUG_EXTERNAL_KERNEL.csv (external kernel debug)")
+    
+    if int_debug is not None:
+        print(f"\n✓ [DEBUG] Saving internal kernel debug output...")
+        n_chocs = int_debug.shape[0]
+        
+        rows = []
+        for choc_idx in range(n_chocs):
+            choc_name = CHOC_NAMES[choc_idx] if choc_idx < len(CHOC_NAMES) else f"CHOC_{choc_idx}"
+            row = {
+                'CHOC_IDX': choc_idx,
+                'CHOC_NAME': choc_name,
+            }
+            if debug_params:
+                row['DEBUG_INT_SCENARIO'] = debug_params.get('int_scenario', -1)
+                row['DEBUG_INT_YEAR'] = debug_params.get('int_year', -1)
             
-            sum_pv_flux_choc += pv_path
+            for col_idx, col_name in enumerate(INT_DEBUG_COLUMNS):
+                row[col_name] = int_debug[choc_idx, col_idx]
+            rows.append(row)
         
-        # Average over internal scenarios for this choc
-        avg_pv_flux = sum_pv_flux_choc / n_internal_scenarios if n_internal_scenarios > 0 else 0.0
-        
-        # Store results for this choc
-        # For simplicity, storing PV flux as both reserve and capital
-        # In practice, you might want different calculations
-        output_metrics[acc_idx, scn_idx, year_idx, choc_idx, 0] = avg_pv_flux  # Reserve
-        output_metrics[acc_idx, scn_idx, year_idx, choc_idx, 1] = avg_pv_flux  # Capital (same for now)
+        int_debug_df = pd.DataFrame(rows)
+        int_debug_path = output_path / "DEBUG_INTERNAL_KERNEL.csv"
+        int_debug_df.to_csv(int_debug_path, index=False, sep=';')
+        print(f"  Saved DEBUG_INTERNAL_KERNEL.csv ({len(int_debug_df)} rows - one per choc)")
+        if debug_params:
+            print(f"  Filter: int_scenario={debug_params.get('int_scenario', -1)}, int_year={debug_params.get('int_year', -1)}")
+        saved_files.append("DEBUG_INTERNAL_KERNEL.csv (internal kernel debug)")
+    
+    # ===========================================
+    # 3. SUMMARY
+    # ===========================================
+    
+    print("\n" + "=" * 80)
+    print("FILE SAVING SUMMARY")
+    print("=" * 80)
+    for idx, file_name in enumerate(saved_files, 1):
+        print(f"  {idx}. {file_name}")
+    print("=" * 80)
+    
+    return saved_files
 
 
-# =============================================================================
-# TWO-PASS NESTED STOCHASTIC ORCHESTRATOR
-# =============================================================================
+def create_all_lookup_tables(data: dict, nb_int_scenarios: int, nb_an_projection: int):
+    """
+    Create all CPU lookup tables from loaded data.
+    
+    Args:
+        data: Dictionary containing loaded DataFrames (mortalite, rendements, etc.)
+        nb_int_scenarios: Number of internal scenarios for risk-neutral tables
+        nb_an_projection: Number of projection years
+    
+    Returns:
+        Dictionary containing all lookup tables (CPU numpy arrays)
+    """
+    print("\nCreating CPU lookup tables...")
+    
+    lookups = {}
+    
+    lookups['mortality'] = create_gpu_mortality_lookup(data['mortalite'])
+    (lookups['forward_rate'], lookups['ajust_forward'], lookups['rend_dex'], 
+     lookups['rend_mm'], lookups['rend_tsx'], lookups['rend_sp500'], 
+     lookups['rend_eafe']) = create_gpu_returns_lookup(data['rendements'])
+    
+    lookups['min_ferr'] = create_gpu_min_ferr_lookup(data['min_ferr'])
+    lookups['lapse_part_min'], lookups['lapse_part_max'] = create_gpu_lapse_part_lookup(data['tx_lapse_part'])
+    lookups['lapse_tot_min'], lookups['lapse_tot_max'], lookups['lapse_tot_fact'] = create_gpu_lapse_tot_lookup(data['tx_lapse_tot'])
+    (lookups['deposits_pc'], lookups['deposits_var'], lookups['deposits_age_max'],
+     lookups['deposits_i_even']) = create_gpu_deposits_lookup(data['depots_futurs'])
+    lookups['fees'] = create_gpu_fees_lookup(data['frais_admin'])
+    (lookups['acq_vente_rf'], lookups['acq_vente_ac'], lookups['acq_maintien_rf'], 
+     lookups['acq_maintien_ac'], lookups['acq_frais_ac'], 
+     lookups['acq_frais_rf']) = create_gpu_acquisition_lookup(data['acquisition'])
+    
+    print("✓ All CPU lookup tables created")
+    
+    # Create risk-neutral scenario tables
+    print("\nCreating risk-neutral scenario tables...")
+    lookups['rn_forward_rate'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_FORWARD_RATE, dtype=np.float32)
+    lookups['rn_rend_dex'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_DEX, dtype=np.float32)
+    lookups['rn_rend_mm'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_MM, dtype=np.float32)
+    lookups['rn_rend_tsx'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_TSX, dtype=np.float32)
+    lookups['rn_rend_sp500'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_SP500, dtype=np.float32)
+    lookups['rn_rend_eafe'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_EAFE, dtype=np.float32)
+    
+    print("✓ Risk-neutral tables created")
+    
+    return lookups
+
+
+def copy_lookups_to_gpu(lookups: dict):
+    """
+    Copy all CPU lookup tables to GPU memory.
+    
+    Args:
+        lookups: Dictionary of CPU numpy arrays from create_all_lookup_tables()
+    
+    Returns:
+        Dictionary containing grouped GPU device arrays as tuples
+    """
+    print("\nCopying lookup tables to GPU...")
+    
+    gpu_lookups = {}
+    
+    # Mortality table
+    gpu_lookups['mortality'] = cuda.to_device(lookups['mortality'])
+    
+    # Returns lookups (7 arrays): forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe
+    gpu_lookups['returns'] = (
+        cuda.to_device(lookups['forward_rate']),
+        cuda.to_device(lookups['ajust_forward']),
+        cuda.to_device(lookups['rend_dex']),
+        cuda.to_device(lookups['rend_mm']),
+        cuda.to_device(lookups['rend_tsx']),
+        cuda.to_device(lookups['rend_sp500']),
+        cuda.to_device(lookups['rend_eafe']),
+    )
+    
+    # Lapse lookups (6 arrays): min_ferr, lapse_part_min, lapse_part_max, lapse_tot_min, lapse_tot_max, lapse_tot_fact
+    gpu_lookups['lapse'] = (
+        cuda.to_device(lookups['min_ferr']),
+        cuda.to_device(lookups['lapse_part_min']),
+        cuda.to_device(lookups['lapse_part_max']),
+        cuda.to_device(lookups['lapse_tot_min']),
+        cuda.to_device(lookups['lapse_tot_max']),
+        cuda.to_device(lookups['lapse_tot_fact']),
+    )
+    
+    # Policy lookups (5 arrays): deposits_pc, deposits_var, deposits_age_max, deposits_i_even, fees
+    gpu_lookups['policy'] = (
+        cuda.to_device(lookups['deposits_pc']),
+        cuda.to_device(lookups['deposits_var']),
+        cuda.to_device(lookups['deposits_age_max']),
+        cuda.to_device(lookups['deposits_i_even']),
+        cuda.to_device(lookups['fees']),
+    )
+    
+    # Commission lookups (6 arrays): acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf
+    gpu_lookups['commission'] = (
+        cuda.to_device(lookups['acq_vente_rf']),
+        cuda.to_device(lookups['acq_vente_ac']),
+        cuda.to_device(lookups['acq_maintien_rf']),
+        cuda.to_device(lookups['acq_maintien_ac']),
+        cuda.to_device(lookups['acq_frais_ac']),
+        cuda.to_device(lookups['acq_frais_rf']),
+    )
+    
+    # Risk-neutral returns (6 arrays): rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe
+    gpu_lookups['rn_returns'] = (
+        cuda.to_device(lookups['rn_forward_rate']),
+        cuda.to_device(lookups['rn_rend_dex']),
+        cuda.to_device(lookups['rn_rend_mm']),
+        cuda.to_device(lookups['rn_rend_tsx']),
+        cuda.to_device(lookups['rn_rend_sp500']),
+        cuda.to_device(lookups['rn_rend_eafe']),
+    )
+    
+    print("✓ Lookup tables on GPU")
+    
+    return gpu_lookups
+
 
 def run_projection_gpu_nested(
         data_path: Path, 
@@ -944,35 +870,18 @@ def run_projection_gpu_nested(
         acquisition_path: Optional[Path] = None,
         coussins_escap_path: Optional[Path] = None,
         progress_callback: Optional[callable] = None,
-        debug_memory: bool = False,
-        debug_int_scenario: Optional[int] = None,
-        debug_ext_scenario: Optional[int] = None,
-        debug_ext_year: Optional[int] = None,
-        debug_int_year: Optional[int] = None,
-        debug_account: Optional[int] = None,
-        debug_choc: Optional[int] = None):
+        debug_account: int = -1,
+        debug_scenario: int = -1,
+        debug_year: int = -1,
+        debug_month: int = -1,
+        debug_int_scenario: int = -1,
+        debug_int_year: int = -1):
     """
     Run GPU-accelerated nested stochastic projection using Two-Pass architecture.
     
     Architecture:
     - Kernel A (Generator): Runs external scenarios, outputs state tensors to VRAM
     - Kernel B (Valuator): Reads states, runs internal scenarios with 5 chocs, outputs reserves & capital
-    
-    Args:
-        data_path: Path to input CSV files
-        output_path: Path for output files
-        nb_an_projection: Number of years to project (external)
-        nb_ext_scenarios: Number of external (real-world) scenarios
-        nb_int_scenarios: Number of internal (risk-neutral) scenarios per node
-        shock_capital_pct: Capital shock percentage (e.g., 0.35 = 35% shock)
-        max_accounts: Maximum number of accounts (for testing)
-        threads_per_block: CUDA block dimensions
-        use_pinned_memory: Use pinned memory for faster transfers
-        debug_choc: Which choc to debug (0-4: Base, SP500, TSX, EAFE, DEX)
-        ... (other paths for custom data files)
-    
-    Returns:
-        Dictionary with results including reserves and capital requirements for all 5 chocs
     """
     start_time = datetime.now()
     print(f"Starting NESTED STOCHASTIC GPU projection at {start_time}")
@@ -981,31 +890,16 @@ def run_projection_gpu_nested(
     print(f"External scenarios: {nb_ext_scenarios}")
     print(f"Internal scenarios per node: {nb_int_scenarios}")
     print(f"Capital shock: {shock_capital_pct*100:.1f}%")
-    print(f"Memory debugging: {'ENABLED' if debug_memory else 'DISABLED'}")
+    enable_debug = debug_account >= 0 or debug_scenario >= 0 or debug_year >= 0 or debug_month >= 0
+    if enable_debug:
+        print(f"Debug mode: ENABLED (account={debug_account}, scenario={debug_scenario}, year={debug_year}, month={debug_month})")
+        print(f"  Internal debug: int_scenario={debug_int_scenario}, int_year={debug_int_year}")
+    else:
+        print(f"Debug mode: disabled")
     print("=" * 80)
     
-    # Check GPU availability
-    try:
-        if not cuda.is_available():
-            raise RuntimeError("CUDA is not available")
-        
-        gpu = cuda.get_current_device()
-        print(f"GPU Device: {gpu.name.decode()}")
-        
-        # Try to get memory info and provide guidance if not available
-        free_mem, total_mem, used_mem = log_gpu_memory_debug("Initialization", verbose=True)
-        if free_mem is None:
-            print("")
-            print("=" * 80)
-            print("NOTE: GPU memory cannot be queried programmatically (RMM allocator)")
-            print("To monitor GPU memory usage during execution:")
-            print("  1. Open another terminal")
-            print("  2. Run: watch -n 1 nvidia-smi")
-            print("  3. Monitor GPU memory usage in real-time")
-            print("=" * 80)
-            print("")
-    except Exception as e:
-        raise RuntimeError(f"Failed to initialize GPU: {e}")
+    # Initialize GPU
+    initialize_gpu()
 
     # Update config
     CONFIG['NB_AN_PROJECTION'] = nb_an_projection
@@ -1025,7 +919,6 @@ def run_projection_gpu_nested(
                          acquisition_path=acquisition_path,
                          coussins_escap_path=coussins_escap_path)
     print("✓ Data loaded successfully")
-    log_gpu_memory_debug("After data load", verbose=debug_memory)
 
     if max_accounts:
         data['population'] = data['population'].head(max_accounts)
@@ -1036,147 +929,18 @@ def run_projection_gpu_nested(
     # Prepare account data
     all_account_data, _ = prepare_account_data(data['population'])
     print("✓ Account data prepared")
-    log_gpu_memory_debug("After account prep", verbose=debug_memory)
 
-    # Create GPU lookup tables
-    print("\nCreating GPU lookup tables...")
-    if debug_memory:
-        print("  Creating mortality lookup...")
-    mortality_lookup = create_gpu_mortality_lookup(data['mortalite'])
-    if debug_memory:
-        print(f"    Mortality table size: {mortality_lookup.nbytes / 1024**2:.2f} MB")
-    if debug_memory:
-        print("  Creating returns lookup...")
-    (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx,
-     rend_sp500, rend_eafe) = create_gpu_returns_lookup(data['rendements'])
-    if debug_memory:
-        returns_size = sum(x.nbytes for x in [forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe])
-        print(f"    Returns tables size: {returns_size / 1024**2:.2f} MB")
-    min_ferr_lookup = create_gpu_min_ferr_lookup(data['min_ferr'])
-    lapse_part_min, lapse_part_max = create_gpu_lapse_part_lookup(data['tx_lapse_part'])
-    lapse_tot_min, lapse_tot_max, lapse_tot_fact = create_gpu_lapse_tot_lookup(data['tx_lapse_tot'])
-    (deposits_pc, deposits_var, deposits_age_max,
-     deposits_i_even) = create_gpu_deposits_lookup(data['depots_futurs'])
-    fees_lookup = create_gpu_fees_lookup(data['frais_admin'])
-    (acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac,
-     acq_frais_ac, acq_frais_rf) = create_gpu_acquisition_lookup(data['acquisition'])
-    
-    if debug_memory:
-        all_lookups_size = sum(x.nbytes for x in [
-            mortality_lookup, forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx,
-            rend_sp500, rend_eafe, min_ferr_lookup, lapse_part_min, lapse_part_max,
-            lapse_tot_min, lapse_tot_max, lapse_tot_fact, deposits_pc, deposits_var,
-            deposits_age_max, deposits_i_even, fees_lookup, acq_vente_rf, acq_vente_ac,
-            acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf
-        ])
-        print(f"  Total CPU lookup tables size: {all_lookups_size / 1024**2:.2f} MB")
-    
-    print("✓ All GPU lookup tables created")
-    log_gpu_memory_debug("After lookup table creation", verbose=debug_memory)
+    # Create all CPU lookup tables
+    lookups = create_all_lookup_tables(data, nb_int_scenarios, nb_an_projection)
 
-    # For risk-neutral scenarios, create simplified return tables
-    # In practice, these would be calibrated to market prices
-    print("\nCreating risk-neutral scenario tables...")
-    rn_forward_rate = np.full((nb_int_scenarios, nb_an_projection), 0.03, dtype=np.float32)
-    rn_rend_dex = np.full((nb_int_scenarios, nb_an_projection), 0.025, dtype=np.float32)
-    rn_rend_mm = np.full((nb_int_scenarios, nb_an_projection), 0.02, dtype=np.float32)
-    rn_rend_tsx = np.full((nb_int_scenarios, nb_an_projection), 0.035, dtype=np.float32)
-    rn_rend_sp500 = np.full((nb_int_scenarios, nb_an_projection), 0.035, dtype=np.float32)
-    rn_rend_eafe = np.full((nb_int_scenarios, nb_an_projection), 0.03, dtype=np.float32)
-    
-    if debug_memory:
-        rn_size = sum(x.nbytes for x in [rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe])
-        print(f"  Risk-neutral tables size: {rn_size / 1024**2:.2f} MB")
-    
-    print("✓ Risk-neutral tables created")
-    log_gpu_memory_debug("After RN tables creation", verbose=debug_memory)
-
-    # Calculate memory requirements
-    print("\nCalculating memory requirements...")
-    
-    # State tensor: (Batch, Ext_Scenarios, Years, STATE_SIZE)
-    state_mem_per_account = nb_ext_scenarios * nb_an_projection * STATE_SIZE * 4  # float32
-    
-    # Cashflow tensor: (Batch, Ext_Scenarios, Years, 1)
-    cf_mem_per_account = nb_ext_scenarios * nb_an_projection * 1 * 4
-    
-    # Metrics tensor: (Batch, Ext_Scenarios, Years, 5, 2) - 5 chocs × (Reserve & Capital)
-    metrics_mem_per_account = nb_ext_scenarios * nb_an_projection * 5 * 2 * 4
-    
-    total_mem_per_account = (state_mem_per_account + cf_mem_per_account + 
-                             metrics_mem_per_account + all_account_data.shape[1] * 4)
-    
-    # Estimate lookup table memory overhead (always resident on GPU)
-    lookup_overhead = 0
-    # Real-world scenario tables: 6 assets × (nb_ext_scenarios, ~40 years, 12 months) × 4 bytes
-    lookup_overhead += 6 * nb_ext_scenarios * nb_an_projection * 12 * 4
-    # Risk-neutral tables: 6 assets × (nb_int_scenarios, years) × 4 bytes
-    lookup_overhead += 6 * nb_int_scenarios * nb_an_projection * 4
-    # Mortality, lapse, deposits, fees, acquisition tables (conservative estimate)
-    lookup_overhead += 150 * 1024**2  # ~150 MB
-    
-    print(f"  State tensor per account: {state_mem_per_account / 1024**2:.2f} MB")
-    print(f"  Total memory per account: {total_mem_per_account / 1024**2:.2f} MB")
-    print(f"  Lookup table overhead: {lookup_overhead / 1024**2:.2f} MB")
-    
-    # Calculate batch size (conservative for nested scenarios)
-    try:
-        free_mem, total_mem = cuda.current_context().get_memory_info()
-        print(f"  GPU free memory: {free_mem / 1024**3:.2f} GB")
-        print(f"  GPU total memory: {total_mem / 1024**3:.2f} GB")
-        # Reserve memory for lookup tables and CUDA overhead
-        available_mem = max(0, (free_mem - lookup_overhead) * 0.6)  # More conservative
-    except NotImplementedError:
-        print("  Warning: Cannot query GPU memory, using conservative estimate")
-        available_mem = max(0, 12 * 1024**3 - lookup_overhead)  # Assume 12 GB total
-    
-    batch_size = max(1, int(available_mem // total_mem_per_account))
-    batch_size = min(batch_size, n_accounts)
-    num_batches = (n_accounts + batch_size - 1) // batch_size
-    
-    print(f"  Batch size: {batch_size} accounts")
-    print(f"  Total batches: {num_batches}")
+    # Calculate batch size
+    batch_size, num_batches, total_mem_per_account, _ = calculate_batch_size(
+        n_accounts, nb_ext_scenarios, nb_an_projection, 
+        nb_int_scenarios, all_account_data.shape[1]
+    )
 
     # Copy lookup tables to GPU
-    print("\nCopying lookup tables to GPU...")
-    if debug_memory:
-        print("  This will allocate permanent GPU memory for all lookups")
-    log_gpu_memory_debug("Before copying lookups to GPU", verbose=debug_memory)
-    d_mortality = cuda.to_device(mortality_lookup)
-    d_forward_rate = cuda.to_device(forward_rate)
-    d_ajust_forward = cuda.to_device(ajust_forward)
-    d_rend_dex = cuda.to_device(rend_dex)
-    d_rend_mm = cuda.to_device(rend_mm)
-    d_rend_tsx = cuda.to_device(rend_tsx)
-    d_rend_sp500 = cuda.to_device(rend_sp500)
-    d_rend_eafe = cuda.to_device(rend_eafe)
-    d_min_ferr = cuda.to_device(min_ferr_lookup)
-    d_lapse_part_min = cuda.to_device(lapse_part_min)
-    d_lapse_part_max = cuda.to_device(lapse_part_max)
-    d_lapse_tot_min = cuda.to_device(lapse_tot_min)
-    d_lapse_tot_max = cuda.to_device(lapse_tot_max)
-    d_lapse_tot_fact = cuda.to_device(lapse_tot_fact)
-    d_deposits_pc = cuda.to_device(deposits_pc)
-    d_deposits_var = cuda.to_device(deposits_var)
-    d_deposits_age_max = cuda.to_device(deposits_age_max)
-    d_deposits_i_even = cuda.to_device(deposits_i_even)
-    d_fees = cuda.to_device(fees_lookup)
-    d_acq_vente_rf = cuda.to_device(acq_vente_rf)
-    d_acq_vente_ac = cuda.to_device(acq_vente_ac)
-    d_acq_maintien_rf = cuda.to_device(acq_maintien_rf)
-    d_acq_maintien_ac = cuda.to_device(acq_maintien_ac)
-    d_acq_frais_ac = cuda.to_device(acq_frais_ac)
-    d_acq_frais_rf = cuda.to_device(acq_frais_rf)
-    
-    # Risk-neutral tables
-    d_rn_forward_rate = cuda.to_device(rn_forward_rate)
-    d_rn_rend_dex = cuda.to_device(rn_rend_dex)
-    d_rn_rend_mm = cuda.to_device(rn_rend_mm)
-    d_rn_rend_tsx = cuda.to_device(rn_rend_tsx)
-    d_rn_rend_sp500 = cuda.to_device(rn_rend_sp500)
-    d_rn_rend_eafe = cuda.to_device(rn_rend_eafe)
-    print("✓ Lookup tables on GPU")
-    log_gpu_memory_debug("After copying lookups to GPU", verbose=True)
+    gpu_lookups = copy_lookups_to_gpu(lookups)
 
     # Process batches
     print("\n" + "=" * 80)
@@ -1185,379 +949,61 @@ def run_projection_gpu_nested(
     
     all_reserves = []
     all_capital = []
-    debug_output = None  # Store internal scenario debug output if requested
-    external_debug_output = None  # Store external scenario debug output if requested
-    debug_account_data = None  # Store full metrics for debug account if requested
+    all_reserves_5chocs = []
+    all_capital_5chocs = []
+    ext_debug_result = None
+    int_debug_result = None
     
     for i in range(num_batches):
-        batch_start = datetime.now()
         start_idx = i * batch_size
         end_idx = min((i + 1) * batch_size, n_accounts)
-        current_batch_size = end_idx - start_idx
+        batch_account_data = all_account_data[start_idx:end_idx]
         
-        logger.info(f"\n--- Batch {i + 1}/{num_batches} (Accounts {start_idx}-{end_idx - 1}) ---")
-        log_gpu_memory_debug(f"Batch {i + 1} start", verbose=debug_memory)
+        # Adjust debug_account for batch offset (only debug if account is in this batch)
+        batch_debug_account = -1
+        if debug_account >= 0:
+            if start_idx <= debug_account < end_idx:
+                batch_debug_account = debug_account - start_idx
         
-        # Check available memory before allocation
-        try:
-            free_mem_before, _ = cuda.current_context().get_memory_info()
-            estimated_batch_mem = current_batch_size * total_mem_per_account
-            logger.info(f"  Free GPU memory: {free_mem_before / 1024 ** 3:.2f} GB")
-            logger.info(f"  Estimated batch memory: {estimated_batch_mem / 1024 ** 3:.2f} GB")
-            
-            if estimated_batch_mem > free_mem_before * 0.9:
-                raise RuntimeError(
-                    f"Insufficient GPU memory for batch {i+1}. "
-                    f"Need {estimated_batch_mem / 1024**3:.2f} GB but only "
-                    f"{free_mem_before / 1024**3:.2f} GB available. "
-                    f"Try reducing batch size or number of scenarios."
-                )
-        except NotImplementedError:
-            pass  # Cannot check memory, proceed with caution
-        
-        # Prepare batch data
-        batch_account_data = np.ascontiguousarray(all_account_data[start_idx:end_idx])
-        if debug_memory:
-            print(f"  Batch account data size: {batch_account_data.nbytes / 1024**2:.2f} MB")
-        d_batch_accounts = cuda.to_device(batch_account_data)
-        log_gpu_memory_debug(f"Batch {i + 1} after account data copy", verbose=debug_memory)
-        
-        # Allocate state and cashflow tensors (bridge between kernels)
-        if debug_memory:
-            states_size = current_batch_size * nb_ext_scenarios * nb_an_projection * STATE_SIZE * 4
-            cf_size = current_batch_size * nb_ext_scenarios * nb_an_projection * 1 * 4
-            metrics_size = current_batch_size * nb_ext_scenarios * nb_an_projection * 5 * 2 * 4
-            print(f"  Allocating state tensor: {states_size / 1024**2:.2f} MB")
-            print(f"  Allocating cashflow tensor: {cf_size / 1024**2:.2f} MB")
-            print(f"  Allocating metrics tensor (5 chocs): {metrics_size / 1024**2:.2f} MB")
-            print(f"  Total batch allocation: {(states_size + cf_size + metrics_size) / 1024**2:.2f} MB")
-        
-        try:
-            d_states = cuda.device_array(
-                (current_batch_size, nb_ext_scenarios, nb_an_projection, STATE_SIZE),
-                dtype=np.float32
-            )
-            log_gpu_memory_debug(f"Batch {i + 1} after states allocation", verbose=debug_memory)
-            
-            d_cashflows = cuda.device_array(
-                (current_batch_size, nb_ext_scenarios, nb_an_projection, 1),
-                dtype=np.float32
-            )
-            log_gpu_memory_debug(f"Batch {i + 1} after cashflows allocation", verbose=debug_memory)
-            
-            d_metrics = cuda.device_array(
-                (current_batch_size, nb_ext_scenarios, nb_an_projection, 5, 2),
-                dtype=np.float32
-            )
-            log_gpu_memory_debug(f"Batch {i + 1} after metrics allocation", verbose=debug_memory)
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to allocate GPU memory for batch {i+1}. "
-                f"This typically means GPU is out of memory. "
-                f"Try reducing --max-accounts or --ext-scenarios. Original error: {e}"
-            )
-        
-        # Allocate external debug output if requested (expanded to 20 columns for detailed state)
-        d_ext_debug_output = None
-        _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else -1
-        _debug_account = debug_account if debug_account is not None else -1
-        
-        if debug_account is not None and debug_ext_scenario is not None and i == 0:
-            # Check if debug account is in this batch
-            batch_start_account = start_idx + 1
-            batch_end_account = end_idx
-            if batch_start_account <= debug_account <= batch_end_account:
-                logger.info(f"  DEBUG MODE: Capturing external scenario {debug_ext_scenario} for account {debug_account}")
-                # Expanded to 20 columns to capture more state information
-                d_ext_debug_output = cuda.device_array((nb_an_projection, 20), dtype=np.float32)
-        
-        # Use dummy array if not debugging
-        if d_ext_debug_output is None:
-            d_ext_debug_output = cuda.device_array((1, 20), dtype=np.float32)
-        
-        # === KERNEL A: EXTERNAL GENERATOR ===
-        logger.info("  Launching Kernel A (External Generator)...")
-        log_gpu_memory_debug(f"Batch {i + 1} before Kernel A", verbose=debug_memory)
-        blocks_x = (current_batch_size + threads_per_block[0] - 1) // threads_per_block[0]
-        blocks_y = (nb_ext_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
-        grid_A = (blocks_x, blocks_y)
-        
-        kernel_a_start = datetime.now()
-        external_generator_kernel[grid_A, threads_per_block](
-            d_batch_accounts,
-            nb_ext_scenarios, nb_an_projection, CONFIG['FREQ_EVAL'],
-            d_mortality,
-            d_forward_rate, d_ajust_forward, d_rend_dex, d_rend_mm, d_rend_tsx, d_rend_sp500, d_rend_eafe,
-            d_min_ferr, d_lapse_part_min, d_lapse_part_max,
-            d_lapse_tot_min, d_lapse_tot_max, d_lapse_tot_fact,
-            d_deposits_pc, d_deposits_var, d_deposits_age_max, d_deposits_i_even,
-            d_fees,
-            d_acq_vente_rf, d_acq_vente_ac, d_acq_maintien_rf, d_acq_maintien_ac,
-            d_acq_frais_ac, d_acq_frais_rf,
-            _debug_ext_scenario,
-            _debug_account,
-            d_states,
-            d_cashflows,
-            d_ext_debug_output
+        batch_result = process_batch(
+            batch_account_data=batch_account_data,
+            nb_ext_scenarios=nb_ext_scenarios,
+            nb_an_projection=nb_an_projection,
+            nb_int_scenarios=nb_int_scenarios,
+            total_mem_per_account=total_mem_per_account,
+            threads_per_block=threads_per_block,
+            gpu_lookups=gpu_lookups,
+            batch_idx=i,
+            num_batches=num_batches,
+            debug_account=batch_debug_account,
+            debug_scenario=debug_scenario,
+            debug_year=debug_year,
+            debug_month=debug_month,
+            debug_int_scenario=debug_int_scenario,
+            debug_int_year=debug_int_year,
         )
-        cuda.synchronize()
-        kernel_a_time = (datetime.now() - kernel_a_start).total_seconds()
-        logger.info(f"  Kernel A complete: {kernel_a_time:.2f}s")
-        log_gpu_memory_debug(f"Batch {i + 1} after Kernel A", verbose=debug_memory)
         
-        # Capture external debug output if requested
-        if debug_account is not None and debug_ext_scenario is not None and i == 0:
-            batch_start_account = start_idx + 1
-            batch_end_account = end_idx
-            if batch_start_account <= debug_account <= batch_end_account:
-                external_debug_output = d_ext_debug_output.copy_to_host()
-                logger.info(f"  Captured external scenario debug data for account {debug_account}, scenario {debug_ext_scenario}")
+        # Accumulate results
+        all_reserves.extend(batch_result['batch_reserves'])
+        all_capital.extend(batch_result['batch_capital'])
+        all_reserves_5chocs.extend(batch_result['batch_reserves_5chocs'])
+        all_capital_5chocs.extend(batch_result['batch_capital_5chocs'])
         
-        # === KERNEL B: NESTED VALUATOR WITH 5 CHOCS ===
-        logger.info(f"  Launching Kernel B (Five Chocs Nested Valuator)...")
-        total_nodes = current_batch_size * nb_ext_scenarios * nb_an_projection
-        if debug_memory:
-            print(f"  Kernel B will process {total_nodes:,} nodes with {nb_int_scenarios} internal scenarios, 5 chocs each")
-        log_gpu_memory_debug(f"Batch {i + 1} before Kernel B", verbose=debug_memory)
-        threads_per_block_B = 256
-        blocks_B = (total_nodes + threads_per_block_B - 1) // threads_per_block_B
-        
-        kernel_b_start = datetime.now()
-        
-        # Check if we're debugging an internal scenario
-        if debug_int_scenario is not None and i == 0:  # Only in first batch
-            # Set defaults if not provided
-            _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else 0
-            _debug_ext_year = debug_ext_year if debug_ext_year is not None else 0
-            _debug_choc = debug_choc if debug_choc is not None else 0
-            
-            logger.info(f"  DEBUG MODE: Capturing internal scenario {debug_int_scenario} "
-                       f"(ext_scenario={_debug_ext_scenario}, year={_debug_ext_year}, choc={_debug_choc})")
-            
-            # Allocate debug output array: (5 chocs, n_years, 15 fields)
-            d_debug_output = cuda.device_array((5, nb_an_projection, 15), dtype=np.float32)
-            
-            nested_valuation_kernel_five_chocs[blocks_B, threads_per_block_B](
-                d_states,
-                d_batch_accounts,
-                nb_int_scenarios,
-                nb_an_projection,  # Internal horizon (run-off)
-                d_rn_forward_rate,
-                d_rn_rend_dex, d_rn_rend_mm, d_rn_rend_tsx, d_rn_rend_sp500, d_rn_rend_eafe,
-                d_mortality,
-                d_metrics,
-                debug_int_scenario,
-                _debug_ext_scenario,
-                _debug_ext_year,
-                _debug_choc,
-                d_debug_output
-            )
-            cuda.synchronize()
-            
-            # Copy debug output back to host
-            h_debug_output = d_debug_output.copy_to_host()
-            debug_output = h_debug_output  # Store for return
-            
-        else:
-            # Create dummy debug array (won't be used since debug parameters are -1)
-            d_dummy_debug_output = cuda.device_array((5, nb_an_projection, 15), dtype=np.float32)
-            
-            nested_valuation_kernel_five_chocs[blocks_B, threads_per_block_B](
-                d_states,
-                d_batch_accounts,
-                nb_int_scenarios,
-                nb_an_projection,  # Internal horizon (run-off)
-                d_rn_forward_rate,
-                d_rn_rend_dex, d_rn_rend_mm, d_rn_rend_tsx, d_rn_rend_sp500, d_rn_rend_eafe,
-                d_mortality,
-                d_metrics,
-                # Debug parameters (explicitly pass defaults)
-                -1, -1, -1, -1, d_dummy_debug_output
-            )
-            cuda.synchronize()
-            h_debug_output = None
-        
-        kernel_b_time = (datetime.now() - kernel_b_start).total_seconds()
-        logger.info(f"  Kernel B complete: {kernel_b_time:.2f}s")
-        log_gpu_memory_debug(f"Batch {i + 1} after Kernel B", verbose=debug_memory)
-        
-        # Copy results back
-        logger.info("  Copying results to CPU...")
-        copy_start = datetime.now()
-        h_metrics = d_metrics.copy_to_host()
-        copy_time = (datetime.now() - copy_start).total_seconds()
-        if debug_memory:
-            print(f"  Copy to CPU took {copy_time:.2f}s ({h_metrics.nbytes / 1024**2:.2f} MB)")
-        log_gpu_memory_debug(f"Batch {i + 1} after copy to CPU", verbose=debug_memory)
-        
-        # Process metrics (average across scenarios and years for summary)
-        # Shape: (current_batch_size, nb_ext_scenarios, nb_an_projection, 5, 2)
-        # Average across external scenarios and years to get per-account metrics for each choc
-        batch_reserves_5chocs = h_metrics[:, :, :, :, 0].mean(axis=(1, 2))  # Shape: (batch_size, 5)
-        batch_capital_5chocs = h_metrics[:, :, :, :, 1].mean(axis=(1, 2))   # Shape: (batch_size, 5)
-        
-        # Use base scenario (choc 0) for main summary
-        batch_reserves = batch_reserves_5chocs[:, 0]  # Base scenario
-        batch_capital = batch_capital_5chocs[:, 0]    # Base scenario
-        
-        # Store all chocs data for later analysis
-        if i == 0:  # Initialize on first batch
-            all_reserves_5chocs = []
-            all_capital_5chocs = []
-        
-        all_reserves_5chocs.extend(batch_reserves_5chocs)
-        all_capital_5chocs.extend(batch_capital_5chocs)
-        
-        all_reserves.extend(batch_reserves)
-        all_capital.extend(batch_capital)
-        
-        # Capture detailed metrics for debug account if requested
-        if debug_account is not None:
-            batch_start_account = start_idx + 1
-            batch_end_account = end_idx
-            if batch_start_account <= debug_account <= batch_end_account:
-                account_batch_idx = debug_account - batch_start_account
-                # Extract full metrics for this account: (nb_ext_scenarios, nb_an_projection, 5, 2)
-                debug_account_data = h_metrics[account_batch_idx]
-                logger.info(f"  Captured 5-chocs debug data for account {debug_account} (batch index {account_batch_idx})")
-        
-        # Explicit cleanup to free GPU memory
-        if debug_memory:
-            print(f"  Starting memory cleanup for batch {i+1}...")
-        log_gpu_memory_debug(f"Batch {i + 1} before cleanup", verbose=debug_memory)
-        
-        del d_batch_accounts, d_states, d_cashflows, d_metrics
-        cuda.synchronize()
-        del h_metrics
-        gc.collect()
-        
-        # Force memory pool cleanup if using RMM
-        try:
-            import rmm
-            rmm.mr.get_current_device_resource().deallocate(0, 0)
-            if debug_memory:
-                print("  RMM memory pool cleanup successful")
-        except (ImportError, AttributeError):
-            pass  # RMM not available or no manual cleanup needed
-        
-        log_gpu_memory_debug(f"Batch {i + 1} after cleanup", verbose=True)
-        
-        batch_time = (datetime.now() - batch_start).total_seconds()
-        logger.info(f"  Batch complete: {batch_time:.2f}s (KernelA: {kernel_a_time:.2f}s, KernelB: {kernel_b_time:.2f}s)")
-        
-        if debug_memory:
-            print(f"  Memory should be back to baseline after cleanup")
+        # Store debug output (only one batch will have it if account filter is used)
+        if batch_result['ext_debug'] is not None:
+            ext_debug_result = batch_result['ext_debug']
+        if batch_result['int_debug'] is not None:
+            int_debug_result = batch_result['int_debug']
     
-    # Create results DataFrame
-    results_df = pd.DataFrame({
-        'ID_COMPTE': data['population']['ID_COMPTE'].values[:n_accounts],
-        'RESERVE_BE': all_reserves,
-        'CAPITAL_REQ': all_capital,
-        'SCR': [cap - res for res, cap in zip(all_reserves, all_capital)]
-    })
-    
-    # Create 5 chocs results
-    results_5chocs_df = None
-    if 'all_reserves_5chocs' in locals():
-        all_reserves_5chocs_array = np.array(all_reserves_5chocs)  # Shape: (n_accounts, 5)
-        all_capital_5chocs_array = np.array(all_capital_5chocs)    # Shape: (n_accounts, 5)
-        
-        # Create detailed 5 chocs DataFrame
-        choc_names = ['BASE', 'SP500_SHOCK', 'TSX_SHOCK', 'EAFE_SHOCK', 'DEX_SHOCK']
-        choc_rows = []
-        
-        for acc_idx in range(n_accounts):
-            account_id = data['population']['ID_COMPTE'].values[acc_idx]
-            for choc_idx, choc_name in enumerate(choc_names):
-                reserve = all_reserves_5chocs_array[acc_idx, choc_idx]
-                capital = all_capital_5chocs_array[acc_idx, choc_idx]
-                choc_rows.append({
-                    'ID_COMPTE': account_id,
-                    'CHOC_TYPE': choc_name,
-                    'CHOC_IDX': choc_idx,
-                    'RESERVE_BE': reserve,
-                    'CAPITAL_REQ': capital,
-                    'SCR': capital - reserve
-                })
-        
-        results_5chocs_df = pd.DataFrame(choc_rows)
-        
-        # Calculate sensitivities (Delta = Shocked - Base)
-        base_reserves = all_reserves_5chocs_array[:, 0]
-        base_capital = all_capital_5chocs_array[:, 0]
-        
-        sensitivities_df = pd.DataFrame({
-            'ID_COMPTE': data['population']['ID_COMPTE'].values[:n_accounts],
-            'DELTA_SP500_RESERVE': all_reserves_5chocs_array[:, 1] - base_reserves,
-            'DELTA_TSX_RESERVE': all_reserves_5chocs_array[:, 2] - base_reserves,
-            'DELTA_EAFE_RESERVE': all_reserves_5chocs_array[:, 3] - base_reserves,
-            'DELTA_DEX_RESERVE': all_reserves_5chocs_array[:, 4] - base_reserves,
-            'DELTA_SP500_CAPITAL': all_capital_5chocs_array[:, 1] - base_capital,
-            'DELTA_TSX_CAPITAL': all_capital_5chocs_array[:, 2] - base_capital,
-            'DELTA_EAFE_CAPITAL': all_capital_5chocs_array[:, 3] - base_capital,
-            'DELTA_DEX_CAPITAL': all_capital_5chocs_array[:, 4] - base_capital,
-        })
-        
-        logger.info(f"Created 5 chocs results with {len(results_5chocs_df)} rows and sensitivities for {len(sensitivities_df)} accounts")
-    
-    # Save results
-    output_path.mkdir(parents=True, exist_ok=True)
-    
-    # =============================================================================
-    # FILE SAVING: CONDITIONAL LOGIC BASED ON DEBUG ARGUMENTS
-    # =============================================================================
-    
-    # 1. ALWAYS SAVED: VP_FLUX_TOTAL_GPU.csv (Grand Total Present Value)
-    print("\n" + "=" * 80)
-    print("SAVING OUTPUT FILES")
-    print("=" * 80)
-    
-    vp_flux_total_path = output_path / "VP_FLUX_TOTAL_GPU.csv"
-    # Create summary with total reserve, capital, and SCR
-    vp_flux_total_df = pd.DataFrame({
-        'CATEGORIE': ['TOTAL'],
-        'VP_RESERVE_BE': [results_df['RESERVE_BE'].sum()],
-        'VP_CAPITAL_REQ': [results_df['CAPITAL_REQ'].sum()],
-        'VP_SCR': [results_df['SCR'].sum()],
-        'AVG_RESERVE_BE': [results_df['RESERVE_BE'].mean()],
-        'AVG_CAPITAL_REQ': [results_df['CAPITAL_REQ'].mean()],
-        'AVG_SCR': [results_df['SCR'].mean()],
-        'N_ACCOUNTS': [len(results_df)]
-    })
-    vp_flux_total_df.to_csv(vp_flux_total_path, index=False, sep=';')
-    print(f"✓ [ALWAYS] Saved VP_FLUX_TOTAL_GPU.csv")
-    print(f"  Total Reserve (BE): ${vp_flux_total_df['VP_RESERVE_BE'].iloc[0]:,.2f}")
-    print(f"  Total Capital Req:  ${vp_flux_total_df['VP_CAPITAL_REQ'].iloc[0]:,.2f}")
-    print(f"  Total SCR:          ${vp_flux_total_df['VP_SCR'].iloc[0]:,.2f}")
-    
-    # 2. CONDITIONAL: VP_FLUX_COMPTE_GPU.csv (Only when debug_account is specified)
-    if debug_account is not None and debug_account_data is not None:
-        print(f"\n✓ [DEBUG_ACCOUNT] Saving VP_FLUX_COMPTE_GPU.csv for account {debug_account}...")
-        
-        # Create detailed breakdown: EXT_SCENARIO, YEAR, RESERVE, CAPITAL
-        debug_rows = []
-        for ext_scn in range(debug_account_data.shape[0]):
-            for year in range(debug_account_data.shape[1]):
-                debug_rows.append({
-                    'ID_COMPTE': debug_account,
-                    'EXT_SCENARIO': ext_scn,
-                    'YEAR': year,
-                    'VP_RESERVE_BE': debug_account_data[ext_scn, year, 0],
-                    'VP_CAPITAL_REQ': debug_account_data[ext_scn, year, 1],
-                    'VP_SCR': debug_account_data[ext_scn, year, 1] - debug_account_data[ext_scn, year, 0]
-                })
-        
-        vp_flux_compte_df = pd.DataFrame(debug_rows)
-        vp_flux_compte_path = output_path / "VP_FLUX_COMPTE_GPU.csv"
-        vp_flux_compte_df.to_csv(vp_flux_compte_path, index=False, sep=';')
-        print(f"  Saved VP_FLUX_COMPTE_GPU.csv")
-        print(f"  Contains {len(vp_flux_compte_df)} rows ({nb_ext_scenarios} scenarios × {nb_an_projection} years)")
-        
-        # Show summary for this account
-        print(f"\n  Account {debug_account} Summary:")
-        print(f"    Average Reserve (BE): ${debug_account_data[:, :, 0].mean():,.2f}")
-        print(f"    Average Capital Req:  ${debug_account_data[:, :, 1].mean():,.2f}")
-        print(f"    Average SCR:          ${(debug_account_data[:, :, 1] - debug_account_data[:, :, 0]).mean():,.2f}")
+    # Create results DataFrames
+    results_df, results_5chocs_df, sensitivities_df = create_results_dataframes(
+        population_ids=data['population']['ID_COMPTE'].values,
+        all_reserves=all_reserves,
+        all_capital=all_capital,
+        all_reserves_5chocs=all_reserves_5chocs,
+        all_capital_5chocs=all_capital_5chocs,
+        n_accounts=n_accounts
+    )
     
     # Print summary
     end_time = datetime.now()
@@ -1581,174 +1027,40 @@ def run_projection_gpu_nested(
     print(f"    SCR:     ${results_df['SCR'].mean():,.2f}")
     print("=" * 80)
     
-    # 3. CONDITIONAL: FLUX_PROJETES_GPU.csv (Only when debug_ext_scenario is specified)
-    # This file contains detailed time-series state projection for an external scenario
-    if external_debug_output is not None and debug_ext_scenario is not None:
-        print(f"\n✓ [DEBUG_EXT] Saving FLUX_PROJETES_GPU.csv (external scenario {debug_ext_scenario})...")
-        
-        # Create debug DataFrame with expanded 20 columns
-        ext_debug_df = pd.DataFrame(external_debug_output, columns=[
-            'AN_EVAL', 'VALEUR_MARCHANDE', 'GAR_DECES', 'GAR_ECH', 'SRG',
-            'VALEUR_DEX', 'VALEUR_MM', 'VALEUR_TSX', 'VALEUR_SP500', 'VALEUR_EAFE',
-            'AGE', 'PROB_SURVIE', 'PROB_SURVIE_DEBUT', 'TAUX_MORTALITE', 'TAUX_LAPSE',
-            'REND_DEX', 'REND_MM', 'TAUX_FRAIS', 'VM_AVANT_FRAIS', 'BONI_DECES'
-        ])
-        
-        # Filter out zero rows (policy terminated)
-        ext_debug_df = ext_debug_df[ext_debug_df['VALEUR_MARCHANDE'] > 0]
-        
-        # Filter to specific external year if requested
-        if debug_ext_year is not None:
-            ext_debug_df = ext_debug_df[ext_debug_df['AN_EVAL'] == debug_ext_year]
-        
-        if len(ext_debug_df) > 0:
-            # Add account and scenario information
-            ext_debug_df.insert(0, 'ID_COMPTE', debug_account)
-            ext_debug_df.insert(1, 'SCN_EVAL', debug_ext_scenario)
-            
-            # Add MOIS_EVAL column (default to 12 for yearly data)
-            ext_debug_df.insert(3, 'MOIS_EVAL', 12)
-            
-            # Save as FLUX_PROJETES_GPU.csv
-            flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
-            ext_debug_df.to_csv(flux_projetes_path, index=False, sep=';')
-            print(f"  Saved FLUX_PROJETES_GPU.csv")
-            print(f"  Contains {len(ext_debug_df)} rows for external scenario {debug_ext_scenario}")
-            print(f"  Account: {debug_account}")
-            if debug_ext_year is not None:
-                print(f"  Filtered to year: {debug_ext_year}")
-            print(f"  Columns: AN_EVAL, VALEUR_MARCHANDE, GAR_DECES, GAR_ECH, SRG,")
-            print(f"           Fund values (DEX, MM, TSX, SP500, EAFE), AGE, PROB_SURVIE,")
-            print(f"           TAUX_MORTALITE, TAUX_LAPSE, Returns, Fees")
-            print(f"  Final VM: ${ext_debug_df['VALEUR_MARCHANDE'].iloc[-1]:,.2f}")
-            print(f"  Final Age: {ext_debug_df['AGE'].iloc[-1]:.0f}")
-            print(f"  Final Survival Prob: {ext_debug_df['PROB_SURVIE'].iloc[-1]:.4f}")
-        else:
-            if debug_ext_year is not None:
-                print(f"  ⚠ No data for external year {debug_ext_year} - policy may have terminated or invalid year")
-            else:
-                print(f"  ⚠ No data - policy may have terminated")
-            print(f"  FLUX_PROJETES_GPU.csv not created")
+    # Build debug params if debug is enabled
+    debug_params = None
+    if enable_debug:
+        debug_params = {
+            'account': debug_account,
+            'scenario': debug_scenario,
+            'year': debug_year,
+            'month': debug_month,
+            'int_scenario': debug_int_scenario,
+            'int_year': debug_int_year,
+        }
     
-    # 4. CONDITIONAL: FLUX_PROJETES_INT_GPU.csv (Only when debug_int_scenario is specified)
-    if debug_output is not None and debug_int_scenario is not None:
-        _debug_ext_scenario = debug_ext_scenario if debug_ext_scenario is not None else 0
-        _debug_ext_year = debug_ext_year if debug_ext_year is not None else 0
-        
-        print(f"\n✓ [DEBUG_INT] Saving FLUX_PROJETES_INT_GPU.csv (internal scenario {debug_int_scenario})...")
-        
-        # Create debug DataFrame
-        debug_df = pd.DataFrame(debug_output, columns=[
-            'ANNEE', 'VM_AVANT_REND', 'TAUX_REND', 'VM_APRES_REND',
-            'FRAIS', 'VM_APRES_FRAIS', 'FLUX', 'TAUX_ESCOMPTE',
-            'FACTEUR_ESCOMPTE', 'VP_FLUX'
-        ])
-        
-        # Filter out zero rows (policy terminated)
-        debug_df = debug_df[debug_df['VM_AVANT_REND'] > 0]
-        
-        # Filter to specific internal year if requested
-        if debug_int_year is not None:
-            debug_df = debug_df[debug_df['ANNEE'] == debug_int_year]
-        
-        if len(debug_df) > 0:
-            # Add metadata columns
-            debug_df.insert(0, 'ID_COMPTE', debug_account if debug_account is not None else 0)
-            debug_df.insert(1, 'SCN_INT', debug_int_scenario)
-            debug_df.insert(2, 'SCN_EXT', _debug_ext_scenario)
-            debug_df.insert(3, 'ANNEE_EXT', _debug_ext_year)
-            
-            # Save as FLUX_PROJETES_INT_GPU.csv
-            flux_int_path = output_path / "FLUX_PROJETES_INT_GPU.csv"
-            debug_df.to_csv(flux_int_path, index=False, sep=';')
-            print(f"  Saved FLUX_PROJETES_INT_GPU.csv")
-            print(f"  Contains {len(debug_df)} rows with internal projection details")
-            print(f"  Internal Scenario: {debug_int_scenario}")
-            print(f"  External Context: Scenario {_debug_ext_scenario}, Year {_debug_ext_year}")
-            print(f"  Total PV of Cashflows (Reserve): ${debug_df['VP_FLUX'].sum():,.2f}")
-            
-            if debug_int_year is not None:
-                print(f"  Filtered to internal year: {debug_int_year}")
-        else:
-            print(f"  ⚠ No data - policy may have terminated")
-            if debug_int_year is not None:
-                print(f"  or invalid internal year {debug_int_year}")
-            print(f"  FLUX_PROJETES_INT_GPU.csv not created")
-    
-    # 5. Five Chocs Results
-    if results_5chocs_df is not None:
-        print(f"\n✓ [FIVE_CHOCS] Saving five chocs results...")
-        
-        # Save detailed 5 chocs results
-        chocs_detailed_path = output_path / "VP_FLUX_5CHOCS_DETAILED_GPU.csv"
-        results_5chocs_df.to_csv(chocs_detailed_path, index=False, sep=';')
-        print(f"  Saved VP_FLUX_5CHOCS_DETAILED_GPU.csv")
-        print(f"  Contains {len(results_5chocs_df)} rows (5 chocs × {n_accounts} accounts)")
-        
-        # Save sensitivities
-        sensitivities_path = output_path / "VP_FLUX_SENSITIVITIES_GPU.csv"
-        sensitivities_df.to_csv(sensitivities_path, index=False, sep=';')
-        print(f"  Saved VP_FLUX_SENSITIVITIES_GPU.csv")
-        print(f"  Contains {len(sensitivities_df)} rows with Greeks/Deltas")
-        
-        # Create and save 5 chocs summary
-        chocs_summary_df = results_5chocs_df.groupby('CHOC_TYPE').agg({
-            'RESERVE_BE': ['sum', 'mean'],
-            'CAPITAL_REQ': ['sum', 'mean'], 
-            'SCR': ['sum', 'mean']
-        }).round(2)
-        
-        # Flatten column names
-        chocs_summary_df.columns = ['_'.join(col).strip() for col in chocs_summary_df.columns]
-        chocs_summary_df = chocs_summary_df.reset_index()
-        
-        chocs_summary_path = output_path / "VP_FLUX_5CHOCS_SUMMARY_GPU.csv"
-        chocs_summary_df.to_csv(chocs_summary_path, index=False, sep=';')
-        print(f"  Saved VP_FLUX_5CHOCS_SUMMARY_GPU.csv")
-        
-        # Display key sensitivities
-        print(f"\n  Key Portfolio Sensitivities (Total):")
-        total_sensitivities = sensitivities_df.sum()
-        print(f"    SP500 Delta (Reserve): ${total_sensitivities['DELTA_SP500_RESERVE']:,.2f}")
-        print(f"    TSX Delta (Reserve):   ${total_sensitivities['DELTA_TSX_RESERVE']:,.2f}")
-        print(f"    EAFE Delta (Reserve):  ${total_sensitivities['DELTA_EAFE_RESERVE']:,.2f}")
-        print(f"    DEX Delta (Reserve):   ${total_sensitivities['DELTA_DEX_RESERVE']:,.2f}")
-    
-    # Summary of saved files
-    print("\n" + "=" * 80)
-    print("FILE SAVING SUMMARY")
-    print("=" * 80)
-    saved_files = ["VP_FLUX_TOTAL_GPU.csv (always saved - portfolio totals)"]
-    if results_5chocs_df is not None:
-        saved_files.extend([
-            "VP_FLUX_5CHOCS_DETAILED_GPU.csv (5 chocs × accounts)",
-            "VP_FLUX_SENSITIVITIES_GPU.csv (Greeks/Deltas per account)",
-            "VP_FLUX_5CHOCS_SUMMARY_GPU.csv (aggregated by choc type)"
-        ])
-    if debug_account is not None and debug_account_data is not None:
-        saved_files.append("VP_FLUX_COMPTE_GPU.csv (requires --debug-account)")
-    if external_debug_output is not None and debug_ext_scenario is not None:
-        year_info = f" year {debug_ext_year}" if debug_ext_year is not None else " all years"
-        saved_files.append(f"FLUX_PROJETES_GPU.csv (requires --debug-account + --debug-ext-scenario, contains{year_info})")
-    if debug_output is not None and debug_int_scenario is not None:
-        saved_files.append("FLUX_PROJETES_INT_GPU.csv (requires --debug-int-scenario)")
-    
-    for idx, file_name in enumerate(saved_files, 1):
-        print(f"  {idx}. {file_name}")
-    print("=" * 80)
+    # Save all results (including debug output if enabled)
+    save_results(
+        output_path=output_path,
+        results_df=results_df,
+        results_5chocs_df=results_5chocs_df,
+        sensitivities_df=sensitivities_df,
+        n_accounts=n_accounts,
+        ext_debug=ext_debug_result,
+        int_debug=int_debug_result,
+        debug_params=debug_params,
+    )
     
     return {
         'results': results_df,
         'results_5chocs': results_5chocs_df,
         'sensitivities': sensitivities_df if results_5chocs_df is not None else None,
         'total_duration': total_duration,
-        'debug_output': debug_output,
-        'external_debug_output': external_debug_output
     }
 
 
 # =============================================================================
-# SCRIPT ENTRY POINT (MODIFIED)
+# SCRIPT ENTRY POINT
 # =============================================================================
 
 if __name__ == "__main__":
@@ -1758,28 +1070,14 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic nested stochastic (only VP_FLUX_TOTAL_GPU.csv saved)
+  # Basic nested stochastic
   python gpu.py --ext-scenarios 100 --int-scenarios 500 --max-accounts 1000
   
-  # With account-level detail (saves VP_FLUX_COMPTE_GPU.csv)
-  python gpu.py --ext-scenarios 100 --int-scenarios 500 --max-accounts 1000 \\
-      --debug-account 1
+  # Full production run
+  python gpu.py --ext-scenarios 1000 --int-scenarios 1000 --years 100
   
-  # With external scenario time series (saves FLUX_PROJETES_GPU.csv - all years)
-  python gpu.py --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
-      --debug-account 1 --debug-ext-scenario 0
-  
-  # With external scenario + specific year filter
-  python gpu.py --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
-      --debug-account 1 --debug-ext-scenario 0 --debug-ext-year 5
-  
-  # With internal scenario detail (saves FLUX_PROJETES_INT_GPU.csv)
-  python gpu.py --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
-      --debug-int-scenario 0 --debug-ext-scenario 0 --debug-ext-year 0
-  
-  # Complete debug: all files saved
-  python gpu.py --ext-scenarios 10 --int-scenarios 100 --max-accounts 10 \\
-      --debug-account 1 --debug-ext-scenario 0 --debug-int-scenario 0
+  # Debug specific account/scenario/year/month
+  python gpu.py --max-accounts 10 --debug-account 0 --debug-scenario 0 --debug-year 5 --debug-month 12
         """
     )
 
@@ -1787,57 +1085,30 @@ Examples:
                         help='Maximum number of accounts to process (for testing)')
     parser.add_argument('--years', type=int, default=100,
                         help='Number of years to project (default: 100)')
-    parser.add_argument('--scenarios', type=int, default=100,
-                        help='Number of scenarios for standard mode (default: 100)')
 
     # Nested mode parameters
     parser.add_argument('--ext-scenarios', type=int, default=100,
                         help='Number of external (real-world) scenarios for nested mode (default: 100)')
     parser.add_argument('--int-scenarios', type=int, default=100,
-                        help='Number of internal (risk-neutral) scenarios per node for nested mode (default: 500)')
+                        help='Number of internal (risk-neutral) scenarios per node for nested mode (default: 100)')
     parser.add_argument('--shock', type=float, default=0.35,
                         help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
-
-    parser.add_argument('--debug-memory', action='store_true',
-                        help='Enable detailed GPU memory debugging output')
-    parser.add_argument('--debug-account', type=int, default=None,
-                        help='Account ID to show detailed results (both modes). In nested mode, use with --debug-ext-scenario to log external scenario projection')
-    parser.add_argument('--debug-ext-scenario', type=int, default=None,
-                        help='External scenario number for debug (nested mode only, use with --debug-account for external projection or --debug-int-scenario for internal projection)')
-    parser.add_argument('--debug-ext-year', type=int, default=None,
-                        help='External year index for debug (nested mode only, used with --debug-int-scenario)')
-    parser.add_argument('--debug-int-scenario', type=int, default=None,
-                        help='Internal scenario number to show detailed calculations (nested mode only, e.g., 0 for first internal scenario)')
-    parser.add_argument('--debug-int-year', type=int, default=None,
-                        help='Specific internal year to display (nested mode only, requires --debug-int-scenario, default: None = show all years)')
+    
+    # Debug filter parameters
+    parser.add_argument('--debug-account', type=int, default=-1,
+                        help='Account index to debug (-1 = disabled)')
+    parser.add_argument('--debug-scenario', type=int, default=-1,
+                        help='External scenario index to debug (-1 = disabled)')
+    parser.add_argument('--debug-year', type=int, default=-1,
+                        help='Year (an_eval) to debug (-1 = disabled)')
+    parser.add_argument('--debug-month', type=int, default=-1,
+                        help='Month (mois_eval) to debug (-1 = disabled)')
+    parser.add_argument('--debug-int-scenario', type=int, default=-1,
+                        help='Internal scenario to debug (-1 = disabled)')
+    parser.add_argument('--debug-int-year', type=int, default=-1,
+                        help='Internal year to debug (-1 = disabled)')
 
     args = parser.parse_args()
-    
-    # Validate debug arguments
-    # External debugging: --debug-account + --debug-ext-scenario (optional: --debug-ext-year to filter years)
-    # Internal debugging: --debug-int-scenario (requires ext-scenario and ext-year to select the node)
-    
-    # 1. --debug-int-year requires --debug-int-scenario
-    if args.debug_int_year is not None:
-        if args.debug_int_scenario is None:
-            parser.error("--debug-int-year requires --debug-int-scenario")
-    
-    # 2. --debug-ext-year can be used with either:
-    #    a) External debugging (filters external scenario output to specific year)
-    #    b) Internal debugging (selects which external node to debug)
-    if args.debug_ext_year is not None:
-        # For external debugging, need both account and ext-scenario
-        # For internal debugging, need int-scenario
-        if args.debug_int_scenario is None and (args.debug_account is None or args.debug_ext_scenario is None):
-            parser.error("--debug-ext-year requires either --debug-int-scenario OR (--debug-account AND --debug-ext-scenario)")
-    
-    # Set defaults for internal debugging if enabled
-    if args.debug_int_scenario is not None:
-        # Default to first external scenario and year if not specified
-        if args.debug_ext_scenario is None:
-            args.debug_ext_scenario = 0
-        if args.debug_ext_year is None:
-            args.debug_ext_year = 0
     
     try:
         if not cuda.is_available():
@@ -1853,10 +1124,6 @@ Examples:
         print("RUNNING NESTED STOCHASTIC MODE (Tier 2 & 3: Reserves & Capital)")
         print("=" * 80)
 
-        if args.debug_account is not None:
-            print(f"\n🔍 DEBUG MODE: Will save detailed breakdown for account {args.debug_account}")
-            print()
-
         results = run_projection_gpu_nested(
             data_path=DATA_PATH,
             output_path=OUTPUT_PATH,
@@ -1866,12 +1133,12 @@ Examples:
             shock_capital_pct=args.shock,
             max_accounts=args.max_accounts,
             threads_per_block=(16, 16),
-            debug_memory=args.debug_memory,
+            debug_account=args.debug_account,
+            debug_scenario=args.debug_scenario,
+            debug_year=args.debug_year,
+            debug_month=args.debug_month,
             debug_int_scenario=args.debug_int_scenario,
-            debug_ext_scenario=args.debug_ext_scenario,
-            debug_ext_year=args.debug_ext_year,
             debug_int_year=args.debug_int_year,
-            debug_account=args.debug_account
         )
 
         if results:
