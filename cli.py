@@ -20,7 +20,7 @@ from paths import HERE
 
 # Import the GPU projection function
 try:
-    from gpu import run_projection_gpu
+    from calculations.gpu import run_projection_gpu
     GPU_AVAILABLE = True
 except Exception as e:
     print(f"Warning: GPU module not available: {e}")

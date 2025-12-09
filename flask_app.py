@@ -9,7 +9,6 @@ import json
 import threading
 import traceback
 import io
-import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
@@ -47,11 +46,90 @@ except ImportError:
 
 # Import the GPU projection function
 try:
-    from gpu import run_projection_gpu
+    from calculations.gpu import run_projection_gpu_nested, ProjectionResult
     GPU_AVAILABLE = True
 except Exception as e:
     print(f"Warning: GPU module not available: {e}")
     GPU_AVAILABLE = False
+
+# =============================================================================
+# KERNEL PATCHING SUPPORT
+# =============================================================================
+
+import importlib
+
+# Store original kernel content for restoration
+KERNELS_PATH = HERE / 'calculations' / 'kernels.py'
+_original_kernel_content = None
+_kernel_lock = threading.Lock()
+
+
+def apply_custom_kernel(kernel_code: str) -> dict:
+    """
+    Apply custom kernel code by writing to kernels.py and reloading modules.
+    Thread-safe with locking.
+    
+    Returns dict with 'success' or 'error' key.
+    """
+    global _original_kernel_content
+    
+    with _kernel_lock:
+        try:
+            # Backup original content (only once)
+            if _original_kernel_content is None and KERNELS_PATH.exists():
+                _original_kernel_content = KERNELS_PATH.read_text()
+            
+            # Validate syntax first
+            try:
+                compile(kernel_code, 'kernels.py', 'exec')
+            except SyntaxError as e:
+                return {
+                    'error': f'Syntax error at line {e.lineno}: {e.msg}',
+                    'line': e.lineno
+                }
+            
+            # Write new kernel code
+            KERNELS_PATH.write_text(kernel_code)
+            print(f"[KERNEL] Custom kernel code written ({len(kernel_code)} bytes)")
+            
+            # Reload modules
+            import calculations.kernels
+            importlib.reload(calculations.kernels)
+            print("[KERNEL] Reloaded calculations.kernels")
+            
+            import calculations.gpu
+            importlib.reload(calculations.gpu)
+            print("[KERNEL] Reloaded calculations.gpu")
+            
+            return {'success': True}
+            
+        except Exception as e:
+            # Restore original on failure
+            restore_original_kernel()
+            return {
+                'error': f'Failed to apply custom kernel: {str(e)}',
+                'traceback': traceback.format_exc()
+            }
+
+
+def restore_original_kernel():
+    """Restore the original kernel code. Thread-safe."""
+    global _original_kernel_content
+    
+    with _kernel_lock:
+        if _original_kernel_content is not None:
+            try:
+                KERNELS_PATH.write_text(_original_kernel_content)
+                
+                import calculations.kernels
+                importlib.reload(calculations.kernels)
+                
+                import calculations.gpu
+                importlib.reload(calculations.gpu)
+                
+                print("[KERNEL] Restored original kernel code")
+            except Exception as e:
+                print(f"[KERNEL] Warning: Failed to restore original kernel: {e}")
 
 # =============================================================================
 # CONFIGURATION
@@ -274,12 +352,56 @@ def init_db():
         )
     """
     
+    # New tables for nested stochastic results
+    nested_results_table = f"""
+        CREATE TABLE IF NOT EXISTS nested_results (
+            id {id_column},
+            job_id TEXT NOT NULL,
+            id_compte INTEGER NOT NULL,
+            reserve_be REAL,
+            capital_req REAL,
+            scr REAL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """
+    
+    nested_summary_table = f"""
+        CREATE TABLE IF NOT EXISTS nested_summary (
+            id {id_column},
+            job_id TEXT NOT NULL,
+            categorie TEXT NOT NULL,
+            vp_reserve_be REAL,
+            vp_capital_req REAL,
+            vp_scr REAL,
+            avg_reserve_be REAL,
+            avg_capital_req REAL,
+            avg_scr REAL,
+            n_accounts INTEGER,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """
+    
+    # Kernel versions table for storing kernel.py history
+    kernel_versions_table = f"""
+        CREATE TABLE IF NOT EXISTS kernel_versions (
+            id {id_column},
+            version_name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            description TEXT,
+            content TEXT NOT NULL,
+            is_active INTEGER DEFAULT 0
+        )
+    """
+    
     with get_db_cursor() as (cursor, conn):
         # Create tables
         cursor.execute(jobs_table)
         cursor.execute(flux_projetes_table)
         cursor.execute(vp_flux_compte_table)
         cursor.execute(vp_flux_total_table)
+        cursor.execute(nested_results_table)
+        cursor.execute(nested_summary_table)
+        cursor.execute(kernel_versions_table)
         
         # Create indexes
         cursor.execute("""
@@ -293,6 +415,14 @@ def init_db():
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_vp_flux_total_job_id 
             ON vp_flux_total(job_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_nested_results_job_id 
+            ON nested_results(job_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_nested_summary_job_id 
+            ON nested_summary(job_id)
         """)
         
         # Handle migrations for SQLite only (PostgreSQL schema has all columns from start)
@@ -507,6 +637,91 @@ def save_vp_flux_total(job_id: str, df: pd.DataFrame) -> None:
     df_copy.to_sql('vp_flux_total', engine, if_exists='append', index=False)
     engine.dispose()
     print(f"  Saved {len(df)} vp_flux_total records to database")
+
+def save_nested_results(job_id: str, df: pd.DataFrame) -> None:
+    """Save nested stochastic results (per-account reserves/capital) to database table"""
+    engine = get_sqlalchemy_engine()
+    
+    # Prepare data for bulk insert
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    
+    # Rename columns to match database schema (lowercase)
+    df_copy.columns = df_copy.columns.str.lower()
+    
+    # Insert into database
+    df_copy.to_sql('nested_results', engine, if_exists='append', index=False)
+    engine.dispose()
+    print(f"  Saved {len(df)} nested_results records to database")
+
+def save_nested_summary(job_id: str, df: pd.DataFrame) -> None:
+    """Save nested stochastic summary (portfolio totals) to database table"""
+    engine = get_sqlalchemy_engine()
+    
+    # Prepare data for bulk insert
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    
+    # Rename columns to match database schema (lowercase)
+    df_copy.columns = df_copy.columns.str.lower()
+    
+    # Insert into database
+    df_copy.to_sql('nested_summary', engine, if_exists='append', index=False)
+    engine.dispose()
+    print(f"  Saved {len(df)} nested_summary records to database")
+
+def get_nested_results(job_id: str, id_compte: int = None) -> Optional[pd.DataFrame]:
+    """
+    Retrieve nested stochastic results for a job with optional filter
+    
+    Args:
+        job_id: Job identifier
+        id_compte: Filter by account ID (optional)
+    """
+    conn = get_db_connection()
+    try:
+        ph = get_placeholder()
+        query = f"SELECT * FROM nested_results WHERE job_id = {ph}"
+        params = [job_id]
+        
+        if id_compte is not None:
+            query += f" AND id_compte = {ph}"
+            params.append(id_compte)
+        
+        query += " ORDER BY id_compte"
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        if len(df) > 0:
+            df = df.drop(columns=['id', 'job_id'])
+            df.columns = df.columns.str.upper()
+            return df
+        return None
+    except Exception as e:
+        conn.close()
+        print(f"Error retrieving nested_results: {e}")
+        return None
+
+def get_nested_summary(job_id: str) -> Optional[pd.DataFrame]:
+    """Retrieve nested stochastic summary for a job"""
+    conn = get_db_connection()
+    try:
+        ph = get_placeholder()
+        df = pd.read_sql_query(
+            f"SELECT * FROM nested_summary WHERE job_id = {ph}",
+            conn,
+            params=(job_id,)
+        )
+        conn.close()
+        if len(df) > 0:
+            df = df.drop(columns=['id', 'job_id'])
+            df.columns = df.columns.str.upper()
+            return df
+        return None
+    except Exception as e:
+        conn.close()
+        print(f"Error retrieving nested_summary: {e}")
+        return None
 
 def get_flux_projetes(job_id: str, an_eval: int = None, mois_eval: int = None) -> Optional[pd.DataFrame]:
     """
@@ -906,12 +1121,31 @@ def trigger_runpod_job(job_id: str):
         }
         
         # Add optional parameters if provided
+        if params.get('nb_int_scenarios'):
+            runpod_input['nb_int_scenarios'] = params.get('nb_int_scenarios')
+        if params.get('shock_capital_pct') is not None:
+            runpod_input['shock_capital_pct'] = params.get('shock_capital_pct')
         if params.get('max_accounts'):
             runpod_input['max_accounts'] = params.get('max_accounts')
         if params.get('debug_account'):
             runpod_input['debug_account'] = params.get('debug_account')
         if params.get('debug_scenario'):
             runpod_input['debug_scenario'] = params.get('debug_scenario')
+        if params.get('debug_year'):
+            runpod_input['debug_year'] = params.get('debug_year')
+        if params.get('debug_month'):
+            runpod_input['debug_month'] = params.get('debug_month')
+        if params.get('debug_int_scenario'):
+            runpod_input['debug_int_scenario'] = params.get('debug_int_scenario')
+        if params.get('debug_int_year'):
+            runpod_input['debug_int_year'] = params.get('debug_int_year')
+        if params.get('debug_only'):
+            runpod_input['debug_only'] = params.get('debug_only')
+        
+        # Add custom kernel code if provided
+        if params.get('kernel_code'):
+            runpod_input['kernel_code'] = params.get('kernel_code')
+            print(f"  Including custom kernel code ({len(params['kernel_code'])} bytes)")
 
         print(f"Triggering RunPod job for endpoint {RUNPOD_ENDPOINT_ID}...")
         print(f"  Payload: {len(data_file_urls)} file URLs")
@@ -1039,6 +1273,8 @@ def process_job(job_id: str):
     NOTE: This function runs jobs locally with GPU. 
     If RunPod is configured, jobs should use trigger_runpod_job() instead.
     """
+    custom_kernel_applied = False
+    
     try:
         # Prevent local execution if RunPod is configured
         if RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY:
@@ -1072,9 +1308,27 @@ def process_job(job_id: str):
         # Get parameters
         params = job['parameters']
         nb_years = params.get('nb_an_projection', 100)
-        nb_scenarios = params.get('nb_scenarios', 100)
+        nb_ext_scenarios = params.get('nb_scenarios', 100)  # External scenarios (real-world)
+        nb_int_scenarios = params.get('nb_int_scenarios', 100)  # Internal scenarios (risk-neutral)
+        shock_capital_pct = params.get('shock_capital_pct', 0.35)  # Capital shock percentage
         max_accounts = params.get('max_accounts', None)
-        debug_account = params.get('debug_account', None)
+        debug_account = params.get('debug_account', -1) if params.get('debug_account') is not None else -1
+        debug_scenario = params.get('debug_scenario', -1) if params.get('debug_scenario') is not None else -1
+        debug_year = params.get('debug_year', -1) if params.get('debug_year') is not None else -1
+        debug_month = params.get('debug_month', -1) if params.get('debug_month') is not None else -1
+        debug_int_scenario = params.get('debug_int_scenario', -1) if params.get('debug_int_scenario') is not None else -1
+        debug_int_year = params.get('debug_int_year', -1) if params.get('debug_int_year') is not None else -1
+        debug_only = params.get('debug_only', False)
+        
+        # Check for custom kernel code
+        kernel_code = params.get('kernel_code')
+        if kernel_code:
+            print(f"[KERNEL] Custom kernel code provided for job {job_id} ({len(kernel_code)} bytes)")
+            result = apply_custom_kernel(kernel_code)
+            if 'error' in result:
+                raise Exception(f"Failed to apply custom kernel: {result['error']}")
+            custom_kernel_applied = True
+            print(f"[KERNEL] Custom kernel applied successfully for job {job_id}")
         
         # Set up paths
         # Check if job has uploaded files
@@ -1129,38 +1383,55 @@ def process_job(job_id: str):
         print(f"  Uploaded files: {uploaded_file_list}")
         if custom_paths:
             print(f"  Using custom paths for {len(custom_paths)} files")
-        results = run_projection_gpu(
+        if custom_kernel_applied:
+            print(f"  Using custom kernel code")
+        
+        # Import from (possibly reloaded) module
+        from calculations.gpu import run_projection_gpu_nested as run_projection
+        
+        results = run_projection(
             data_path=data_path,
             output_path=output_path,
             nb_an_projection=nb_years,
-            nb_scenarios=nb_scenarios,
+            nb_ext_scenarios=nb_ext_scenarios,
+            nb_int_scenarios=nb_int_scenarios,
+            shock_capital_pct=shock_capital_pct,
             max_accounts=max_accounts,
             debug_account=debug_account,
+            debug_scenario=debug_scenario,
+            debug_year=debug_year,
+            debug_month=debug_month,
+            debug_int_scenario=debug_int_scenario,
+            debug_int_year=debug_int_year,
+            debug_only=debug_only,
             progress_callback=progress_callback,
             **custom_paths
         )
         
         # Save results data to separate database tables
+        # Note: run_projection_gpu_nested returns a ProjectionResult dataclass
         if results:
             print(f"\nSaving results to database...")
-            if 'flux_projetes' in results and results['flux_projetes'] is not None:
-                save_flux_projetes(job_id, results['flux_projetes'])
-            if 'vp_flux_compte' in results and results['vp_flux_compte'] is not None:
-                save_vp_flux_compte(job_id, results['vp_flux_compte'])
-            if 'vp_flux_total' in results and results['vp_flux_total'] is not None:
-                save_vp_flux_total(job_id, results['vp_flux_total'])
+            # Save per-account results (reserves/capital/SCR)
+            if results.results is not None:
+                save_nested_results(job_id, results.results)
+            
+            # Save portfolio summary
+            if results.vp_flux_total is not None:
+                save_nested_summary(job_id, results.vp_flux_total)
             
             # Also save summary to JSON for backward compatibility
             results_data = {
                 'vp_flux_total_summary': {
-                    'vp_flux_tot': float(results['vp_flux_total']['VP_FLUX_TOT'].iloc[0]) if 'vp_flux_total' in results and len(results['vp_flux_total']) > 0 else 0.0
+                    'vp_reserve_be': float(results.vp_flux_total['VP_RESERVE_BE'].iloc[0]) if results.vp_flux_total is not None and len(results.vp_flux_total) > 0 else 0.0,
+                    'vp_capital_req': float(results.vp_flux_total['VP_CAPITAL_REQ'].iloc[0]) if results.vp_flux_total is not None and len(results.vp_flux_total) > 0 else 0.0,
+                    'vp_scr': float(results.vp_flux_total['VP_SCR'].iloc[0]) if results.vp_flux_total is not None and len(results.vp_flux_total) > 0 else 0.0,
                 },
-                'vp_flux_compte_summary': {
-                    'total_accounts': len(results['vp_flux_compte']) if 'vp_flux_compte' in results else 0
+                'nested_results_summary': {
+                    'total_accounts': len(results.results) if results.results is not None else 0
                 },
-                'flux_projetes_summary': {
-                    'total_periods': len(results['flux_projetes']) if 'flux_projetes' in results else 0
-                }
+                'total_duration': results.total_duration,
+                'saved_files': results.saved_files
             }
             update_job_results_data(job_id, results_data)
         
@@ -1212,7 +1483,14 @@ def process_job(job_id: str):
         for file_info in result_files:
             print(f"    - {file_info['name']} ({file_info['type']}) - {file_info['description']}")
         
+        # Restore original kernel after successful completion
+        if custom_kernel_applied:
+            restore_original_kernel()
+        
     except Exception as e:
+        # Restore original kernel on error
+        if custom_kernel_applied:
+            restore_original_kernel()
         error_msg = f"{str(e)}\n{traceback.format_exc()}"
         print(f"Job {job_id} failed: {error_msg}")
         update_job_status(job_id, 'failed', error_message=error_msg)
@@ -1379,14 +1657,32 @@ def create_job_endpoint():
         # Generate job ID
         job_id = f"job_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}"
         
-        # Get parameters from form
+        # Get parameters from form or JSON
+        if request.is_json:
+            form_data = request.json
+        else:
+            form_data = request.form
+        
         parameters = {
-            'nb_an_projection': int(request.form.get('nb_an_projection', 100)),
-            'nb_scenarios': int(request.form.get('nb_scenarios', 100)),
-            'max_accounts': int(request.form.get('max_accounts')) if request.form.get('max_accounts') else None,
-            'debug_account': int(request.form.get('debug_account')) if request.form.get('debug_account') else None,
-            'debug_scenario': int(request.form.get('debug_scenario')) if request.form.get('debug_scenario') else None
+            'nb_an_projection': int(form_data.get('nb_an_projection', 100)),
+            'nb_scenarios': int(form_data.get('nb_scenarios', 100)),
+            'nb_int_scenarios': int(form_data.get('nb_int_scenarios', 100)),
+            'shock_capital_pct': float(form_data.get('shock_capital_pct', 35)) / 100.0,  # Convert % to decimal
+            'max_accounts': int(form_data.get('max_accounts')) if form_data.get('max_accounts') else None,
+            'debug_account': int(form_data.get('debug_account')) if form_data.get('debug_account') else None,
+            'debug_scenario': int(form_data.get('debug_scenario')) if form_data.get('debug_scenario') else None,
+            'debug_year': int(form_data.get('debug_year')) if form_data.get('debug_year') else None,
+            'debug_month': int(form_data.get('debug_month')) if form_data.get('debug_month') else None,
+            'debug_int_scenario': int(form_data.get('debug_int_scenario')) if form_data.get('debug_int_scenario') else None,
+            'debug_int_year': int(form_data.get('debug_int_year')) if form_data.get('debug_int_year') else None,
+            'debug_only': form_data.get('debug_only', '').lower() in ('true', '1', 'yes', 'on'),
         }
+        
+        # Add custom kernel code if provided
+        kernel_code = form_data.get('kernel_code')
+        if kernel_code:
+            parameters['kernel_code'] = kernel_code
+            print(f"Job {job_id}: Custom kernel code provided ({len(kernel_code)} bytes)")
         
         # Handle file uploads
         uploaded_files = []
@@ -1948,6 +2244,455 @@ def clear_database():
             'message': str(e)
         }), 500
 
+
+# =============================================================================
+# API ROUTES - KERNEL MANAGEMENT
+# =============================================================================
+
+@app.route('/admin/kernels/file', methods=['GET'])
+def get_kernel_file():
+    """
+    Get the current kernels.py file content.
+    """
+    kernels_path = HERE / 'calculations' / 'kernels.py'
+    if not kernels_path.exists():
+        return jsonify({'error': 'kernels.py not found'}), 404
+    
+    return jsonify({
+        'path': str(kernels_path),
+        'content': kernels_path.read_text()
+    })
+
+@app.route('/admin/kernels/validate', methods=['POST'])
+def validate_kernel_file():
+    """
+    Validate kernel code by temporarily writing it and running a test projection.
+    
+    JSON body:
+    {
+        "password": "admin123",
+        "content": "... new kernels.py content ..."
+    }
+    
+    Returns validation result without restarting server.
+    """
+    if not request.is_json:
+        return jsonify({'error': 'JSON body required'}), 400
+    
+    data = request.json
+    password = data.get('password')
+    if password != ADMIN_PASSWORD:
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    content = data.get('content')
+    if not content:
+        return jsonify({'error': 'content is required'}), 400
+    
+    kernels_path = HERE / 'calculations' / 'kernels.py'
+    backup_path = HERE / 'calculations' / 'kernels.py.validation_backup'
+    
+    try:
+        # Step 1: Check Python syntax
+        try:
+            compile(content, 'kernels.py', 'exec')
+        except SyntaxError as e:
+            return jsonify({
+                'valid': False,
+                'stage': 'syntax',
+                'error': f'Syntax error at line {e.lineno}: {e.msg}',
+                'line': e.lineno,
+                'offset': e.offset
+            }), 400
+        
+        # Step 2: Backup current file
+        original_content = None
+        if kernels_path.exists():
+            original_content = kernels_path.read_text()
+            backup_path.write_text(original_content)
+        
+        # Step 3: Write new content temporarily
+        kernels_path.write_text(content)
+        
+        # Step 4: Try to reload the module and run a test
+        validation_error = None
+        try:
+            import importlib
+            import calculations.kernels
+            importlib.reload(calculations.kernels)
+            
+            # Re-import gpu module to pick up new kernels
+            import calculations.gpu
+            importlib.reload(calculations.gpu)
+            
+            # Run a minimal test projection
+            from calculations.gpu import run_projection_gpu_nested
+            
+            test_output_path = HERE / 'results' / 'validation_test'
+            test_output_path.mkdir(parents=True, exist_ok=True)
+            
+            # Run with minimal settings
+            result = run_projection_gpu_nested(
+                data_path=app.config['DEFAULT_DATA_FOLDER'],
+                output_path=test_output_path,
+                nb_an_projection=10,  # Short projection
+                nb_ext_scenarios=2,   # Minimal scenarios
+                nb_int_scenarios=2,   # Minimal internal scenarios
+                max_accounts=1,       # Just 1 account
+            )
+            
+            # Clean up test output
+            import shutil
+            if test_output_path.exists():
+                shutil.rmtree(test_output_path)
+            
+        except Exception as e:
+            validation_error = str(e)
+            # Get full traceback for debugging
+            import traceback
+            validation_traceback = traceback.format_exc()
+        
+        # Step 5: Restore original file
+        if original_content is not None:
+            kernels_path.write_text(original_content)
+        
+        # Step 6: Reload original modules
+        try:
+            import importlib
+            import calculations.kernels
+            importlib.reload(calculations.kernels)
+            import calculations.gpu
+            importlib.reload(calculations.gpu)
+        except:
+            pass  # Best effort restore
+        
+        if validation_error:
+            return jsonify({
+                'valid': False,
+                'stage': 'runtime',
+                'error': validation_error,
+                'traceback': validation_traceback if 'validation_traceback' in dir() else None
+            }), 400
+        
+        return jsonify({
+            'valid': True,
+            'message': 'Kernel code validated successfully! Test projection completed with 1 account.'
+        })
+        
+    except Exception as e:
+        # Restore backup on any failure
+        if backup_path.exists():
+            kernels_path.write_text(backup_path.read_text())
+        return jsonify({
+            'valid': False,
+            'stage': 'validation',
+            'error': f'Validation failed: {str(e)}'
+        }), 500
+
+@app.route('/admin/kernels/file', methods=['POST'])
+def update_kernel_file():
+    """
+    Replace kernels.py content, save to database, and restart the Flask server.
+    
+    JSON body:
+    {
+        "password": "admin123",
+        "content": "... new kernels.py content ...",
+        "version_name": "v1.0",  // optional, auto-generated if not provided
+        "description": "Fixed lapse calculation",  // optional
+        "restart": true,  // optional, default true
+        "validate": true  // optional, default true - run test before saving
+    }
+    
+    WARNING: This overwrites the entire kernels.py file!
+    """
+    if not request.is_json:
+        return jsonify({'error': 'JSON body required'}), 400
+    
+    data = request.json
+    password = data.get('password')
+    if password != ADMIN_PASSWORD:
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    content = data.get('content')
+    if not content:
+        return jsonify({'error': 'content is required'}), 400
+    
+    # Check if validation is requested (default: True)
+    should_validate = data.get('validate', True)
+    
+    if should_validate:
+        # Run validation first
+        kernels_path = HERE / 'calculations' / 'kernels.py'
+        backup_path = HERE / 'calculations' / 'kernels.py.validation_backup'
+        
+        # Step 1: Check Python syntax
+        try:
+            compile(content, 'kernels.py', 'exec')
+        except SyntaxError as e:
+            return jsonify({
+                'error': f'Syntax error at line {e.lineno}: {e.msg}',
+                'validation_failed': True,
+                'stage': 'syntax',
+                'line': e.lineno
+            }), 400
+        
+        # Step 2: Backup and test
+        original_content = None
+        try:
+            if kernels_path.exists():
+                original_content = kernels_path.read_text()
+                backup_path.write_text(original_content)
+            
+            kernels_path.write_text(content)
+            
+            # Reload and test
+            import importlib
+            import calculations.kernels
+            importlib.reload(calculations.kernels)
+            import calculations.gpu
+            importlib.reload(calculations.gpu)
+            
+            from calculations.gpu import run_projection_gpu_nested
+            
+            test_output_path = HERE / 'results' / 'validation_test'
+            test_output_path.mkdir(parents=True, exist_ok=True)
+            
+            run_projection_gpu_nested(
+                data_path=app.config['DEFAULT_DATA_FOLDER'],
+                output_path=test_output_path,
+                nb_an_projection=10,
+                nb_ext_scenarios=2,
+                nb_int_scenarios=2,
+                max_accounts=1,
+            )
+            
+            import shutil
+            if test_output_path.exists():
+                shutil.rmtree(test_output_path)
+                
+        except Exception as e:
+            # Restore original and return error
+            if original_content is not None:
+                kernels_path.write_text(original_content)
+            try:
+                import importlib
+                import calculations.kernels
+                importlib.reload(calculations.kernels)
+                import calculations.gpu
+                importlib.reload(calculations.gpu)
+            except:
+                pass
+            
+            return jsonify({
+                'error': f'Validation failed: {str(e)}',
+                'validation_failed': True,
+                'stage': 'runtime',
+                'traceback': traceback.format_exc()
+            }), 400
+        
+        # Restore original before proceeding (will be overwritten again below)
+        if original_content is not None:
+            kernels_path.write_text(original_content)
+    
+    version_name = data.get('version_name', f"v_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
+    description = data.get('description', '')
+    
+    kernels_path = HERE / 'calculations' / 'kernels.py'
+    backup_path = HERE / 'calculations' / 'kernels.py.backup'
+    
+    try:
+        # Backup current file
+        if kernels_path.exists():
+            backup_path.write_text(kernels_path.read_text())
+        
+        # Save current version to database before overwriting (mark as not active)
+        ph = get_placeholder()
+        execute_sql(f"UPDATE kernel_versions SET is_active = 0 WHERE is_active = 1", ())
+        
+        # Save new version to database
+        execute_sql(
+            f"""INSERT INTO kernel_versions (version_name, created_at, description, content, is_active)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph})""",
+            (version_name, datetime.utcnow().isoformat(), description, content, 1)
+        )
+        
+        # Write new content to file
+        kernels_path.write_text(content)
+        
+        should_restart = data.get('restart', True)
+        
+        if should_restart:
+            # Schedule restart after response is sent
+            import subprocess
+            import sys
+            
+            def restart_server():
+                import time
+                time.sleep(1)  # Give time for response to be sent
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            
+            thread = threading.Thread(target=restart_server)
+            thread.daemon = True
+            thread.start()
+            
+            return jsonify({
+                'success': True,
+                'message': 'Validation passed! kernels.py updated, server restarting...',
+                'version_name': version_name,
+                'backup': str(backup_path),
+                'validated': should_validate
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': 'kernels.py updated (restart=false, changes will apply on next server restart)',
+                'version_name': version_name,
+                'backup': str(backup_path),
+                'validated': should_validate
+            })
+    
+    except Exception as e:
+        # Restore backup on failure
+        if backup_path.exists():
+            kernels_path.write_text(backup_path.read_text())
+        return jsonify({'error': f'Failed to update kernels.py: {e}'}), 500
+
+@app.route('/admin/kernels/versions', methods=['GET'])
+def list_kernel_versions():
+    """
+    List all saved kernel versions from the database.
+    """
+    rows = fetch_all("SELECT id, version_name, created_at, description, is_active FROM kernel_versions ORDER BY created_at DESC")
+    return jsonify({
+        'versions': rows,
+        'count': len(rows)
+    })
+
+@app.route('/admin/kernels/versions/<int:version_id>', methods=['GET'])
+def get_kernel_version(version_id):
+    """
+    Get a specific kernel version content by ID.
+    """
+    ph = get_placeholder()
+    row = fetch_one(f"SELECT * FROM kernel_versions WHERE id = {ph}", (version_id,))
+    if not row:
+        return jsonify({'error': 'Version not found'}), 404
+    
+    return jsonify(row)
+
+@app.route('/admin/kernels/versions/<int:version_id>/activate', methods=['POST'])
+def activate_kernel_version(version_id):
+    """
+    Activate a specific kernel version: write it to kernels.py and restart.
+    
+    JSON body:
+    {
+        "password": "admin123"
+    }
+    """
+    password = request.json.get('password') if request.is_json else None
+    if password != ADMIN_PASSWORD:
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    ph = get_placeholder()
+    row = fetch_one(f"SELECT * FROM kernel_versions WHERE id = {ph}", (version_id,))
+    if not row:
+        return jsonify({'error': 'Version not found'}), 404
+    
+    kernels_path = HERE / 'calculations' / 'kernels.py'
+    backup_path = HERE / 'calculations' / 'kernels.py.backup'
+    
+    try:
+        # Backup current file
+        if kernels_path.exists():
+            backup_path.write_text(kernels_path.read_text())
+        
+        # Update active status in database
+        execute_sql(f"UPDATE kernel_versions SET is_active = 0 WHERE is_active = 1", ())
+        execute_sql(f"UPDATE kernel_versions SET is_active = 1 WHERE id = {ph}", (version_id,))
+        
+        # Write content to file
+        kernels_path.write_text(row['content'])
+        
+        # Restart
+        import sys
+        def restart_server():
+            import time
+            time.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        
+        thread = threading.Thread(target=restart_server)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': f"Activated version '{row['version_name']}', server restarting...",
+            'version_name': row['version_name']
+        })
+    except Exception as e:
+        return jsonify({'error': f'Failed to activate version: {e}'}), 500
+
+@app.route('/admin/kernels/versions/<int:version_id>', methods=['DELETE'])
+def delete_kernel_version(version_id):
+    """
+    Delete a kernel version from the database.
+    
+    JSON body:
+    {
+        "password": "admin123"
+    }
+    """
+    password = request.json.get('password') if request.is_json else None
+    if password != ADMIN_PASSWORD:
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    ph = get_placeholder()
+    row = fetch_one(f"SELECT is_active FROM kernel_versions WHERE id = {ph}", (version_id,))
+    if not row:
+        return jsonify({'error': 'Version not found'}), 404
+    
+    if row['is_active']:
+        return jsonify({'error': 'Cannot delete the active version'}), 400
+    
+    execute_sql(f"DELETE FROM kernel_versions WHERE id = {ph}", (version_id,))
+    return jsonify({'success': True, 'message': 'Version deleted'})
+
+@app.route('/admin/kernels/restore', methods=['POST'])
+def restore_kernel_backup():
+    """
+    Restore kernels.py from file backup and restart.
+    """
+    password = request.json.get('password') if request.is_json else None
+    if password != ADMIN_PASSWORD:
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    kernels_path = HERE / 'calculations' / 'kernels.py'
+    backup_path = HERE / 'calculations' / 'kernels.py.backup'
+    
+    if not backup_path.exists():
+        return jsonify({'error': 'No backup file found'}), 404
+    
+    try:
+        kernels_path.write_text(backup_path.read_text())
+        
+        # Restart
+        import sys
+        def restart_server():
+            import time
+            time.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        
+        thread = threading.Thread(target=restart_server)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Restored from backup, server restarting...'
+        })
+    except Exception as e:
+        return jsonify({'error': f'Failed to restore: {e}'}), 500
 
 # =============================================================================
 # MAIN

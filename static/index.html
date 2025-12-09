@@ -4,6 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GPU Actuarial Projections</title>
+    
+    <!-- CodeMirror CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/monokai.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldgutter.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css">
+    
     <style>
     /* 1990s Corporate Style */
 body {
@@ -399,6 +406,67 @@ input[type="password"] {
     text-align: center;
     padding: 20px;
 }
+
+/* Kernel Editor Styles */
+.kernel-editor-container {
+    border: 2px inset #808080;
+    margin: 10px 0;
+}
+
+.CodeMirror {
+    height: 500px;
+    font-size: 13px;
+    border: none;
+}
+
+.kernel-editor-toolbar {
+    background: #e0e0e0;
+    padding: 5px 10px;
+    border-bottom: 1px solid #999;
+    font-size: 12px;
+}
+
+.kernel-editor-toolbar button {
+    margin-right: 5px;
+    padding: 3px 8px;
+    font-size: 11px;
+}
+
+.kernel-editor-toolbar span {
+    margin-left: 15px;
+    color: #666;
+}
+
+.kernel-versions-list {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #000;
+    background: #fff;
+    margin: 10px 0;
+}
+
+.kernel-version-item {
+    padding: 8px;
+    border-bottom: 1px solid #ccc;
+    cursor: pointer;
+}
+
+.kernel-version-item:hover {
+    background: #e0e0e0;
+}
+
+.kernel-version-item.active {
+    background: #d0ffd0;
+    font-weight: bold;
+}
+
+.kernel-btn-group {
+    margin: 10px 0;
+}
+
+.kernel-btn-group button {
+    margin-right: 5px;
+}
     </style>
 </head>
 <body>
@@ -411,6 +479,72 @@ input[type="password"] {
                 </div>
             </div>
 
+        </div>
+
+        <!-- Kernel Editor Section -->
+        <div class="card">
+            <h2 onclick="toggleKernelEditor()" style="cursor: pointer;">
+                <span id="kernel-toggle-icon">▶</span> Kernel Editor (Advanced)
+            </h2>
+            <div id="kernel-editor-content" style="display: none;">
+                <p style="color: #666; font-size: 13px;">
+                    Edit the GPU kernel code. Save versions to the database, then check "Use Custom Kernel Code" when creating a job to use your edited code.
+                </p>
+                
+                <div class="form-group">
+                    <label for="kernel-password">Admin Password:</label>
+                    <input type="password" id="kernel-password" placeholder="Required for kernel changes">
+                </div>
+                
+                <div class="kernel-btn-group">
+                    <button type="button" class="btn btn-secondary" onclick="loadKernelContent()">📥 Load Current</button>
+                    <button type="button" class="btn" onclick="validateKernelOnly()" style="background: #ffa500; color: #000;">🧪 Validate Only</button>
+                    <button type="button" class="btn btn-primary" onclick="saveKernelContent()">💾 Save to DB</button>
+                    <button type="button" class="btn" onclick="restoreKernelBackup()">↩️ Restore Backup</button>
+                </div>
+                
+                <div class="form-group">
+                    <label for="kernel-version-name">Version Name (optional):</label>
+                    <input type="text" id="kernel-version-name" placeholder="e.g., v1.1-fix-lapse">
+                </div>
+                
+                <div class="form-group">
+                    <label for="kernel-description">Description (optional):</label>
+                    <input type="text" id="kernel-description" placeholder="e.g., Fixed lapse calculation bug">
+                </div>
+                
+                <div class="form-group">
+                    <label>Kernel Code (kernels.py):</label>
+                    <div class="kernel-editor-container">
+                        <div class="kernel-editor-toolbar">
+                            <button type="button" onclick="kernelEditorUndo()" title="Undo">↶ Undo</button>
+                            <button type="button" onclick="kernelEditorRedo()" title="Redo">↷ Redo</button>
+                            <button type="button" onclick="kernelEditorFind()" title="Find (Ctrl+F)">🔍 Find</button>
+                            <button type="button" onclick="kernelEditorReplace()" title="Replace (Ctrl+H)">⇄ Replace</button>
+                            <button type="button" onclick="kernelEditorFoldAll()" title="Fold All">▼ Fold All</button>
+                            <button type="button" onclick="kernelEditorUnfoldAll()" title="Unfold All">▶ Unfold All</button>
+                            <span id="kernel-editor-position">Line: 1, Col: 1</span>
+                        </div>
+                        <textarea id="kernel-content"></textarea>
+                    </div>
+                    <p style="font-size: 11px; color: #666; margin-top: 5px;">
+                        Shortcuts: Ctrl+F (Find), Ctrl+H (Replace), Ctrl+G (Go to line), Ctrl+/ (Comment), Tab (Indent)
+                    </p>
+                </div>
+                
+                <div id="kernel-message"></div>
+                
+                <!-- Saved Versions -->
+                <h3 onclick="toggleKernelVersions()" style="cursor: pointer; margin-top: 20px;">
+                    <span id="versions-toggle-icon">▶</span> Saved Versions
+                </h3>
+                <div id="kernel-versions-content" style="display: none;">
+                    <button type="button" class="btn btn-secondary" onclick="loadKernelVersions()">↻ Refresh</button>
+                    <div id="kernel-versions-list" class="kernel-versions-list">
+                        <div class="loading">Click refresh to load versions...</div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="card">
@@ -481,8 +615,18 @@ input[type="password"] {
                     </div>
 
                     <div class="form-group">
-                        <label for="nb_scenarios">Number of Scenarios:</label>
+                        <label for="nb_scenarios">External Scenarios (Real-World):</label>
                         <input type="number" id="nb_scenarios" name="nb_scenarios" value="100" min="1" max="1000">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="nb_int_scenarios">Internal Scenarios (Risk-Neutral):</label>
+                        <input type="number" id="nb_int_scenarios" name="nb_int_scenarios" value="100" min="1" max="1000">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="shock_capital_pct">Capital Shock % (default 35%):</label>
+                        <input type="number" id="shock_capital_pct" name="shock_capital_pct" value="35" min="0" max="100" step="1">
                     </div>
 
                     <div class="form-group">
@@ -490,14 +634,58 @@ input[type="password"] {
                         <input type="number" id="max_accounts" name="max_accounts" value="20" min="1">
                     </div>
 
-                    <div class="form-group">
-                        <label for="debug_account">Debug Account ID (optional):</label>
-                        <input type="number" id="debug_account" name="debug_account" placeholder="Leave empty for no debug">
-                    </div>
+                    <!-- Debug Options (collapsible) -->
+                    <h4 onclick="toggleDebugOptions()" style="cursor: pointer; margin-top: 15px;">
+                        <span id="debug-toggle-icon">▶</span> Debug Options
+                    </h4>
+                    <div id="debug-options-content" style="display: none; padding: 10px; background: #f0f0f0; border: 1px solid #ccc;">
+                        <div class="form-group">
+                            <label for="debug_account">Debug Account ID:</label>
+                            <input type="number" id="debug_account" name="debug_account" placeholder="Leave empty for no debug">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="debug_only">
+                                <strong>Debug Only Mode</strong> - Process ONLY the debug account (ignores Max Accounts)
+                            </label>
+                        </div>
 
-                    <div class="form-group">
-                        <label for="debug_scenario">Debug Scenario (optional):</label>
-                        <input type="number" id="debug_scenario" name="debug_scenario" placeholder="Leave empty for no debug" min="0">
+                        <div class="form-group">
+                            <label for="debug_scenario">Debug External Scenario:</label>
+                            <input type="number" id="debug_scenario" name="debug_scenario" placeholder="Leave empty for no debug" min="0">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="debug_year">Debug Year:</label>
+                            <input type="number" id="debug_year" name="debug_year" placeholder="Leave empty for no debug" min="0">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="debug_month">Debug Month:</label>
+                            <input type="number" id="debug_month" name="debug_month" placeholder="Leave empty for no debug" min="0" max="12">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="debug_int_scenario">Debug Internal Scenario:</label>
+                            <input type="number" id="debug_int_scenario" name="debug_int_scenario" placeholder="Leave empty for no debug" min="0">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="debug_int_year">Debug Internal Year:</label>
+                            <input type="number" id="debug_int_year" name="debug_int_year" placeholder="Leave empty for no debug" min="0">
+                        </div>
+                    </div>
+                    
+                    <div class="form-group" style="margin-top: 15px; padding: 10px; background: #ffe0b0; border: 1px solid #ffa500;">
+                        <label>
+                            <input type="checkbox" id="use_custom_kernel">
+                            <strong>🧪 Use Custom Kernel Code</strong>
+                        </label>
+                        <p style="font-size: 12px; color: #666; margin: 5px 0 0 20px;">
+                            If checked, the kernel code from the Kernel Editor above will be used for this job.
+                            Make sure to load/edit the kernel code first!
+                        </p>
                     </div>
                 </div>
 
@@ -1040,10 +1228,269 @@ input[type="password"] {
             }
         });
 
+        // =============================================
+        // KERNEL EDITOR FUNCTIONS
+        // =============================================
+        
+        // Toggle kernel editor section
+        function toggleKernelEditor() {
+            const content = document.getElementById('kernel-editor-content');
+            const icon = document.getElementById('kernel-toggle-icon');
+            
+            if (content.style.display === 'none' || content.style.display === '') {
+                content.style.display = 'block';
+                icon.textContent = '▼';
+            } else {
+                content.style.display = 'none';
+                icon.textContent = '▶';
+            }
+        }
+        
+        // Toggle kernel versions section
+        function toggleKernelVersions() {
+            const content = document.getElementById('kernel-versions-content');
+            const icon = document.getElementById('versions-toggle-icon');
+            
+            if (content.style.display === 'none' || content.style.display === '') {
+                content.style.display = 'block';
+                icon.textContent = '▼';
+                loadKernelVersions();
+            } else {
+                content.style.display = 'none';
+                icon.textContent = '▶';
+            }
+        }
+        
+        // Load current kernel content
+        async function loadKernelContent() {
+            const messageDiv = document.getElementById('kernel-message');
+            messageDiv.innerHTML = '<div class="loading">Loading kernel content...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/admin/kernels/file`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('kernel-content').value = data.content;
+                    messageDiv.innerHTML = '<div class="success">Kernel content loaded successfully</div>';
+                    setTimeout(() => messageDiv.innerHTML = '', 3000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to load: ${error.message}</div>`;
+            }
+        }
+        
+        // Save kernel content
+        async function saveKernelContent() {
+            const password = document.getElementById('kernel-password').value;
+            const content = document.getElementById('kernel-content').value;
+            const versionName = document.getElementById('kernel-version-name').value;
+            const description = document.getElementById('kernel-description').value;
+            const messageDiv = document.getElementById('kernel-message');
+            
+            if (!password) {
+                messageDiv.innerHTML = '<div class="error">Admin password is required</div>';
+                return;
+            }
+            
+            if (!content.trim()) {
+                messageDiv.innerHTML = '<div class="error">Kernel content cannot be empty</div>';
+                return;
+            }
+            
+            if (!confirm('This will update kernels.py and restart the server. Continue?')) {
+                return;
+            }
+            
+            messageDiv.innerHTML = '<div class="loading">Saving and restarting server...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/admin/kernels/file`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        password: password,
+                        content: content,
+                        version_name: versionName || undefined,
+                        description: description || undefined,
+                        restart: true
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    messageDiv.innerHTML = `<div class="success">✅ ${data.message}<br>Version: ${data.version_name}</div>`;
+                    // Clear version name input after successful save
+                    document.getElementById('kernel-version-name').value = '';
+                    document.getElementById('kernel-description').value = '';
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to save: ${error.message}</div>`;
+            }
+        }
+        
+        // Restore kernel from backup
+        async function restoreKernelBackup() {
+            const password = document.getElementById('kernel-password').value;
+            const messageDiv = document.getElementById('kernel-message');
+            
+            if (!password) {
+                messageDiv.innerHTML = '<div class="error">Admin password is required</div>';
+                return;
+            }
+            
+            if (!confirm('This will restore kernels.py from backup and restart the server. Continue?')) {
+                return;
+            }
+            
+            messageDiv.innerHTML = '<div class="loading">Restoring from backup...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/admin/kernels/restore`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: password })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    messageDiv.innerHTML = `<div class="success">✅ ${data.message}</div>`;
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to restore: ${error.message}</div>`;
+            }
+        }
+        
+        // Load kernel versions list
+        async function loadKernelVersions() {
+            const listDiv = document.getElementById('kernel-versions-list');
+            listDiv.innerHTML = '<div class="loading">Loading versions...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/admin/kernels/versions`);
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    listDiv.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                    return;
+                }
+                
+                if (data.versions.length === 0) {
+                    listDiv.innerHTML = '<div style="padding: 10px; color: #666;">No saved versions yet</div>';
+                    return;
+                }
+                
+                listDiv.innerHTML = data.versions.map(v => `
+                    <div class="kernel-version-item ${v.is_active ? 'active' : ''}" onclick="showVersionActions(${v.id}, '${v.version_name}')">
+                        <strong>${v.version_name}</strong> ${v.is_active ? '✅ ACTIVE' : ''}<br>
+                        <small style="color: #666;">${new Date(v.created_at).toLocaleString()}</small>
+                        ${v.description ? `<br><small style="color: #888;">${v.description}</small>` : ''}
+                    </div>
+                `).join('');
+                
+            } catch (error) {
+                listDiv.innerHTML = `<div class="error">Failed to load: ${error.message}</div>`;
+            }
+        }
+        
+        // Show version actions
+        async function showVersionActions(versionId, versionName) {
+            const action = prompt(`Version: ${versionName}\n\nChoose action:\n1 = View content\n2 = Activate (deploy)\n3 = Delete\n\nEnter 1, 2, or 3:`);
+            
+            if (action === '1') {
+                // View content
+                try {
+                    const response = await fetch(`${API_BASE}/admin/kernels/versions/${versionId}`);
+                    const data = await response.json();
+                    if (response.ok) {
+                        document.getElementById('kernel-content').value = data.content;
+                        document.getElementById('kernel-message').innerHTML = `<div class="success">Loaded version: ${versionName}</div>`;
+                    } else {
+                        alert(`Error: ${data.error}`);
+                    }
+                } catch (error) {
+                    alert(`Failed: ${error.message}`);
+                }
+            } else if (action === '2') {
+                // Activate
+                const password = document.getElementById('kernel-password').value;
+                if (!password) {
+                    alert('Please enter admin password first');
+                    return;
+                }
+                if (!confirm(`Activate version "${versionName}"? This will restart the server.`)) {
+                    return;
+                }
+                try {
+                    const response = await fetch(`${API_BASE}/admin/kernels/versions/${versionId}/activate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password: password })
+                    });
+                    const data = await response.json();
+                    if (response.ok) {
+                        document.getElementById('kernel-message').innerHTML = `<div class="success">✅ ${data.message}</div>`;
+                    } else {
+                        alert(`Error: ${data.error}`);
+                    }
+                } catch (error) {
+                    alert(`Failed: ${error.message}`);
+                }
+            } else if (action === '3') {
+                // Delete
+                const password = document.getElementById('kernel-password').value;
+                if (!password) {
+                    alert('Please enter admin password first');
+                    return;
+                }
+                if (!confirm(`Delete version "${versionName}"? This cannot be undone.`)) {
+                    return;
+                }
+                try {
+                    const response = await fetch(`${API_BASE}/admin/kernels/versions/${versionId}`, {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password: password })
+                    });
+                    const data = await response.json();
+                    if (response.ok) {
+                        loadKernelVersions();
+                        document.getElementById('kernel-message').innerHTML = '<div class="success">Version deleted</div>';
+                    } else {
+                        alert(`Error: ${data.error}`);
+                    }
+                } catch (error) {
+                    alert(`Failed: ${error.message}`);
+                }
+            }
+        }
+
         // Toggle file paths section
         function toggleFilePaths() {
             const content = document.getElementById('file-paths-content');
             const icon = document.getElementById('file-paths-toggle-icon');
+            
+            if (content.style.display === 'none' || content.style.display === '') {
+                content.style.display = 'block';
+                icon.textContent = '▼';
+            } else {
+                content.style.display = 'none';
+                icon.textContent = '▶';
+            }
+        }
+
+        // Toggle debug options section
+        function toggleDebugOptions() {
+            const content = document.getElementById('debug-options-content');
+            const icon = document.getElementById('debug-toggle-icon');
             
             if (content.style.display === 'none' || content.style.display === '') {
                 content.style.display = 'block';
@@ -1138,15 +1585,40 @@ input[type="password"] {
                 // Add parameters
                 const nbAnProjection = document.getElementById('nb_an_projection').value;
                 const nbScenarios = document.getElementById('nb_scenarios').value;
+                const nbIntScenarios = document.getElementById('nb_int_scenarios').value;
+                const shockCapitalPct = document.getElementById('shock_capital_pct').value;
                 const maxAccounts = document.getElementById('max_accounts').value;
                 const debugAccount = document.getElementById('debug_account').value;
                 const debugScenario = document.getElementById('debug_scenario').value;
+                const debugYear = document.getElementById('debug_year').value;
+                const debugMonth = document.getElementById('debug_month').value;
+                const debugIntScenario = document.getElementById('debug_int_scenario').value;
+                const debugIntYear = document.getElementById('debug_int_year').value;
+                const debugOnly = document.getElementById('debug_only').checked;
+                const useCustomKernel = document.getElementById('use_custom_kernel').checked;
                 
                 formData.append('nb_an_projection', nbAnProjection);
                 formData.append('nb_scenarios', nbScenarios);
+                formData.append('nb_int_scenarios', nbIntScenarios);
+                formData.append('shock_capital_pct', shockCapitalPct);
                 if (maxAccounts) formData.append('max_accounts', maxAccounts);
                 if (debugAccount) formData.append('debug_account', debugAccount);
                 if (debugScenario) formData.append('debug_scenario', debugScenario);
+                if (debugYear) formData.append('debug_year', debugYear);
+                if (debugMonth) formData.append('debug_month', debugMonth);
+                if (debugIntScenario) formData.append('debug_int_scenario', debugIntScenario);
+                if (debugIntYear) formData.append('debug_int_year', debugIntYear);
+                if (debugOnly) formData.append('debug_only', 'true');
+                
+                // Add custom kernel code if checkbox is checked
+                if (useCustomKernel) {
+                    const kernelContent = kernelEditor ? kernelEditor.getValue() : document.getElementById('kernel-content').value;
+                    if (!kernelContent || kernelContent.trim() === '' || kernelContent.startsWith('# Click')) {
+                        throw new Error('Custom kernel checkbox is checked but no kernel code is loaded. Please load kernel code first using the Kernel Editor.');
+                    }
+                    formData.append('kernel_code', kernelContent);
+                    console.log(`Including custom kernel code (${kernelContent.length} bytes)`);
+                }
                 
                 const response = await fetchWithToken(`${API_BASE}/jobs`, {
                     method: 'POST',
@@ -1163,7 +1635,8 @@ input[type="password"] {
                 const data = await response.json();
                 
                 if (response.ok) {
-                    messageDiv.innerHTML = `<div class="success">Job created successfully! Job ID: ${data.job_id}</div>`;
+                    const kernelMsg = useCustomKernel ? ' (with custom kernel)' : '';
+                    messageDiv.innerHTML = `<div class="success">Job created successfully${kernelMsg}! Job ID: ${data.job_id}</div>`;
                     loadJobs();
                     setTimeout(() => selectJob(data.job_id), 1000);
                 } else {
@@ -1184,6 +1657,352 @@ input[type="password"] {
         // Initialize
         checkHealth();
         loadJobs();
+        
+        // =============================================
+        // CODEMIRROR EDITOR SETUP
+        // =============================================
+        
+        let kernelEditor = null;
+        
+        function initKernelEditor() {
+            if (kernelEditor) return; // Already initialized
+            
+            const textarea = document.getElementById('kernel-content');
+            kernelEditor = CodeMirror.fromTextArea(textarea, {
+                mode: 'python',
+                theme: 'monokai',
+                lineNumbers: true,
+                indentUnit: 4,
+                tabSize: 4,
+                indentWithTabs: false,
+                lineWrapping: false,
+                foldGutter: true,
+                gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
+                matchBrackets: true,
+                autoCloseBrackets: true,
+                extraKeys: {
+                    'Ctrl-Space': 'autocomplete',
+                    'Ctrl-/': 'toggleComment',
+                    'Cmd-/': 'toggleComment',
+                    'Ctrl-F': 'findPersistent',
+                    'Cmd-F': 'findPersistent',
+                    'Ctrl-H': 'replace',
+                    'Cmd-H': 'replace',
+                    'Ctrl-G': 'jumpToLine',
+                    'Cmd-G': 'jumpToLine',
+                    'Tab': function(cm) {
+                        if (cm.somethingSelected()) {
+                            cm.indentSelection('add');
+                        } else {
+                            cm.replaceSelection('    ', 'end');
+                        }
+                    }
+                }
+            });
+            
+            // Update cursor position display
+            kernelEditor.on('cursorActivity', function() {
+                const pos = kernelEditor.getCursor();
+                document.getElementById('kernel-editor-position').textContent = 
+                    `Line: ${pos.line + 1}, Col: ${pos.ch + 1}`;
+            });
+            
+            // Set placeholder text
+            kernelEditor.setValue('# Click "Load Current" to load the kernel code...\n');
+        }
+        
+        // Initialize editor when kernel section is expanded
+        const originalToggleKernelEditor = toggleKernelEditor;
+        toggleKernelEditor = function() {
+            originalToggleKernelEditor();
+            const content = document.getElementById('kernel-editor-content');
+            if (content.style.display === 'block') {
+                setTimeout(initKernelEditor, 100);
+            }
+        };
+        
+        // Editor helper functions
+        function kernelEditorUndo() {
+            if (kernelEditor) kernelEditor.undo();
+        }
+        
+        function kernelEditorRedo() {
+            if (kernelEditor) kernelEditor.redo();
+        }
+        
+        function kernelEditorFind() {
+            if (kernelEditor) kernelEditor.execCommand('findPersistent');
+        }
+        
+        function kernelEditorReplace() {
+            if (kernelEditor) kernelEditor.execCommand('replace');
+        }
+        
+        function kernelEditorFoldAll() {
+            if (kernelEditor) {
+                for (let i = 0; i < kernelEditor.lineCount(); i++) {
+                    kernelEditor.foldCode(i);
+                }
+            }
+        }
+        
+        function kernelEditorUnfoldAll() {
+            if (kernelEditor) {
+                for (let i = 0; i < kernelEditor.lineCount(); i++) {
+                    kernelEditor.unfoldCode(i);
+                }
+            }
+        }
+        
+        // Override load/save functions to use CodeMirror
+        const originalLoadKernelContent = loadKernelContent;
+        loadKernelContent = async function() {
+            const messageDiv = document.getElementById('kernel-message');
+            messageDiv.innerHTML = '<div class="loading">Loading kernel content...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/admin/kernels/file`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    if (kernelEditor) {
+                        kernelEditor.setValue(data.content);
+                        kernelEditor.refresh();
+                    } else {
+                        document.getElementById('kernel-content').value = data.content;
+                    }
+                    messageDiv.innerHTML = '<div class="success">Kernel content loaded successfully</div>';
+                    setTimeout(() => messageDiv.innerHTML = '', 3000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to load: ${error.message}</div>`;
+            }
+        };
+        
+        const originalSaveKernelContent = saveKernelContent;
+        saveKernelContent = async function() {
+            const password = document.getElementById('kernel-password').value;
+            const content = kernelEditor ? kernelEditor.getValue() : document.getElementById('kernel-content').value;
+            const versionName = document.getElementById('kernel-version-name').value;
+            const description = document.getElementById('kernel-description').value;
+            const messageDiv = document.getElementById('kernel-message');
+            
+            if (!password) {
+                messageDiv.innerHTML = '<div class="error">Admin password is required</div>';
+                return;
+            }
+            
+            if (!content.trim()) {
+                messageDiv.innerHTML = '<div class="error">Kernel content cannot be empty</div>';
+                return;
+            }
+            
+            if (!confirm('This will validate the kernel code and save it to the database. Continue?')) {
+                return;
+            }
+            
+            messageDiv.innerHTML = '<div class="loading">🔍 Validating and saving kernel code...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/admin/kernels/file`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        password: password,
+                        content: content,
+                        version_name: versionName || undefined,
+                        description: description || undefined,
+                        restart: false,  // No restart needed - use dynamic patching
+                        validate: true   // Enable validation
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    messageDiv.innerHTML = `<div class="success">✅ ${data.message}<br>Version: ${data.version_name}</div>`;
+                    document.getElementById('kernel-version-name').value = '';
+                    document.getElementById('kernel-description').value = '';
+                } else {
+                    // Validation or save failed - show detailed error
+                    if (data.validation_failed) {
+                        let errorMsg = `❌ Validation Failed!\n\n`;
+                        errorMsg += `Stage: ${data.stage}\n`;
+                        errorMsg += `Error: ${data.error}\n`;
+                        
+                        if (data.line) {
+                            errorMsg += `\nLine: ${data.line}`;
+                            // Jump to error line in editor
+                            if (kernelEditor) {
+                                kernelEditor.setCursor(data.line - 1, 0);
+                                kernelEditor.focus();
+                            }
+                        }
+                        
+                        if (data.traceback) {
+                            errorMsg += `\n\n--- Full Traceback ---\n${data.traceback}`;
+                        }
+                        
+                        alert(errorMsg);
+                        messageDiv.innerHTML = `<div class="error">❌ Validation failed at ${data.stage} stage. See popup for details.</div>`;
+                    } else {
+                        messageDiv.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                    }
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to save: ${error.message}</div>`;
+            }
+        };
+        
+        // Validate only (without saving)
+        async function validateKernelOnly() {
+            const password = document.getElementById('kernel-password').value;
+            const content = kernelEditor ? kernelEditor.getValue() : document.getElementById('kernel-content').value;
+            const messageDiv = document.getElementById('kernel-message');
+            
+            if (!password) {
+                messageDiv.innerHTML = '<div class="error">Admin password is required</div>';
+                return;
+            }
+            
+            if (!content.trim()) {
+                messageDiv.innerHTML = '<div class="error">Kernel content cannot be empty</div>';
+                return;
+            }
+            
+            messageDiv.innerHTML = '<div class="loading">🔍 Validating kernel code (running test projection with 1 account)...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/admin/kernels/validate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        password: password,
+                        content: content
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.valid) {
+                    messageDiv.innerHTML = `<div class="success">✅ ${data.message}</div>`;
+                    alert('✅ Validation Passed!\n\nKernel code is valid and test projection completed successfully.');
+                } else {
+                    let errorMsg = `❌ Validation Failed!\n\n`;
+                    errorMsg += `Stage: ${data.stage}\n`;
+                    errorMsg += `Error: ${data.error}\n`;
+                    
+                    if (data.line) {
+                        errorMsg += `\nLine: ${data.line}`;
+                        if (kernelEditor) {
+                            kernelEditor.setCursor(data.line - 1, 0);
+                            kernelEditor.focus();
+                        }
+                    }
+                    
+                    if (data.traceback) {
+                        errorMsg += `\n\n--- Full Traceback ---\n${data.traceback}`;
+                    }
+                    
+                    alert(errorMsg);
+                    messageDiv.innerHTML = `<div class="error">❌ Validation failed at ${data.stage} stage. See popup for details.</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to validate: ${error.message}</div>`;
+            }
+        }
+        
+        // Override showVersionActions to use CodeMirror
+        const originalShowVersionActions = showVersionActions;
+        showVersionActions = async function(versionId, versionName) {
+            const action = prompt(`Version: ${versionName}\n\nChoose action:\n1 = View content\n2 = Activate (deploy)\n3 = Delete\n\nEnter 1, 2, or 3:`);
+            
+            if (action === '1') {
+                try {
+                    const response = await fetch(`${API_BASE}/admin/kernels/versions/${versionId}`);
+                    const data = await response.json();
+                    if (response.ok) {
+                        if (kernelEditor) {
+                            kernelEditor.setValue(data.content);
+                            kernelEditor.refresh();
+                        } else {
+                            document.getElementById('kernel-content').value = data.content;
+                        }
+                        document.getElementById('kernel-message').innerHTML = `<div class="success">Loaded version: ${versionName}</div>`;
+                    } else {
+                        alert(`Error: ${data.error}`);
+                    }
+                } catch (error) {
+                    alert(`Failed: ${error.message}`);
+                }
+            } else if (action === '2') {
+                const password = document.getElementById('kernel-password').value;
+                if (!password) {
+                    alert('Please enter admin password first');
+                    return;
+                }
+                if (!confirm(`Activate version "${versionName}"? This will restart the server.`)) {
+                    return;
+                }
+                try {
+                    const response = await fetch(`${API_BASE}/admin/kernels/versions/${versionId}/activate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password: password })
+                    });
+                    const data = await response.json();
+                    if (response.ok) {
+                        document.getElementById('kernel-message').innerHTML = `<div class="success">✅ ${data.message}</div>`;
+                    } else {
+                        alert(`Error: ${data.error}`);
+                    }
+                } catch (error) {
+                    alert(`Failed: ${error.message}`);
+                }
+            } else if (action === '3') {
+                const password = document.getElementById('kernel-password').value;
+                if (!password) {
+                    alert('Please enter admin password first');
+                    return;
+                }
+                if (!confirm(`Delete version "${versionName}"? This cannot be undone.`)) {
+                    return;
+                }
+                try {
+                    const response = await fetch(`${API_BASE}/admin/kernels/versions/${versionId}`, {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password: password })
+                    });
+                    const data = await response.json();
+                    if (response.ok) {
+                        loadKernelVersions();
+                        document.getElementById('kernel-message').innerHTML = '<div class="success">Version deleted</div>';
+                    } else {
+                        alert(`Error: ${data.error}`);
+                    }
+                } catch (error) {
+                    alert(`Failed: ${error.message}`);
+                }
+            }
+        };
     </script>
+    
+    <!-- CodeMirror JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/comment/comment.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/foldgutter.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/fold/indent-fold.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/search.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/searchcursor.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/jump-to-line.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/dialog/dialog.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/dialog/dialog.min.css">
 </body>
 </html>
