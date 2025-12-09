@@ -347,7 +347,13 @@ def init_db():
             id {id_column},
             job_id TEXT NOT NULL,
             categorie TEXT NOT NULL,
-            vp_flux_tot REAL NOT NULL,
+            vp_reserve_be REAL,
+            vp_capital_req REAL,
+            vp_scr REAL,
+            avg_reserve_be REAL,
+            avg_capital_req REAL,
+            avg_scr REAL,
+            n_accounts INTEGER,
             FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
         )
     """
@@ -381,6 +387,102 @@ def init_db():
         )
     """
     
+    five_chocs_results_table = f"""
+        CREATE TABLE IF NOT EXISTS five_chocs_results (
+            id {id_column},
+            job_id TEXT NOT NULL,
+            id_compte INTEGER NOT NULL,
+            choc_type TEXT NOT NULL,
+            reserve_be REAL,
+            capital_req REAL,
+            scr REAL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """
+    
+    sensitivities_table = f"""
+        CREATE TABLE IF NOT EXISTS sensitivities (
+            id {id_column},
+            job_id TEXT NOT NULL,
+            id_compte INTEGER NOT NULL,
+            delta_sp500_reserve REAL,
+            delta_tsx_reserve REAL,
+            delta_eafe_reserve REAL,
+            delta_dex_reserve REAL,
+            delta_sp500_capital REAL,
+            delta_tsx_capital REAL,
+            delta_eafe_capital REAL,
+            delta_dex_capital REAL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """
+    
+    chocs_summary_table = f"""
+        CREATE TABLE IF NOT EXISTS chocs_summary (
+            id {id_column},
+            job_id TEXT NOT NULL,
+            choc_type TEXT NOT NULL,
+            reserve_be_sum REAL,
+            reserve_be_mean REAL,
+            capital_req_sum REAL,
+            capital_req_mean REAL,
+            scr_sum REAL,
+            scr_mean REAL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """
+    
+    ext_debug_table = f"""
+        CREATE TABLE IF NOT EXISTS ext_debug (
+            id {id_column},
+            job_id TEXT NOT NULL,
+            debug_account INTEGER,
+            debug_scenario INTEGER,
+            debug_year INTEGER,
+            debug_month INTEGER,
+            vm REAL,
+            age REAL,
+            qx REAL,
+            lapse_tot REAL,
+            lapse_part REAL,
+            tx_survie REAL,
+            forward_rate REAL,
+            rend_sp500 REAL,
+            rend_tsx REAL,
+            rend_eafe REAL,
+            rend_dex REAL,
+            retrait REAL,
+            prest_deces REAL,
+            primes_garanties REAL,
+            vm_vg_ratio REAL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """
+    
+    int_debug_table = f"""
+        CREATE TABLE IF NOT EXISTS int_debug (
+            id {id_column},
+            job_id TEXT NOT NULL,
+            choc_idx INTEGER,
+            choc_name TEXT,
+            debug_int_scenario INTEGER,
+            debug_int_year INTEGER,
+            start_vm REAL,
+            vm_choc REAL,
+            avg_pv_flux REAL,
+            reserve REAL,
+            capital REAL,
+            start_tx_survie REAL,
+            start_age REAL,
+            int_curr_vm REAL,
+            int_fees REAL,
+            int_pv_path REAL,
+            int_r_portfolio REAL,
+            int_fwd_rate REAL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """
+    
     # Kernel versions table for storing kernel.py history
     kernel_versions_table = f"""
         CREATE TABLE IF NOT EXISTS kernel_versions (
@@ -401,6 +503,11 @@ def init_db():
         cursor.execute(vp_flux_total_table)
         cursor.execute(nested_results_table)
         cursor.execute(nested_summary_table)
+        cursor.execute(five_chocs_results_table)
+        cursor.execute(sensitivities_table)
+        cursor.execute(chocs_summary_table)
+        cursor.execute(ext_debug_table)
+        cursor.execute(int_debug_table)
         cursor.execute(kernel_versions_table)
         
         # Create indexes
@@ -423,6 +530,26 @@ def init_db():
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_nested_summary_job_id 
             ON nested_summary(job_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_five_chocs_results_job_id 
+            ON five_chocs_results(job_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sensitivities_job_id 
+            ON sensitivities(job_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chocs_summary_job_id 
+            ON chocs_summary(job_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ext_debug_job_id 
+            ON ext_debug(job_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_int_debug_job_id 
+            ON int_debug(job_id)
         """)
         
         # Handle migrations for SQLite only (PostgreSQL schema has all columns from start)
@@ -670,6 +797,56 @@ def save_nested_summary(job_id: str, df: pd.DataFrame) -> None:
     engine.dispose()
     print(f"  Saved {len(df)} nested_summary records to database")
 
+def save_five_chocs_results(job_id: str, df: pd.DataFrame) -> None:
+    """Save five chocs results (per-account per-choc) to database table"""
+    engine = get_sqlalchemy_engine()
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    df_copy.columns = df_copy.columns.str.lower()
+    df_copy.to_sql('five_chocs_results', engine, if_exists='append', index=False)
+    engine.dispose()
+    print(f"  Saved {len(df)} five_chocs_results records to database")
+
+def save_sensitivities(job_id: str, df: pd.DataFrame) -> None:
+    """Save sensitivities/Greeks (per-account deltas) to database table"""
+    engine = get_sqlalchemy_engine()
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    df_copy.columns = df_copy.columns.str.lower()
+    df_copy.to_sql('sensitivities', engine, if_exists='append', index=False)
+    engine.dispose()
+    print(f"  Saved {len(df)} sensitivities records to database")
+
+def save_chocs_summary(job_id: str, df: pd.DataFrame) -> None:
+    """Save chocs summary (aggregated by choc type) to database table"""
+    engine = get_sqlalchemy_engine()
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    df_copy.columns = df_copy.columns.str.lower()
+    df_copy.to_sql('chocs_summary', engine, if_exists='append', index=False)
+    engine.dispose()
+    print(f"  Saved {len(df)} chocs_summary records to database")
+
+def save_ext_debug(job_id: str, df: pd.DataFrame) -> None:
+    """Save external kernel debug output to database table"""
+    engine = get_sqlalchemy_engine()
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    df_copy.columns = df_copy.columns.str.lower()
+    df_copy.to_sql('ext_debug', engine, if_exists='append', index=False)
+    engine.dispose()
+    print(f"  Saved {len(df)} ext_debug records to database")
+
+def save_int_debug(job_id: str, df: pd.DataFrame) -> None:
+    """Save internal kernel debug output to database table"""
+    engine = get_sqlalchemy_engine()
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    df_copy.columns = df_copy.columns.str.lower()
+    df_copy.to_sql('int_debug', engine, if_exists='append', index=False)
+    engine.dispose()
+    print(f"  Saved {len(df)} int_debug records to database")
+
 def get_nested_results(job_id: str, id_compte: int = None) -> Optional[pd.DataFrame]:
     """
     Retrieve nested stochastic results for a job with optional filter
@@ -885,53 +1062,12 @@ def poll_runpod_results(job_id: str, run_request):
                     update_job_progress(job_id, 0, 1, 0)
                     update_job_status(job_id, 'running', progress_message="⏳ Job queued on RunPod, waiting for GPU worker...")
                 elif status == "IN_PROGRESS":
-                    # Try to get actual progress from worker
-                    import re
-                    progress_updated = False
-                    
-                    try:
-                        # Try to get progress from the job output/stream
-                        # RunPod SDK's stream() returns a generator of output chunks
-                        # We want the latest progress message
-                        job_output = run_request.output()
-                        
-                        # Check if output has progress information
-                        if job_output and isinstance(job_output, dict):
-                            # Look for progress in output
-                            if 'progress' in job_output:
-                                progress_msg = job_output['progress']
-                            elif 'message' in job_output:
-                                progress_msg = job_output['message']
-                            else:
-                                progress_msg = None
-                            
-                            if progress_msg:
-                                # Parse progress message like "Processing batch 6/10 (60%)"
-                                match = re.search(r'batch (\d+)/(\d+).*?(\d+)%', str(progress_msg))
-                                if match:
-                                    current_batch = int(match.group(1))
-                                    total_batches = int(match.group(2))
-                                    progress_pct = int(match.group(3))
-                                    
-                                    update_job_progress(job_id, current_batch, total_batches, progress_pct)
-                                    update_job_status(job_id, 'running', progress_message=f"🚀 {progress_msg}")
-                                    print(f"  Progress from worker: Batch {current_batch}/{total_batches} ({progress_pct}%)")
-                                    progress_updated = True
-                        
-                        if not progress_updated:
-                            # No specific progress info, show generic message with elapsed time
-                            minutes = int(elapsed_time / 60)
-                            seconds = int(elapsed_time % 60)
-                            msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
-                            update_job_status(job_id, 'running', progress_message=msg)
-                            
-                    except Exception as e:
-                        # If getting progress fails, fall back to generic progress
-                        print(f"  Warning: Could not get worker progress: {e}")
-                        minutes = int(elapsed_time / 60)
-                        seconds = int(elapsed_time % 60)
-                        msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
-                        update_job_status(job_id, 'running', progress_message=msg)
+                    # Show generic progress message with elapsed time
+                    # Note: Do NOT call run_request.output() here as it blocks until completion
+                    minutes = int(elapsed_time / 60)
+                    seconds = int(elapsed_time % 60)
+                    msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
+                    update_job_status(job_id, 'running', progress_message=msg)
                 
                 if status == "COMPLETED":
                     # Get the output
@@ -959,36 +1095,76 @@ def poll_runpod_results(job_id: str, run_request):
                             # Convert JSON results back to DataFrames and save to proper tables
                             saved_any = False
                             if isinstance(results_data, dict):
-                                # Save flux_projetes
-                                if results_data.get('flux_projetes'):
+                                # Save per-account results (reserves/capital/SCR)
+                                if results_data.get('results'):
                                     try:
-                                        df = pd.DataFrame(results_data['flux_projetes'])
-                                        save_flux_projetes(job_id, df)
+                                        df = pd.DataFrame(results_data['results'])
+                                        save_nested_results(job_id, df)
                                         saved_any = True
-                                        print(f"  ✓ Saved flux_projetes: {len(df)} rows")
+                                        print(f"  ✓ Saved nested_results: {len(df)} rows")
                                     except Exception as e:
-                                        print(f"  ✗ Failed to save flux_projetes: {e}")
+                                        print(f"  ✗ Failed to save nested_results: {e}")
                                 
-                                # Save vp_flux_compte
-                                if results_data.get('vp_flux_compte'):
-                                    try:
-                                        df = pd.DataFrame(results_data['vp_flux_compte'])
-                                        save_vp_flux_compte(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved vp_flux_compte: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save vp_flux_compte: {e}")
-                                
-                                # Save vp_flux_total
+                                # Save portfolio summary (vp_flux_total)
                                 if results_data.get('vp_flux_total'):
                                     try:
                                         df = pd.DataFrame(results_data['vp_flux_total'])
-                                        save_vp_flux_total(job_id, df)
+                                        save_nested_summary(job_id, df)
                                         saved_any = True
-                                        total_pv = df['VP_FLUX_TOT'].iloc[0]
-                                        print(f"  ✓ Saved vp_flux_total: Total PV = ${total_pv:,.2f}")
+                                        total_pv = df['VP_RESERVE_BE'].iloc[0] if 'VP_RESERVE_BE' in df.columns else 0.0
+                                        print(f"  ✓ Saved nested_summary (vp_flux_total): Total Reserve BE = ${total_pv:,.2f}")
                                     except Exception as e:
-                                        print(f"  ✗ Failed to save vp_flux_total: {e}")
+                                        print(f"  ✗ Failed to save nested_summary: {e}")
+                                
+                                # Save five chocs results
+                                if results_data.get('results_5chocs'):
+                                    try:
+                                        df = pd.DataFrame(results_data['results_5chocs'])
+                                        save_five_chocs_results(job_id, df)
+                                        saved_any = True
+                                        print(f"  ✓ Saved five_chocs_results: {len(df)} rows")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save five_chocs_results: {e}")
+                                
+                                # Save sensitivities (Greeks/deltas)
+                                if results_data.get('sensitivities'):
+                                    try:
+                                        df = pd.DataFrame(results_data['sensitivities'])
+                                        save_sensitivities(job_id, df)
+                                        saved_any = True
+                                        print(f"  ✓ Saved sensitivities: {len(df)} rows")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save sensitivities: {e}")
+                                
+                                # Save chocs summary
+                                if results_data.get('chocs_summary'):
+                                    try:
+                                        df = pd.DataFrame(results_data['chocs_summary'])
+                                        save_chocs_summary(job_id, df)
+                                        saved_any = True
+                                        print(f"  ✓ Saved chocs_summary: {len(df)} rows")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save chocs_summary: {e}")
+                                
+                                # Save external debug output
+                                if results_data.get('ext_debug'):
+                                    try:
+                                        df = pd.DataFrame(results_data['ext_debug'])
+                                        save_ext_debug(job_id, df)
+                                        saved_any = True
+                                        print(f"  ✓ Saved ext_debug: {len(df)} rows")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save ext_debug: {e}")
+                                
+                                # Save internal debug output
+                                if results_data.get('int_debug'):
+                                    try:
+                                        df = pd.DataFrame(results_data['int_debug'])
+                                        save_int_debug(job_id, df)
+                                        saved_any = True
+                                        print(f"  ✓ Saved int_debug: {len(df)} rows")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save int_debug: {e}")
                             
                             if saved_any:
                                 print(f"✓ Job {job_id} completed and results saved to database!")
@@ -1942,55 +2118,115 @@ def list_job_files(job_id: str):
         result_files = []
         ph = get_placeholder()
         
+        # Check for nested_summary (portfolio totals - vp_flux_total)
         try:
-            # Check for flux_projetes
-            sql = f"SELECT COUNT(*) as count FROM flux_projetes WHERE job_id = {ph}"
-            flux_count = fetch_all(sql, (job_id,))
-            if flux_count and flux_count[0]['count'] > 0:
-                result_files.append({
-                    'name': 'FLUX_PROJETES',
-                    'type': 'internal',
-                    'description': f'Projected cash flows ({flux_count[0]["count"]} rows)',
-                    'row_count': flux_count[0]['count'],
-                    'table': 'flux_projetes'
-                })
-        except Exception as e:
-            print(f"Error checking flux_projetes: {e}")
-        
-        try:
-            # Check for vp_flux_compte
-            sql = f"SELECT COUNT(*) as count FROM vp_flux_compte WHERE job_id = {ph}"
-            compte_count = fetch_all(sql, (job_id,))
-            if compte_count and compte_count[0]['count'] > 0:
-                result_files.append({
-                    'name': 'VP_FLUX_COMPTE',
-                    'type': 'detailed',
-                    'description': f'Present value by account ({compte_count[0]["count"]} rows)',
-                    'row_count': compte_count[0]['count'],
-                    'table': 'vp_flux_compte'
-                })
-        except Exception as e:
-            print(f"Error checking vp_flux_compte: {e}")
-        
-        try:
-            # Check for vp_flux_total
-            sql = f"SELECT COUNT(*) as count FROM vp_flux_total WHERE job_id = {ph}"
+            sql = f"SELECT COUNT(*) as count FROM nested_summary WHERE job_id = {ph}"
             total_count = fetch_all(sql, (job_id,))
             if total_count and total_count[0]['count'] > 0:
                 # Get the actual total value
-                sql = f"SELECT vp_flux_tot FROM vp_flux_total WHERE job_id = {ph} LIMIT 1"
+                sql = f"SELECT vp_reserve_be, vp_capital_req, vp_scr FROM nested_summary WHERE job_id = {ph} LIMIT 1"
                 total_val = fetch_all(sql, (job_id,))
-                pv_value = total_val[0]['vp_flux_tot'] if total_val else 0
+                pv_value = total_val[0]['vp_reserve_be'] if total_val else 0
                 result_files.append({
                     'name': 'VP_FLUX_TOTAL',
                     'type': 'summary',
-                    'description': f'Total present value: ${pv_value:,.2f}',
+                    'description': f'Total Reserve BE: ${pv_value:,.2f}',
                     'row_count': total_count[0]['count'],
-                    'table': 'vp_flux_total',
+                    'table': 'nested_summary',
                     'pv_total': pv_value
                 })
         except Exception as e:
-            print(f"Error checking vp_flux_total: {e}")
+            print(f"Error checking nested_summary: {e}")
+        
+        # Check for nested_results (per-account reserves/capital)
+        try:
+            sql = f"SELECT COUNT(*) as count FROM nested_results WHERE job_id = {ph}"
+            results_count = fetch_all(sql, (job_id,))
+            if results_count and results_count[0]['count'] > 0:
+                result_files.append({
+                    'name': 'NESTED_RESULTS',
+                    'type': 'detailed',
+                    'description': f'Per-account reserves/capital ({results_count[0]["count"]} accounts)',
+                    'row_count': results_count[0]['count'],
+                    'table': 'nested_results'
+                })
+        except Exception as e:
+            print(f"Error checking nested_results: {e}")
+        
+        # Check for five_chocs_results
+        try:
+            sql = f"SELECT COUNT(*) as count FROM five_chocs_results WHERE job_id = {ph}"
+            chocs_count = fetch_all(sql, (job_id,))
+            if chocs_count and chocs_count[0]['count'] > 0:
+                result_files.append({
+                    'name': 'FIVE_CHOCS_RESULTS',
+                    'type': 'detailed',
+                    'description': f'Five chocs per account ({chocs_count[0]["count"]} rows)',
+                    'row_count': chocs_count[0]['count'],
+                    'table': 'five_chocs_results'
+                })
+        except Exception as e:
+            print(f"Error checking five_chocs_results: {e}")
+        
+        # Check for sensitivities (Greeks/deltas)
+        try:
+            sql = f"SELECT COUNT(*) as count FROM sensitivities WHERE job_id = {ph}"
+            sens_count = fetch_all(sql, (job_id,))
+            if sens_count and sens_count[0]['count'] > 0:
+                result_files.append({
+                    'name': 'SENSITIVITIES',
+                    'type': 'detailed',
+                    'description': f'Greeks/Deltas per account ({sens_count[0]["count"]} rows)',
+                    'row_count': sens_count[0]['count'],
+                    'table': 'sensitivities'
+                })
+        except Exception as e:
+            print(f"Error checking sensitivities: {e}")
+        
+        # Check for chocs_summary
+        try:
+            sql = f"SELECT COUNT(*) as count FROM chocs_summary WHERE job_id = {ph}"
+            chocs_sum_count = fetch_all(sql, (job_id,))
+            if chocs_sum_count and chocs_sum_count[0]['count'] > 0:
+                result_files.append({
+                    'name': 'CHOCS_SUMMARY',
+                    'type': 'summary',
+                    'description': f'Chocs summary by type ({chocs_sum_count[0]["count"]} rows)',
+                    'row_count': chocs_sum_count[0]['count'],
+                    'table': 'chocs_summary'
+                })
+        except Exception as e:
+            print(f"Error checking chocs_summary: {e}")
+        
+        # Check for ext_debug
+        try:
+            sql = f"SELECT COUNT(*) as count FROM ext_debug WHERE job_id = {ph}"
+            ext_debug_count = fetch_all(sql, (job_id,))
+            if ext_debug_count and ext_debug_count[0]['count'] > 0:
+                result_files.append({
+                    'name': 'EXT_DEBUG',
+                    'type': 'debug',
+                    'description': f'External kernel debug output ({ext_debug_count[0]["count"]} rows)',
+                    'row_count': ext_debug_count[0]['count'],
+                    'table': 'ext_debug'
+                })
+        except Exception as e:
+            print(f"Error checking ext_debug: {e}")
+        
+        # Check for int_debug
+        try:
+            sql = f"SELECT COUNT(*) as count FROM int_debug WHERE job_id = {ph}"
+            int_debug_count = fetch_all(sql, (job_id,))
+            if int_debug_count and int_debug_count[0]['count'] > 0:
+                result_files.append({
+                    'name': 'INT_DEBUG',
+                    'type': 'debug',
+                    'description': f'Internal kernel debug output ({int_debug_count[0]["count"]} rows)',
+                    'row_count': int_debug_count[0]['count'],
+                    'table': 'int_debug'
+                })
+        except Exception as e:
+            print(f"Error checking int_debug: {e}")
         
         return jsonify({
             'job_id': job_id,
@@ -2023,7 +2259,13 @@ def preview_file(job_id: str, file_name: str):
         table_map = {
             'FLUX_PROJETES': 'flux_projetes',
             'VP_FLUX_COMPTE': 'vp_flux_compte',
-            'VP_FLUX_TOTAL': 'vp_flux_total'
+            'VP_FLUX_TOTAL': 'nested_summary',
+            'NESTED_RESULTS': 'nested_results',
+            'FIVE_CHOCS_RESULTS': 'five_chocs_results',
+            'SENSITIVITIES': 'sensitivities',
+            'CHOCS_SUMMARY': 'chocs_summary',
+            'EXT_DEBUG': 'ext_debug',
+            'INT_DEBUG': 'int_debug'
         }
         
         table_name = table_map.get(file_name.upper())
@@ -2113,7 +2355,13 @@ def download_file(job_id: str, file_name: str):
         table_map = {
             'FLUX_PROJETES': 'flux_projetes',
             'VP_FLUX_COMPTE': 'vp_flux_compte',
-            'VP_FLUX_TOTAL': 'vp_flux_total'
+            'VP_FLUX_TOTAL': 'nested_summary',
+            'NESTED_RESULTS': 'nested_results',
+            'FIVE_CHOCS_RESULTS': 'five_chocs_results',
+            'SENSITIVITIES': 'sensitivities',
+            'CHOCS_SUMMARY': 'chocs_summary',
+            'EXT_DEBUG': 'ext_debug',
+            'INT_DEBUG': 'int_debug'
         }
         
         table_name = table_map.get(file_name.upper())
