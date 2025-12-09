@@ -1803,7 +1803,7 @@ input[type="password"] {
                 return;
             }
             
-            messageDiv.innerHTML = '<div class="loading">🔍 Validating and saving kernel code...</div>';
+            messageDiv.innerHTML = '<div class="loading">🔍 Validating kernel code on RunPod GPU and saving...<br><small>This may take up to 2 minutes if a worker needs to start.</small></div>';
             
             try {
                 const response = await fetch(`${API_BASE}/admin/kernels/file`, {
@@ -1872,7 +1872,7 @@ input[type="password"] {
                 return;
             }
             
-            messageDiv.innerHTML = '<div class="loading">🔍 Validating kernel code (running test projection with 1 account)...</div>';
+            messageDiv.innerHTML = '<div class="loading">🔍 Validating kernel code on RunPod GPU (running test projection with 1 account)...<br><small>This may take up to 2 minutes if a worker needs to start.</small></div>';
             
             try {
                 const response = await fetch(`${API_BASE}/admin/kernels/validate`, {
@@ -1888,14 +1888,15 @@ input[type="password"] {
                 
                 if (response.ok && data.valid) {
                     messageDiv.innerHTML = `<div class="success">✅ ${data.message}</div>`;
-                    alert('✅ Validation Passed!\n\nKernel code is valid and test projection completed successfully.');
                 } else {
-                    let errorMsg = `❌ Validation Failed!\n\n`;
-                    errorMsg += `Stage: ${data.stage}\n`;
-                    errorMsg += `Error: ${data.error}\n`;
+                    // Build error message for display
+                    let htmlError = `<div class="error">
+                        <strong>❌ Validation Failed!</strong><br>
+                        <strong>Stage:</strong> ${data.stage}<br>
+                        <strong>Error:</strong> ${data.error}`;
                     
                     if (data.line) {
-                        errorMsg += `\nLine: ${data.line}`;
+                        htmlError += `<br><strong>Line:</strong> ${data.line}`;
                         if (kernelEditor) {
                             kernelEditor.setCursor(data.line - 1, 0);
                             kernelEditor.focus();
@@ -1903,11 +1904,11 @@ input[type="password"] {
                     }
                     
                     if (data.traceback) {
-                        errorMsg += `\n\n--- Full Traceback ---\n${data.traceback}`;
+                        htmlError += `<br><br><strong>Traceback:</strong><pre style="max-height: 300px; overflow: auto; background: #fff; padding: 10px; border: 1px solid #ccc; font-size: 11px; white-space: pre-wrap;">${data.traceback}</pre>`;
                     }
                     
-                    alert(errorMsg);
-                    messageDiv.innerHTML = `<div class="error">❌ Validation failed at ${data.stage} stage. See popup for details.</div>`;
+                    htmlError += `</div>`;
+                    messageDiv.innerHTML = htmlError;
                 }
             } catch (error) {
                 messageDiv.innerHTML = `<div class="error">Failed to validate: ${error.message}</div>`;
