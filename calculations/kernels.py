@@ -2,7 +2,6 @@ import math
 
 from numba import cuda
 
-from calculations.utils import AccountIdx
 from calculations.constants import (
     DEFAULT_MORTALITY_RATE, DEFAULT_RETURN_RATE, DEFAULT_FORWARD_RATE,
     DEFAULT_LAPSE_RATE_TOT, DEFAULT_LAPSE_RATE_PART, DEFAULT_LAPSE_FACT_DIM,
@@ -12,43 +11,79 @@ from calculations.constants import (
     LAPSE_LEVEL_1, LAPSE_LEVEL_2, LAPSE_LEVEL_3,
     MORTALITY_AGE_ADJUSTMENT_THRESHOLD, MAX_WITHDRAWAL, MIN_GUARANTEE_VALUE,
     DEFAULT_FREQ_EVAL, METRICS_RESERVE_IDX, METRICS_CAPITAL_IDX,
+    # Account data array indices (module-level constants for Numba)
+    ACCOUNT_IDX_ANNEE_EVALUATION_INI, ACCOUNT_IDX_MOIS_EVALUATION_INI,
+    ACCOUNT_IDX_ANNEE_NAIS, ACCOUNT_IDX_MOIS_NAIS,
+    ACCOUNT_IDX_I_SEXE, ACCOUNT_IDX_I_PRODUIT_REGR, ACCOUNT_IDX_ID_PRODUIT,
+    ACCOUNT_IDX_ID_LAPSE, ACCOUNT_IDX_I_REGIME_2, ACCOUNT_IDX_ID_DEPOT, ACCOUNT_IDX_ID_ACQUI,
+    ACCOUNT_IDX_AGE_ECH_MIN, ACCOUNT_IDX_AGE_FIN_CONTRAT, ACCOUNT_IDX_AGE_DECAISSEMENT,
+    ACCOUNT_IDX_MT_VM, ACCOUNT_IDX_MT_GAR_DECES, ACCOUNT_IDX_MT_GAR_ECH,
+    ACCOUNT_IDX_MT_SRG, ACCOUNT_IDX_MT_BCB,
+    ACCOUNT_IDX_MT_DEX, ACCOUNT_IDX_MT_MM, ACCOUNT_IDX_MT_TSX,
+    ACCOUNT_IDX_MT_SP500, ACCOUNT_IDX_MT_EAFE,
+    ACCOUNT_IDX_MT_BONI_DECES, ACCOUNT_IDX_MT_MRV_MRG_MRA, ACCOUNT_IDX_TAUX_MRV_MRG_MRA,
+    ACCOUNT_IDX_PC_HONORAIRES_GEST, ACCOUNT_IDX_PC_FRAIS_GARANTIE,
+    ACCOUNT_IDX_PC_GAR_DECES_1, ACCOUNT_IDX_PC_BONI_DECES,
+    ACCOUNT_IDX_PC_RFG, ACCOUNT_IDX_PC_REVENU_FDS,
+    ACCOUNT_IDX_PC_GAR_ECH, ACCOUNT_IDX_PC_GAR_ECH_DEP_FUT,
+    ACCOUNT_IDX_MT_VM_ORIG, ACCOUNT_IDX_ANNEE_COTIS, ACCOUNT_IDX_MOIS_COTIS,
+    # State tensor indices (module-level constants for Numba)
+    STATE_IDX_MT_VM, STATE_IDX_MT_GAR_DECES, STATE_IDX_MT_GAR_ECH,
+    STATE_IDX_MT_SRG, STATE_IDX_AGE, STATE_IDX_TX_SURVIE,
+    STATE_IDX_MT_DEX, STATE_IDX_MT_MM, STATE_IDX_MT_TSX,
+    STATE_IDX_MT_SP500, STATE_IDX_MT_EAFE, STATE_IDX_MT_BONI_DECES,
+    STATE_IDX_SIZE,
+    # External debug indices (module-level constants for Numba)
+    EXT_DEBUG_IDX_VM, EXT_DEBUG_IDX_AGE, EXT_DEBUG_IDX_QX,
+    EXT_DEBUG_IDX_LAPSE_TOT, EXT_DEBUG_IDX_LAPSE_PART, EXT_DEBUG_IDX_TX_SURVIE,
+    EXT_DEBUG_IDX_FORWARD_RATE, EXT_DEBUG_IDX_REND_SP500, EXT_DEBUG_IDX_REND_TSX,
+    EXT_DEBUG_IDX_REND_EAFE, EXT_DEBUG_IDX_REND_DEX, EXT_DEBUG_IDX_RETRAIT,
+    EXT_DEBUG_IDX_PREST_DECES, EXT_DEBUG_IDX_PRIMES_GARANTIES, EXT_DEBUG_IDX_VM_VG_RATIO,
+    EXT_DEBUG_IDX_SIZE,
+    # Internal debug indices (module-level constants for Numba)
+    INT_DEBUG_IDX_START_VM, INT_DEBUG_IDX_VM_CHOC, INT_DEBUG_IDX_AVG_PV_FLUX,
+    INT_DEBUG_IDX_RESERVE, INT_DEBUG_IDX_CAPITAL, INT_DEBUG_IDX_START_TX_SURVIE,
+    INT_DEBUG_IDX_START_AGE, INT_DEBUG_IDX_CURR_VM, INT_DEBUG_IDX_FEES,
+    INT_DEBUG_IDX_PV_PATH, INT_DEBUG_IDX_R_PORTFOLIO, INT_DEBUG_IDX_FWD_RATE,
+    INT_DEBUG_IDX_SIZE,
 )
 
+# Backward compatibility: class wrappers for non-kernel code
 class StateIdx:
-    """State tensor column indices."""
-    MT_VM = 0
-    MT_GAR_DECES = 1
-    MT_GAR_ECH = 2
-    MT_SRG = 3
-    AGE = 4
-    TX_SURVIE = 5
-    MT_DEX = 6
-    MT_MM = 7
-    MT_TSX = 8
-    MT_SP500 = 9
-    MT_EAFE = 10
-    MT_BONI_DECES = 11
-    SIZE = 12  # Total number of state variables
+    """State tensor column indices (wrapper for backward compatibility)."""
+    MT_VM = STATE_IDX_MT_VM
+    MT_GAR_DECES = STATE_IDX_MT_GAR_DECES
+    MT_GAR_ECH = STATE_IDX_MT_GAR_ECH
+    MT_SRG = STATE_IDX_MT_SRG
+    AGE = STATE_IDX_AGE
+    TX_SURVIE = STATE_IDX_TX_SURVIE
+    MT_DEX = STATE_IDX_MT_DEX
+    MT_MM = STATE_IDX_MT_MM
+    MT_TSX = STATE_IDX_MT_TSX
+    MT_SP500 = STATE_IDX_MT_SP500
+    MT_EAFE = STATE_IDX_MT_EAFE
+    MT_BONI_DECES = STATE_IDX_MT_BONI_DECES
+    SIZE = STATE_IDX_SIZE
 
 
 class ExtDebugIdx:
-    """External kernel debug output column indices."""
-    VM = 0
-    AGE = 1
-    QX = 2
-    LAPSE_TOT = 3
-    LAPSE_PART = 4
-    TX_SURVIE = 5
-    FORWARD_RATE = 6
-    REND_SP500 = 7
-    REND_TSX = 8
-    REND_EAFE = 9
-    REND_DEX = 10
-    RETRAIT = 11
-    PREST_DECES = 12
-    PRIMES_GARANTIES = 13
-    VM_VG_RATIO = 14
-    SIZE = 15  # Total number of debug columns
+    """External kernel debug output column indices (wrapper for backward compatibility)."""
+    VM = EXT_DEBUG_IDX_VM
+    AGE = EXT_DEBUG_IDX_AGE
+    QX = EXT_DEBUG_IDX_QX
+    LAPSE_TOT = EXT_DEBUG_IDX_LAPSE_TOT
+    LAPSE_PART = EXT_DEBUG_IDX_LAPSE_PART
+    TX_SURVIE = EXT_DEBUG_IDX_TX_SURVIE
+    FORWARD_RATE = EXT_DEBUG_IDX_FORWARD_RATE
+    REND_SP500 = EXT_DEBUG_IDX_REND_SP500
+    REND_TSX = EXT_DEBUG_IDX_REND_TSX
+    REND_EAFE = EXT_DEBUG_IDX_REND_EAFE
+    REND_DEX = EXT_DEBUG_IDX_REND_DEX
+    RETRAIT = EXT_DEBUG_IDX_RETRAIT
+    PREST_DECES = EXT_DEBUG_IDX_PREST_DECES
+    PRIMES_GARANTIES = EXT_DEBUG_IDX_PRIMES_GARANTIES
+    VM_VG_RATIO = EXT_DEBUG_IDX_VM_VG_RATIO
+    SIZE = EXT_DEBUG_IDX_SIZE
 
 
 @cuda.jit
@@ -106,52 +141,52 @@ def external_generator_kernel(
     # Load account data into registers
     acc = account_data[account_idx]
 
-    # Account static data using readable constants
-    ANNEE_EVALUATION_INI = int(acc[AccountIdx.ANNEE_EVALUATION_INI])
-    MOIS_EVALUATION_INI = int(acc[AccountIdx.MOIS_EVALUATION_INI])
-    ANNEE_NAIS = int(acc[AccountIdx.ANNEE_NAIS])
-    MOIS_NAIS = int(acc[AccountIdx.MOIS_NAIS])
-    I_SEXE = int(acc[AccountIdx.I_SEXE])
-    I_PRODUIT_REGR = int(acc[AccountIdx.I_PRODUIT_REGR])
-    ID_PRODUIT = int(acc[AccountIdx.ID_PRODUIT])
-    ID_LAPSE = int(acc[AccountIdx.ID_LAPSE])
-    I_REGIME_2 = int(acc[AccountIdx.I_REGIME_2])
-    ID_DEPOT = int(acc[AccountIdx.ID_DEPOT])
-    ID_ACQUI = int(acc[AccountIdx.ID_ACQUI])
-    AGE_ECH_MIN = int(acc[AccountIdx.AGE_ECH_MIN])
-    AGE_FIN_CONTRAT = int(acc[AccountIdx.AGE_FIN_CONTRAT])
-    AGE_DECAISSEMENT = int(acc[AccountIdx.AGE_DECAISSEMENT])
+    # Account static data using module-level constants (Numba-compatible)
+    ANNEE_EVALUATION_INI = int(acc[ACCOUNT_IDX_ANNEE_EVALUATION_INI])
+    MOIS_EVALUATION_INI = int(acc[ACCOUNT_IDX_MOIS_EVALUATION_INI])
+    ANNEE_NAIS = int(acc[ACCOUNT_IDX_ANNEE_NAIS])
+    MOIS_NAIS = int(acc[ACCOUNT_IDX_MOIS_NAIS])
+    I_SEXE = int(acc[ACCOUNT_IDX_I_SEXE])
+    I_PRODUIT_REGR = int(acc[ACCOUNT_IDX_I_PRODUIT_REGR])
+    ID_PRODUIT = int(acc[ACCOUNT_IDX_ID_PRODUIT])
+    ID_LAPSE = int(acc[ACCOUNT_IDX_ID_LAPSE])
+    I_REGIME_2 = int(acc[ACCOUNT_IDX_I_REGIME_2])
+    ID_DEPOT = int(acc[ACCOUNT_IDX_ID_DEPOT])
+    ID_ACQUI = int(acc[ACCOUNT_IDX_ID_ACQUI])
+    AGE_ECH_MIN = int(acc[ACCOUNT_IDX_AGE_ECH_MIN])
+    AGE_FIN_CONTRAT = int(acc[ACCOUNT_IDX_AGE_FIN_CONTRAT])
+    AGE_DECAISSEMENT = int(acc[ACCOUNT_IDX_AGE_DECAISSEMENT])
 
-    # Initialize state variables using readable constants
-    MT_VM_PROJ = acc[AccountIdx.MT_VM]
-    MT_GAR_DECES_PROJ = acc[AccountIdx.MT_GAR_DECES]
-    MT_GAR_ECH_PROJ = acc[AccountIdx.MT_GAR_ECH]
-    MT_SRG_PROJ = acc[AccountIdx.MT_SRG]
-    MT_BCB_PROJ = acc[AccountIdx.MT_BCB]
-    MT_DEX_PROJ = acc[AccountIdx.MT_DEX]
-    MT_MM_PROJ = acc[AccountIdx.MT_MM]
-    MT_TSX_PROJ = acc[AccountIdx.MT_TSX]
-    MT_SP500_PROJ = acc[AccountIdx.MT_SP500]
-    MT_EAFE_PROJ = acc[AccountIdx.MT_EAFE]
-    MT_BONI_DECES_PROJ = acc[AccountIdx.MT_BONI_DECES]
-    MT_MRV_MRG_MRA_PROJ = acc[AccountIdx.MT_MRV_MRG_MRA]
-    TAUX_MRV_MRG_MRA_PROJ = acc[AccountIdx.TAUX_MRV_MRG_MRA]
+    # Initialize state variables using module-level constants
+    MT_VM_PROJ = acc[ACCOUNT_IDX_MT_VM]
+    MT_GAR_DECES_PROJ = acc[ACCOUNT_IDX_MT_GAR_DECES]
+    MT_GAR_ECH_PROJ = acc[ACCOUNT_IDX_MT_GAR_ECH]
+    MT_SRG_PROJ = acc[ACCOUNT_IDX_MT_SRG]
+    MT_BCB_PROJ = acc[ACCOUNT_IDX_MT_BCB]
+    MT_DEX_PROJ = acc[ACCOUNT_IDX_MT_DEX]
+    MT_MM_PROJ = acc[ACCOUNT_IDX_MT_MM]
+    MT_TSX_PROJ = acc[ACCOUNT_IDX_MT_TSX]
+    MT_SP500_PROJ = acc[ACCOUNT_IDX_MT_SP500]
+    MT_EAFE_PROJ = acc[ACCOUNT_IDX_MT_EAFE]
+    MT_BONI_DECES_PROJ = acc[ACCOUNT_IDX_MT_BONI_DECES]
+    MT_MRV_MRG_MRA_PROJ = acc[ACCOUNT_IDX_MT_MRV_MRG_MRA]
+    TAUX_MRV_MRG_MRA_PROJ = acc[ACCOUNT_IDX_TAUX_MRV_MRG_MRA]
     MT_MIN_FERR_PROJ = 0.0
 
     TX_SURVIE = 1.0
 
-    PC_HONORAIRES_GEST = acc[AccountIdx.PC_HONORAIRES_GEST]
-    PC_FRAIS_GARANTIE = acc[AccountIdx.PC_FRAIS_GARANTIE]
-    PC_GAR_DECES_1 = acc[AccountIdx.PC_GAR_DECES_1]
-    PC_BONI_DECES = acc[AccountIdx.PC_BONI_DECES]
-    PC_RFG = acc[AccountIdx.PC_RFG]
-    PC_REVENU_FDS = acc[AccountIdx.PC_REVENU_FDS]
-    PC_GAR_ECH = acc[AccountIdx.PC_GAR_ECH]
-    PC_GAR_ECH_DEP_FUT = acc[AccountIdx.PC_GAR_ECH_DEP_FUT]
-    MT_VM_ORIG = acc[AccountIdx.MT_VM_ORIG]
+    PC_HONORAIRES_GEST = acc[ACCOUNT_IDX_PC_HONORAIRES_GEST]
+    PC_FRAIS_GARANTIE = acc[ACCOUNT_IDX_PC_FRAIS_GARANTIE]
+    PC_GAR_DECES_1 = acc[ACCOUNT_IDX_PC_GAR_DECES_1]
+    PC_BONI_DECES = acc[ACCOUNT_IDX_PC_BONI_DECES]
+    PC_RFG = acc[ACCOUNT_IDX_PC_RFG]
+    PC_REVENU_FDS = acc[ACCOUNT_IDX_PC_REVENU_FDS]
+    PC_GAR_ECH = acc[ACCOUNT_IDX_PC_GAR_ECH]
+    PC_GAR_ECH_DEP_FUT = acc[ACCOUNT_IDX_PC_GAR_ECH_DEP_FUT]
+    MT_VM_ORIG = acc[ACCOUNT_IDX_MT_VM_ORIG]
 
-    ANNEE_COTIS = int(acc[AccountIdx.ANNEE_COTIS]) if acc[AccountIdx.ANNEE_COTIS] > 0 else ANNEE_EVALUATION_INI
-    MOIS_COTIS = int(acc[AccountIdx.MOIS_COTIS]) if acc[AccountIdx.MOIS_COTIS] > 0 else 1
+    ANNEE_COTIS = int(acc[ACCOUNT_IDX_ANNEE_COTIS]) if acc[ACCOUNT_IDX_ANNEE_COTIS] > 0 else ANNEE_EVALUATION_INI
+    MOIS_COTIS = int(acc[ACCOUNT_IDX_MOIS_COTIS]) if acc[ACCOUNT_IDX_MOIS_COTIS] > 0 else 1
 
     # Scenario-specific processing
     scn_eval = scenario_idx + 1
@@ -198,11 +233,11 @@ def external_generator_kernel(
 
             # Initialize year 0 (SAS lines 241-265)
             if an_eval == 0:
-                MT_SP500_PROJ = acc[AccountIdx.MT_SP500]
-                MT_TSX_PROJ = acc[AccountIdx.MT_TSX]
-                MT_EAFE_PROJ = acc[AccountIdx.MT_EAFE]
-                MT_DEX_PROJ = acc[AccountIdx.MT_DEX]
-                MT_MM_PROJ = acc[AccountIdx.MT_MM]
+                MT_SP500_PROJ = acc[ACCOUNT_IDX_MT_SP500]
+                MT_TSX_PROJ = acc[ACCOUNT_IDX_MT_TSX]
+                MT_EAFE_PROJ = acc[ACCOUNT_IDX_MT_EAFE]
+                MT_DEX_PROJ = acc[ACCOUNT_IDX_MT_DEX]
+                MT_MM_PROJ = acc[ACCOUNT_IDX_MT_MM]
                 MT_VM_PROJ = MT_SP500_PROJ + MT_TSX_PROJ + MT_EAFE_PROJ + MT_DEX_PROJ + MT_MM_PROJ
                 TX_ACTUALISATION = 1.0
                 continue
@@ -394,30 +429,30 @@ def external_generator_kernel(
 
             # Portfolio rebalance (SAS lines 678-682)
             if MT_VM_ORIG > 0 and MT_VM_PROJ > 0:
-                orig_total = (acc[AccountIdx.MT_SP500] + acc[AccountIdx.MT_TSX] +
-                             acc[AccountIdx.MT_EAFE] + acc[AccountIdx.MT_DEX] +
-                             acc[AccountIdx.MT_MM])
+                orig_total = (acc[ACCOUNT_IDX_MT_SP500] + acc[ACCOUNT_IDX_MT_TSX] +
+                             acc[ACCOUNT_IDX_MT_EAFE] + acc[ACCOUNT_IDX_MT_DEX] +
+                             acc[ACCOUNT_IDX_MT_MM])
                 if orig_total > 0:
-                    MT_SP500_PROJ = MT_VM_PROJ * acc[AccountIdx.MT_SP500] / orig_total
-                    MT_TSX_PROJ = MT_VM_PROJ * acc[AccountIdx.MT_TSX] / orig_total
-                    MT_EAFE_PROJ = MT_VM_PROJ * acc[AccountIdx.MT_EAFE] / orig_total
-                    MT_DEX_PROJ = MT_VM_PROJ * acc[AccountIdx.MT_DEX] / orig_total
-                    MT_MM_PROJ = MT_VM_PROJ * acc[AccountIdx.MT_MM] / orig_total
+                    MT_SP500_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_SP500] / orig_total
+                    MT_TSX_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_TSX] / orig_total
+                    MT_EAFE_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_EAFE] / orig_total
+                    MT_DEX_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_DEX] / orig_total
+                    MT_MM_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_MM] / orig_total
 
             # === SAVE STATE TO GLOBAL MEMORY ===
             if an_eval < n_years and output_year_idx < output_states.shape[2]:
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.MT_VM] = MT_VM_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.MT_GAR_DECES] = MT_GAR_DECES_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.MT_GAR_ECH] = MT_GAR_ECH_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.MT_SRG] = MT_SRG_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.AGE] = float(age)
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.TX_SURVIE] = TX_SURVIE
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.MT_DEX] = MT_DEX_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.MT_MM] = MT_MM_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.MT_TSX] = MT_TSX_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.MT_SP500] = MT_SP500_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.MT_EAFE] = MT_EAFE_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, StateIdx.MT_BONI_DECES] = MT_BONI_DECES_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_VM] = MT_VM_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_GAR_DECES] = MT_GAR_DECES_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_GAR_ECH] = MT_GAR_ECH_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_SRG] = MT_SRG_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_AGE] = float(age)
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_TX_SURVIE] = TX_SURVIE
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_DEX] = MT_DEX_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_MM] = MT_MM_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_TSX] = MT_TSX_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_SP500] = MT_SP500_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_EAFE] = MT_EAFE_PROJ
+                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_BONI_DECES] = MT_BONI_DECES_PROJ
 
                 # Calculate external scenario cashflows for reporting
                 # Management fee revenue
@@ -443,41 +478,40 @@ def external_generator_kernel(
                         (debug_month < 0 or mois_eval == debug_month)
                     )
                     if matches_filter:
-                        debug_output[ExtDebugIdx.VM] = MT_VM_PROJ
-                        debug_output[ExtDebugIdx.AGE] = float(age)
-                        debug_output[ExtDebugIdx.QX] = qx
-                        debug_output[ExtDebugIdx.LAPSE_TOT] = LAPSE_TOT
-                        debug_output[ExtDebugIdx.LAPSE_PART] = LAPSE_PART
-                        debug_output[ExtDebugIdx.TX_SURVIE] = TX_SURVIE
-                        debug_output[ExtDebugIdx.FORWARD_RATE] = FORWARD_RATE
-                        debug_output[ExtDebugIdx.REND_SP500] = r_sp500
-                        debug_output[ExtDebugIdx.REND_TSX] = r_tsx
-                        debug_output[ExtDebugIdx.REND_EAFE] = r_eafe
-                        debug_output[ExtDebugIdx.REND_DEX] = r_dex
-                        debug_output[ExtDebugIdx.RETRAIT] = RETRAIT
-                        debug_output[ExtDebugIdx.PREST_DECES] = PREST_DECES
-                        debug_output[ExtDebugIdx.PRIMES_GARANTIES] = PRIMES_GARANTIES
-                        debug_output[ExtDebugIdx.VM_VG_RATIO] = VM_VG_RATIO
+                        debug_output[EXT_DEBUG_IDX_VM] = MT_VM_PROJ
+                        debug_output[EXT_DEBUG_IDX_AGE] = float(age)
+                        debug_output[EXT_DEBUG_IDX_QX] = qx
+                        debug_output[EXT_DEBUG_IDX_LAPSE_TOT] = LAPSE_TOT
+                        debug_output[EXT_DEBUG_IDX_LAPSE_PART] = LAPSE_PART
+                        debug_output[EXT_DEBUG_IDX_TX_SURVIE] = TX_SURVIE
+                        debug_output[EXT_DEBUG_IDX_FORWARD_RATE] = FORWARD_RATE
+                        debug_output[EXT_DEBUG_IDX_REND_SP500] = r_sp500
+                        debug_output[EXT_DEBUG_IDX_REND_TSX] = r_tsx
+                        debug_output[EXT_DEBUG_IDX_REND_EAFE] = r_eafe
+                        debug_output[EXT_DEBUG_IDX_REND_DEX] = r_dex
+                        debug_output[EXT_DEBUG_IDX_RETRAIT] = RETRAIT
+                        debug_output[EXT_DEBUG_IDX_PREST_DECES] = PREST_DECES
+                        debug_output[EXT_DEBUG_IDX_PRIMES_GARANTIES] = PRIMES_GARANTIES
+                        debug_output[EXT_DEBUG_IDX_VM_VG_RATIO] = VM_VG_RATIO
 
                 output_year_idx += 1
 
 
 class IntDebugIdx:
-    """Internal kernel debug output column indices."""
-    START_VM = 0
-    VM_CHOC = 1
-    AVG_PV_FLUX = 2
-    RESERVE = 3
-    CAPITAL = 4
-    START_TX_SURVIE = 5
-    START_AGE = 6
-    # Values captured at specific internal scenario/year
-    CURR_VM = 7        # VM at debug internal iteration
-    FEES = 8           # Fees at debug internal iteration
-    PV_PATH = 9        # Cumulative PV at debug internal iteration
-    R_PORTFOLIO = 10   # Return applied at debug internal iteration
-    FWD_RATE = 11      # Forward rate at debug internal iteration
-    SIZE = 12  # Total number of debug columns
+    """Internal kernel debug output column indices (wrapper for backward compatibility)."""
+    START_VM = INT_DEBUG_IDX_START_VM
+    VM_CHOC = INT_DEBUG_IDX_VM_CHOC
+    AVG_PV_FLUX = INT_DEBUG_IDX_AVG_PV_FLUX
+    RESERVE = INT_DEBUG_IDX_RESERVE
+    CAPITAL = INT_DEBUG_IDX_CAPITAL
+    START_TX_SURVIE = INT_DEBUG_IDX_START_TX_SURVIE
+    START_AGE = INT_DEBUG_IDX_START_AGE
+    CURR_VM = INT_DEBUG_IDX_CURR_VM
+    FEES = INT_DEBUG_IDX_FEES
+    PV_PATH = INT_DEBUG_IDX_PV_PATH
+    R_PORTFOLIO = INT_DEBUG_IDX_R_PORTFOLIO
+    FWD_RATE = INT_DEBUG_IDX_FWD_RATE
+    SIZE = INT_DEBUG_IDX_SIZE
 
 
 @cuda.jit
@@ -536,20 +570,20 @@ def nested_valuation_kernel_five_chocs(
         return
 
     # Load starting state from Kernel A output
-    start_vm = input_states[acc_idx, scn_idx, year_idx, StateIdx.MT_VM]
-    start_gar_deces = input_states[acc_idx, scn_idx, year_idx, StateIdx.MT_GAR_DECES]
-    start_gar_ech = input_states[acc_idx, scn_idx, year_idx, StateIdx.MT_GAR_ECH]
-    start_srg = input_states[acc_idx, scn_idx, year_idx, StateIdx.MT_SRG]
-    start_age = input_states[acc_idx, scn_idx, year_idx, StateIdx.AGE]
-    start_tx_survie = input_states[acc_idx, scn_idx, year_idx, StateIdx.TX_SURVIE]
+    start_vm = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_VM]
+    start_gar_deces = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_GAR_DECES]
+    start_gar_ech = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_GAR_ECH]
+    start_srg = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_SRG]
+    start_age = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_AGE]
+    start_tx_survie = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_TX_SURVIE]
 
     # Load individual asset values from state
-    start_mt_dex = input_states[acc_idx, scn_idx, year_idx, StateIdx.MT_DEX]
-    start_mt_mm = input_states[acc_idx, scn_idx, year_idx, StateIdx.MT_MM]
-    start_mt_tsx = input_states[acc_idx, scn_idx, year_idx, StateIdx.MT_TSX]
-    start_mt_sp500 = input_states[acc_idx, scn_idx, year_idx, StateIdx.MT_SP500]
-    start_mt_eafe = input_states[acc_idx, scn_idx, year_idx, StateIdx.MT_EAFE]
-    start_boni_deces = input_states[acc_idx, scn_idx, year_idx, StateIdx.MT_BONI_DECES]
+    start_mt_dex = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_DEX]
+    start_mt_mm = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_MM]
+    start_mt_tsx = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_TSX]
+    start_mt_sp500 = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_SP500]
+    start_mt_eafe = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_EAFE]
+    start_boni_deces = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_BONI_DECES]
 
     # Check if policy is active
     if start_vm <= 0 or start_tx_survie <= 0:
@@ -559,9 +593,9 @@ def nested_valuation_kernel_five_chocs(
             output_metrics[acc_idx, scn_idx, year_idx, choc, METRICS_CAPITAL_IDX] = 0.0
         return
 
-    # Load account parameters using readable constants
+    # Load account parameters using module-level constants
     acc = account_data[acc_idx]
-    PC_RFG = acc[AccountIdx.PC_RFG]
+    PC_RFG = acc[ACCOUNT_IDX_PC_RFG]
     FREQ_EVAL = DEFAULT_FREQ_EVAL
 
     # ===========================================
@@ -672,22 +706,22 @@ def nested_valuation_kernel_five_chocs(
                 (debug_ext_year < 0 or year_idx == debug_ext_year)
             )
             if matches_filter:
-                debug_output[choc_idx, IntDebugIdx.START_VM] = start_vm
-                debug_output[choc_idx, IntDebugIdx.VM_CHOC] = vm_choc_start
-                debug_output[choc_idx, IntDebugIdx.AVG_PV_FLUX] = avg_pv_flux
-                debug_output[choc_idx, IntDebugIdx.RESERVE] = avg_pv_flux
-                debug_output[choc_idx, IntDebugIdx.CAPITAL] = avg_pv_flux
-                debug_output[choc_idx, IntDebugIdx.START_TX_SURVIE] = start_tx_survie
-                debug_output[choc_idx, IntDebugIdx.START_AGE] = start_age
+                debug_output[choc_idx, INT_DEBUG_IDX_START_VM] = start_vm
+                debug_output[choc_idx, INT_DEBUG_IDX_VM_CHOC] = vm_choc_start
+                debug_output[choc_idx, INT_DEBUG_IDX_AVG_PV_FLUX] = avg_pv_flux
+                debug_output[choc_idx, INT_DEBUG_IDX_RESERVE] = avg_pv_flux
+                debug_output[choc_idx, INT_DEBUG_IDX_CAPITAL] = avg_pv_flux
+                debug_output[choc_idx, INT_DEBUG_IDX_START_TX_SURVIE] = start_tx_survie
+                debug_output[choc_idx, INT_DEBUG_IDX_START_AGE] = start_age
                 # Values from specific internal iteration
-                debug_output[choc_idx, IntDebugIdx.CURR_VM] = debug_curr_vm
-                debug_output[choc_idx, IntDebugIdx.FEES] = debug_fees
-                debug_output[choc_idx, IntDebugIdx.PV_PATH] = debug_pv_path
-                debug_output[choc_idx, IntDebugIdx.R_PORTFOLIO] = debug_r_portfolio
-                debug_output[choc_idx, IntDebugIdx.FWD_RATE] = debug_fwd_rate
+                debug_output[choc_idx, INT_DEBUG_IDX_CURR_VM] = debug_curr_vm
+                debug_output[choc_idx, INT_DEBUG_IDX_FEES] = debug_fees
+                debug_output[choc_idx, INT_DEBUG_IDX_PV_PATH] = debug_pv_path
+                debug_output[choc_idx, INT_DEBUG_IDX_R_PORTFOLIO] = debug_r_portfolio
+                debug_output[choc_idx, INT_DEBUG_IDX_FWD_RATE] = debug_fwd_rate
 
 
 # Backward compatibility aliases
-STATE_SIZE = StateIdx.SIZE
-EXT_DEBUG_SIZE = ExtDebugIdx.SIZE
-INT_DEBUG_SIZE = IntDebugIdx.SIZE
+STATE_SIZE = STATE_IDX_SIZE
+EXT_DEBUG_SIZE = EXT_DEBUG_IDX_SIZE
+INT_DEBUG_SIZE = INT_DEBUG_IDX_SIZE
