@@ -4,46 +4,6 @@ Constants for GPU actuarial calculations.
 This module centralizes all magic numbers and configuration values
 used throughout the GPU projection code.
 """
-from typing import Tuple, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from numba.cuda.cudadrv.devicearray import DeviceNDArray
-    import numpy as np
-
-# =============================================================================
-# TYPE ALIASES FOR KERNEL DOCUMENTATION
-# =============================================================================
-# These are for documentation/IDE hints only - not enforced at runtime
-
-# GPU Device Arrays
-GPUArray = "DeviceNDArray"
-
-# Account data: (n_accounts, n_fields) float32
-AccountData = "DeviceNDArray"
-
-# Returns lookups tuple: (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe)
-# Each array shape: (n_scenarios, n_years, n_months)
-ReturnsLookups = Tuple[GPUArray, GPUArray, GPUArray, GPUArray, GPUArray, GPUArray, GPUArray]
-
-# Lapse lookups tuple: (min_ferr, lapse_part_min, lapse_part_max, lapse_tot_min, lapse_tot_max, lapse_tot_fact)
-LapseLookups = Tuple[GPUArray, GPUArray, GPUArray, GPUArray, GPUArray, GPUArray]
-
-# Policy lookups tuple: (deposits_pc, deposits_var, deposits_age_max, deposits_i_even, fees)
-PolicyLookups = Tuple[GPUArray, GPUArray, GPUArray, GPUArray, GPUArray]
-
-# Commission lookups tuple: (acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf)
-CommissionLookups = Tuple[GPUArray, GPUArray, GPUArray, GPUArray, GPUArray, GPUArray]
-
-# Risk-neutral returns tuple: (rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
-RNReturnsLookups = Tuple[GPUArray, GPUArray, GPUArray, GPUArray, GPUArray, GPUArray]
-
-# Mortality lookup: (sex, age, year, product) float32
-MortalityLookup = GPUArray
-
-# Output tensors
-StatesTensor = GPUArray      # (batch, scenarios, years, STATE_SIZE)
-CashflowsTensor = GPUArray   # (batch, scenarios, years, 1)
-MetricsTensor = GPUArray     # (batch, scenarios, years, NUM_CHOCS, METRICS_OUTPUT_SIZE)
 
 # =============================================================================
 # ARRAY DIMENSION LIMITS
