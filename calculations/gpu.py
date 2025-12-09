@@ -362,21 +362,18 @@ def process_batch(
             dtype=np.float32
         )
         
-        # Allocate debug arrays if debug filters are specified
-        d_ext_debug = None
-        d_int_debug = None
+        # Allocate debug arrays (always allocate, use -1 flags to disable)
         enable_ext_debug = debug_account >= 0 or debug_scenario >= 0 or debug_year >= 0 or debug_month >= 0
         enable_int_debug = enable_ext_debug  # Internal debug only if external debug is enabled
         
         if enable_ext_debug:
             logger.info(f"  Debug mode: account={debug_account}, scenario={debug_scenario}, year={debug_year}, month={debug_month}")
-            # Single row for external debug output
-            d_ext_debug = cuda.device_array((EXT_DEBUG_SIZE,), dtype=np.float32)
-        
         if enable_int_debug:
             logger.info(f"  Internal debug: int_scenario={debug_int_scenario}, int_year={debug_int_year}")
-            # One row per choc for internal debug output
-            d_int_debug = cuda.device_array((NUM_CHOCS, INT_DEBUG_SIZE), dtype=np.float32)
+        
+        # Always allocate debug arrays (kernel uses -1 flags to skip writing)
+        d_ext_debug = cuda.device_array((EXT_DEBUG_SIZE,), dtype=np.float32)
+        d_int_debug = cuda.device_array((NUM_CHOCS, INT_DEBUG_SIZE), dtype=np.float32)
     except Exception as e:
         raise RuntimeError(
             f"Failed to allocate GPU memory for batch {batch_idx+1}. "
@@ -446,10 +443,10 @@ def process_batch(
     # Copy debug arrays if enabled
     h_ext_debug = None
     h_int_debug = None
-    if d_ext_debug is not None:
+    if enable_ext_debug:
         logger.info("  Copying external debug output to CPU...")
         h_ext_debug = d_ext_debug.copy_to_host()
-    if d_int_debug is not None:
+    if enable_int_debug:
         logger.info("  Copying internal debug output to CPU...")
         h_int_debug = d_int_debug.copy_to_host()
     
@@ -460,11 +457,7 @@ def process_batch(
     batch_capital = batch_capital_5chocs[:, 0]
     
     # Cleanup
-    del d_batch_accounts, d_states, d_cashflows, d_metrics
-    if d_ext_debug is not None:
-        del d_ext_debug
-    if d_int_debug is not None:
-        del d_int_debug
+    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug
     cuda.synchronize()
     del h_metrics
     gc.collect()
