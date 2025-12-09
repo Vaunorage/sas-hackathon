@@ -2514,7 +2514,7 @@ def get_kernel_file():
 @app.route('/admin/kernels/validate', methods=['POST'])
 def validate_kernel_file():
     """
-    Validate kernel code by temporarily writing it and running a test projection.
+    Validate kernel code by running a test projection on RunPod.
     
     JSON body:
     {
@@ -2522,7 +2522,7 @@ def validate_kernel_file():
         "content": "... new kernels.py content ..."
     }
     
-    Returns validation result without restarting server.
+    Returns validation result. This is a synchronous call that waits for RunPod to complete.
     """
     if not request.is_json:
         return jsonify({'error': 'JSON body required'}), 400
@@ -2536,104 +2536,106 @@ def validate_kernel_file():
     if not content:
         return jsonify({'error': 'content is required'}), 400
     
-    kernels_path = HERE / 'calculations' / 'kernels.py'
-    backup_path = HERE / 'calculations' / 'kernels.py.validation_backup'
+    # Step 1: Check Python syntax locally (fast check)
+    try:
+        compile(content, 'kernels.py', 'exec')
+    except SyntaxError as e:
+        return jsonify({
+            'valid': False,
+            'stage': 'syntax',
+            'error': f'Syntax error at line {e.lineno}: {e.msg}',
+            'line': e.lineno,
+            'offset': e.offset
+        }), 400
+    
+    # Step 2: Run validation on RunPod with the custom kernel
+    if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
+        return jsonify({
+            'valid': False,
+            'stage': 'configuration',
+            'error': 'RunPod API key or endpoint ID not configured. Cannot validate kernel remotely.'
+        }), 500
     
     try:
-        # Step 1: Check Python syntax
+        print(f"[KERNEL VALIDATION] Triggering RunPod validation job...")
+        
+        # Create a minimal validation job payload
+        runpod_input = {
+            'nb_an_projection': 10,      # Short projection
+            'nb_scenarios': 2,           # Minimal external scenarios
+            'nb_int_scenarios': 2,       # Minimal internal scenarios
+            'max_accounts': 1,           # Just 1 account
+            'kernel_code': content,      # The custom kernel to validate
+            'data_file_urls': {}         # Use default data files on worker
+        }
+        
+        endpoint = runpod.Endpoint(RUNPOD_ENDPOINT_ID)
+        
+        # Check endpoint health first
         try:
-            compile(content, 'kernels.py', 'exec')
-        except SyntaxError as e:
+            health = endpoint.health()
+            print(f"  Endpoint health: {health}")
+            if health.get('workers', {}).get('idle', 0) == 0 and health.get('workers', {}).get('running', 0) == 0:
+                return jsonify({
+                    'valid': False,
+                    'stage': 'runpod',
+                    'error': 'No RunPod workers available. Please try again later or start a worker.'
+                }), 503
+        except Exception as health_err:
+            print(f"  Warning: Could not check endpoint health: {health_err}")
+        
+        # Run synchronously using run_sync which blocks until completion
+        print(f"  Submitting validation job to RunPod (synchronous with 300s timeout)...")
+        
+        try:
+            # run_sync blocks until the job completes or times out
+            # timeout is in seconds (5 minutes should be plenty for a minimal validation)
+            output = endpoint.run_sync(runpod_input, timeout=300)
+            print(f"  RunPod job completed. Output type: {type(output)}")
+            
+            # Check for errors in output
+            if isinstance(output, dict) and 'error' in output:
+                error_msg = output['error']
+                tb = output.get('traceback', '')
+                
+                # Check if it's a kernel-specific error
+                if 'kernel_error' in output:
+                    kernel_err = output['kernel_error']
+                    return jsonify({
+                        'valid': False,
+                        'stage': 'kernel_load',
+                        'error': kernel_err.get('error', error_msg),
+                        'line': kernel_err.get('line'),
+                        'traceback': kernel_err.get('traceback', tb)
+                    }), 400
+                
+                return jsonify({
+                    'valid': False,
+                    'stage': 'runtime',
+                    'error': error_msg,
+                    'traceback': tb
+                }), 400
+            
+            # Success!
+            print(f"  ✓ Validation completed successfully on RunPod")
+            return jsonify({
+                'valid': True,
+                'message': 'Kernel code validated successfully on RunPod GPU! Test projection completed with 1 account.'
+            })
+            
+        except TimeoutError:
             return jsonify({
                 'valid': False,
-                'stage': 'syntax',
-                'error': f'Syntax error at line {e.lineno}: {e.msg}',
-                'line': e.lineno,
-                'offset': e.offset
-            }), 400
-        
-        # Step 2: Backup current file
-        original_content = None
-        if kernels_path.exists():
-            original_content = kernels_path.read_text()
-            backup_path.write_text(original_content)
-        
-        # Step 3: Write new content temporarily
-        kernels_path.write_text(content)
-        
-        # Step 4: Try to reload the module and run a test
-        validation_error = None
-        try:
-            import importlib
-            import calculations.kernels
-            importlib.reload(calculations.kernels)
-            
-            # Re-import gpu module to pick up new kernels
-            import calculations.gpu
-            importlib.reload(calculations.gpu)
-            
-            # Run a minimal test projection
-            from calculations.gpu import run_projection_gpu_nested
-            
-            test_output_path = HERE / 'results' / 'validation_test'
-            test_output_path.mkdir(parents=True, exist_ok=True)
-            
-            # Run with minimal settings
-            result = run_projection_gpu_nested(
-                data_path=app.config['DEFAULT_DATA_FOLDER'],
-                output_path=test_output_path,
-                nb_an_projection=10,  # Short projection
-                nb_ext_scenarios=2,   # Minimal scenarios
-                nb_int_scenarios=2,   # Minimal internal scenarios
-                max_accounts=1,       # Just 1 account
-            )
-            
-            # Clean up test output
-            import shutil
-            if test_output_path.exists():
-                shutil.rmtree(test_output_path)
-            
-        except Exception as e:
-            validation_error = str(e)
-            # Get full traceback for debugging
-            import traceback
-            validation_traceback = traceback.format_exc()
-        
-        # Step 5: Restore original file
-        if original_content is not None:
-            kernels_path.write_text(original_content)
-        
-        # Step 6: Reload original modules
-        try:
-            import importlib
-            import calculations.kernels
-            importlib.reload(calculations.kernels)
-            import calculations.gpu
-            importlib.reload(calculations.gpu)
-        except:
-            pass  # Best effort restore
-        
-        if validation_error:
-            return jsonify({
-                'valid': False,
-                'stage': 'runtime',
-                'error': validation_error,
-                'traceback': validation_traceback if 'validation_traceback' in dir() else None
-            }), 400
-        
-        return jsonify({
-            'valid': True,
-            'message': 'Kernel code validated successfully! Test projection completed with 1 account.'
-        })
+                'stage': 'timeout',
+                'error': 'Validation timed out after 300 seconds. The RunPod worker may be busy or unavailable.'
+            }), 504
         
     except Exception as e:
-        # Restore backup on any failure
-        if backup_path.exists():
-            kernels_path.write_text(backup_path.read_text())
         return jsonify({
             'valid': False,
             'stage': 'validation',
-            'error': f'Validation failed: {str(e)}'
+            'error': f'Validation failed: {str(e)}',
+            'traceback': traceback.format_exc()
         }), 500
 
 @app.route('/admin/kernels/file', methods=['POST'])
@@ -2669,11 +2671,7 @@ def update_kernel_file():
     should_validate = data.get('validate', True)
     
     if should_validate:
-        # Run validation first
-        kernels_path = HERE / 'calculations' / 'kernels.py'
-        backup_path = HERE / 'calculations' / 'kernels.py.validation_backup'
-        
-        # Step 1: Check Python syntax
+        # Step 1: Check Python syntax locally (fast check)
         try:
             compile(content, 'kernels.py', 'exec')
         except SyntaxError as e:
@@ -2684,63 +2682,69 @@ def update_kernel_file():
                 'line': e.lineno
             }), 400
         
-        # Step 2: Backup and test
-        original_content = None
+        # Step 2: Run validation on RunPod
+        if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
+            return jsonify({
+                'error': 'RunPod API key or endpoint ID not configured. Cannot validate kernel remotely.',
+                'validation_failed': True,
+                'stage': 'configuration'
+            }), 500
+        
         try:
-            if kernels_path.exists():
-                original_content = kernels_path.read_text()
-                backup_path.write_text(original_content)
+            print(f"[KERNEL SAVE] Running validation on RunPod before saving...")
             
-            kernels_path.write_text(content)
+            runpod_input = {
+                'nb_an_projection': 10,
+                'nb_scenarios': 2,
+                'nb_int_scenarios': 2,
+                'max_accounts': 1,
+                'kernel_code': content,
+                'data_file_urls': {}
+            }
             
-            # Reload and test
-            import importlib
-            import calculations.kernels
-            importlib.reload(calculations.kernels)
-            import calculations.gpu
-            importlib.reload(calculations.gpu)
+            endpoint = runpod.Endpoint(RUNPOD_ENDPOINT_ID)
             
-            from calculations.gpu import run_projection_gpu_nested
-            
-            test_output_path = HERE / 'results' / 'validation_test'
-            test_output_path.mkdir(parents=True, exist_ok=True)
-            
-            run_projection_gpu_nested(
-                data_path=app.config['DEFAULT_DATA_FOLDER'],
-                output_path=test_output_path,
-                nb_an_projection=10,
-                nb_ext_scenarios=2,
-                nb_int_scenarios=2,
-                max_accounts=1,
-            )
-            
-            import shutil
-            if test_output_path.exists():
-                shutil.rmtree(test_output_path)
+            # Use run_sync for synchronous execution with 300s timeout
+            try:
+                output = endpoint.run_sync(runpod_input, timeout=300)
+                print(f"  RunPod validation completed. Output type: {type(output)}")
+                
+                if isinstance(output, dict) and 'error' in output:
+                    error_msg = output['error']
+                    tb = output.get('traceback', '')
+                    if 'kernel_error' in output:
+                        kernel_err = output['kernel_error']
+                        return jsonify({
+                            'error': kernel_err.get('error', error_msg),
+                            'validation_failed': True,
+                            'stage': 'kernel_load',
+                            'line': kernel_err.get('line'),
+                            'traceback': kernel_err.get('traceback', tb)
+                        }), 400
+                    return jsonify({
+                        'error': error_msg,
+                        'validation_failed': True,
+                        'stage': 'runtime',
+                        'traceback': tb
+                    }), 400
+                    
+                # Validation passed!
+                print(f"  ✓ Validation passed on RunPod")
+                
+            except TimeoutError:
+                return jsonify({
+                    'error': 'Validation timed out after 300 seconds',
+                    'validation_failed': True,
+                    'stage': 'timeout'
+                }), 504
                 
         except Exception as e:
-            # Restore original and return error
-            if original_content is not None:
-                kernels_path.write_text(original_content)
-            try:
-                import importlib
-                import calculations.kernels
-                importlib.reload(calculations.kernels)
-                import calculations.gpu
-                importlib.reload(calculations.gpu)
-            except:
-                pass
-            
             return jsonify({
                 'error': f'Validation failed: {str(e)}',
                 'validation_failed': True,
-                'stage': 'runtime',
+                'stage': 'validation',
                 'traceback': traceback.format_exc()
             }), 400
-        
-        # Restore original before proceeding (will be overwritten again below)
-        if original_content is not None:
-            kernels_path.write_text(original_content)
     
     version_name = data.get('version_name', f"v_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
     description = data.get('description', '')
