@@ -24,7 +24,7 @@ import numpy as np
 import polars as pl
 import gc
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, TypedDict
 from dataclasses import dataclass
 from datetime import datetime
 from fastparquet import write as fastparquet_write
@@ -900,13 +900,18 @@ def run_projection_gpu_nested(
         debug_year: int = -1,
         debug_month: int = -1,
         debug_int_scenario: int = -1,
-        debug_int_year: int = -1):
+        debug_int_year: int = -1,
+        debug_only: bool = False):
     """
     Run GPU-accelerated nested stochastic projection using Two-Pass architecture.
     
     Architecture:
     - Kernel A (Generator): Runs external scenarios, outputs state tensors to VRAM
     - Kernel B (Valuator): Reads states, runs internal scenarios with 5 chocs, outputs reserves & capital
+    
+    Args:
+        debug_only: If True and debug_account >= 0, only process the single account 
+                   specified by debug_account (filters population to that account only).
     """
     start_time = datetime.now()
     print(f"Starting NESTED STOCHASTIC GPU projection at {start_time}")
@@ -919,6 +924,8 @@ def run_projection_gpu_nested(
     if enable_debug:
         print(f"Debug mode: ENABLED (account={debug_account}, scenario={debug_scenario}, year={debug_year}, month={debug_month})")
         print(f"  Internal debug: int_scenario={debug_int_scenario}, int_year={debug_int_year}")
+        if debug_only and debug_account >= 0:
+            print(f"  DEBUG_ONLY: Will process ONLY account {debug_account}")
     else:
         print(f"Debug mode: disabled")
     print("=" * 80)
@@ -945,7 +952,27 @@ def run_projection_gpu_nested(
                          coussins_escap_path=coussins_escap_path)
     print("✓ Data loaded successfully")
 
-    if max_accounts:
+    # Filter to single account if debug_only mode
+    if debug_only and debug_account >= 0:
+        # Find the account by ID (assuming there's an ID column like 'NO_COMPTE' or index)
+        pop_df = data['population']
+        if 'NO_COMPTE' in pop_df.columns:
+            filtered = pop_df[pop_df['NO_COMPTE'] == debug_account]
+        else:
+            # Fall back to using index/row position
+            if debug_account < len(pop_df):
+                filtered = pop_df.iloc[[debug_account]]
+            else:
+                raise ValueError(f"debug_account {debug_account} is out of range (max: {len(pop_df)-1})")
+        
+        if len(filtered) == 0:
+            raise ValueError(f"Account {debug_account} not found in population data")
+        
+        data['population'] = filtered.reset_index(drop=True)
+        print(f"⚠️  DEBUG_ONLY: Filtered to single account {debug_account}")
+        # Override max_accounts since we're only doing one
+        max_accounts = None
+    elif max_accounts:
         data['population'] = data['population'].head(max_accounts)
 
     n_accounts = len(data['population'])
@@ -1019,6 +1046,10 @@ def run_projection_gpu_nested(
             ext_debug_result = batch_result['ext_debug']
         if batch_result['int_debug'] is not None:
             int_debug_result = batch_result['int_debug']
+        
+        # Call progress callback if provided
+        if progress_callback is not None:
+            progress_callback(i + 1, num_batches)
     
     # Create results DataFrames
     results_df, results_5chocs_df, sensitivities_df = create_results_dataframes(

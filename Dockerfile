@@ -26,11 +26,13 @@ RUN uv pip install --force-reinstall "llvmlite==0.43.0" "numba==0.60.0" "numpy<2
 # Copy application files
 COPY flask_app.py .
 COPY cli.py .
-COPY calculations/gpu.py .
 COPY cpu.py .
 COPY paths.py .
 COPY extract_csv_from_zips.py .
 COPY runpod_worker.py .
+
+# Copy calculations module (gpu.py, kernels.py, constants.py, utils.py, __init__.py)
+COPY calculations/ ./calculations/
 
 # Create directories for data (runpod_worker uses temp dirs, but these are useful for debugging)
 RUN mkdir -p uploads results static data_in data_out
