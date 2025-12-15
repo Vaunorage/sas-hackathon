@@ -484,8 +484,8 @@ def external_generator_kernel(
                 (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)):
                 depot_futur = 0.0
             else:
-                base_depot = MT_VM_PROJ if var_depot_fct == 1 else (acc[ACCOUNT_IDX_MT_GAR_DECES] / max(PC_GAR_DECES_1, MIN_GUARANTEE_VALUE))
-                depot_futur = base_depot * pc_depot_annuel / freq_eval
+                base_depot_calc = MT_VM_PROJ if var_depot_fct == 1 else (acc[ACCOUNT_IDX_MT_GAR_DECES] / max(PC_GAR_DECES_1, MIN_GUARANTEE_VALUE))
+                depot_futur = base_depot_calc * pc_depot_annuel / freq_eval
 
             if depot_futur > 0.0 and MT_VM_PROJ > 0.0:
                 MT_DEX_PROJ += depot_futur * (MT_DEX_PROJ / MT_VM_PROJ)
