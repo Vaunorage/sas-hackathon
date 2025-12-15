@@ -570,6 +570,7 @@ def save_results(
     ext_debug: Optional[np.ndarray] = None,
     int_debug: Optional[np.ndarray] = None,
     debug_params: Optional[dict] = None,
+    flux_projetes_periods: Optional[pd.DataFrame] = None,
 ):
     """
     Save all results (final simulation results and debug output) to CSV files.
@@ -616,6 +617,7 @@ def save_results(
     chocs_summary_df = None
     ext_debug_df = None
     int_debug_df = None
+    flux_projetes_df = None
     
     # ===========================================
     # 1. FINAL SIMULATION RESULTS
@@ -639,6 +641,34 @@ def save_results(
     print(f"  Total Capital Req:  ${vp_flux_total_df['VP_CAPITAL_REQ'].iloc[0]:,.2f}")
     print(f"  Total SCR:          ${vp_flux_total_df['VP_SCR'].iloc[0]:,.2f}")
     saved_files.append("VP_FLUX_TOTAL_GPU.csv (portfolio totals)")
+
+    if flux_projetes_periods is not None and len(flux_projetes_periods) > 0:
+        flux_cols = [
+            'AN_EVAL', 'MOIS_EVAL',
+            'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
+            'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES',
+            'FRAIS_FIXES', 'HON_GEST', 'COMM_MAINTIEN',
+            'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
+            'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE',
+            'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT'
+        ]
+
+        flux_projetes_df = flux_projetes_periods.copy()
+        for key in ('AN_EVAL', 'MOIS_EVAL'):
+            if key not in flux_projetes_df.columns:
+                flux_projetes_df[key] = 0
+
+        for col in flux_cols:
+            if col not in flux_projetes_df.columns:
+                if col in ('AN_EVAL', 'MOIS_EVAL'):
+                    continue
+                flux_projetes_df[col] = 0.0
+
+        flux_projetes_df = flux_projetes_df[flux_cols]
+        flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
+        flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
+        print(f"✓ Saved FLUX_PROJETES_GPU.csv")
+        saved_files.append("FLUX_PROJETES_GPU.csv (external loop logs)")
     
     # 1b. Five Chocs Results
     if results_5chocs_df is not None:
@@ -750,6 +780,7 @@ def save_results(
         'chocs_summary': chocs_summary_df if results_5chocs_df is not None else None,
         'ext_debug_df': ext_debug_df if ext_debug is not None else None,
         'int_debug_df': int_debug_df if int_debug is not None else None,
+        'flux_projetes_df': flux_projetes_df,
     }
     
     return result
@@ -952,6 +983,23 @@ def run_projection_gpu_nested(
                          coussins_escap_path=coussins_escap_path)
     print("✓ Data loaded successfully")
 
+    flux_projetes_periods = None
+    if 'rendements' in data and data['rendements'] is not None:
+        try:
+            flux_projetes_periods = (
+                data['rendements'][['AN_EVAL', 'MOIS_EVAL']]
+                .drop_duplicates()
+                .sort_values(['AN_EVAL', 'MOIS_EVAL'])
+                .reset_index(drop=True)
+            )
+            if not ((flux_projetes_periods['AN_EVAL'] == 0) & (flux_projetes_periods['MOIS_EVAL'] == 12)).any():
+                flux_projetes_periods = pd.concat(
+                    [pd.DataFrame([{'AN_EVAL': 0, 'MOIS_EVAL': 12}]), flux_projetes_periods],
+                    ignore_index=True,
+                ).sort_values(['AN_EVAL', 'MOIS_EVAL']).reset_index(drop=True)
+        except Exception:
+            flux_projetes_periods = None
+
     # Filter to single account if debug_only mode
     if debug_only and debug_account >= 0:
         # Find the account by ID (assuming there's an ID column like 'NO_COMPTE' or index)
@@ -1105,6 +1153,7 @@ def run_projection_gpu_nested(
         ext_debug=ext_debug_result,
         int_debug=int_debug_result,
         debug_params=debug_params,
+        flux_projetes_periods=flux_projetes_periods,
     )
     
     return ProjectionResult(
