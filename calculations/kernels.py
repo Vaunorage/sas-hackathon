@@ -46,6 +46,24 @@ from calculations.constants import (
     INT_DEBUG_IDX_START_AGE, INT_DEBUG_IDX_CURR_VM, INT_DEBUG_IDX_FEES,
     INT_DEBUG_IDX_PV_PATH, INT_DEBUG_IDX_R_PORTFOLIO, INT_DEBUG_IDX_FWD_RATE,
     INT_DEBUG_IDX_SIZE,
+    FLUX_COMP_IDX_PRIMES_GARANTIES,
+    FLUX_COMP_IDX_PREST_DECES,
+    FLUX_COMP_IDX_PREST_ECH,
+    FLUX_COMP_IDX_PREST_MRV,
+    FLUX_COMP_IDX_FRAIS_ACQUIS,
+    FLUX_COMP_IDX_COMM_VENTE,
+    FLUX_COMP_IDX_PRIMES_VARIABLES,
+    FLUX_COMP_IDX_FRAIS_FIXES,
+    FLUX_COMP_IDX_HON_GEST,
+    FLUX_COMP_IDX_COMM_MAINTIEN,
+    FLUX_COMP_IDX_VALEUR_MARCHANDE,
+    FLUX_COMP_IDX_PASSIF_REDRESSE,
+    FLUX_COMP_IDX_COUSSIN_CREDIT,
+    FLUX_COMP_IDX_COUSSIN_MARCHE,
+    FLUX_COMP_IDX_COUSSIN_DEPENSE,
+    FLUX_COMP_IDX_COUSSIN_DECHEANCE,
+    FLUX_COMP_IDX_COUSSIN_MORTALITE,
+    FLUX_COMP_IDX_COUSSIN_DEPOT,
 )
 
 # Backward compatibility: class wrappers for non-kernel code
@@ -97,8 +115,10 @@ def external_generator_kernel(
         lapse_lookups,       # LapseLookups: 6 arrays
         policy_lookups,      # PolicyLookups: 5 arrays
         commission_lookups,  # CommissionLookups: 6 arrays
+        coussins_lookups,    # CoussinsLookups: 16 arrays
         output_states,       # StatesTensor: (batch, scenarios, years, STATE_SIZE)
         output_cashflows,    # CashflowsTensor: (batch, scenarios, years, 1)
+        output_flux_agg,     # FluxAggTensor: (n_years+1, 13, FLUX_COMP_IDX_SIZE)
         debug_output=None,   # Optional: (EXT_DEBUG_SIZE,) - single row for filtered debug
         debug_account=-1,    # Account index to debug (-1 = disabled)
         debug_scenario=-1,   # Scenario index to debug (-1 = disabled)
@@ -129,6 +149,14 @@ def external_generator_kernel(
     min_ferr_lookup, lapse_part_min, lapse_part_max, lapse_tot_min, lapse_tot_max, lapse_tot_fact = lapse_lookups
     deposits_pc, deposits_var, deposits_age_max, deposits_i_even, fees_lookup = policy_lookups
     acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf = commission_lookups
+    (base_passif, tx_passif,
+     base_credit, tx_credit,
+     base_marche, tx_marche,
+     base_depense, tx_depense,
+     base_decheance, tx_decheance,
+     base_mortalite, tx_mortalite,
+     base_depot, tx_depot,
+     facteur_age_80, facteur_age_90) = coussins_lookups
 
     # Get global thread ID
     account_idx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
@@ -184,6 +212,10 @@ def external_generator_kernel(
     PC_GAR_ECH = acc[ACCOUNT_IDX_PC_GAR_ECH]
     PC_GAR_ECH_DEP_FUT = acc[ACCOUNT_IDX_PC_GAR_ECH_DEP_FUT]
     MT_VM_ORIG = acc[ACCOUNT_IDX_MT_VM_ORIG]
+
+    AJUSTEMENT_COMMISSION = acc[ACCOUNT_IDX_AJUSTEMENT_COMMISSION]
+    MT_RF = acc[ACCOUNT_IDX_MT_RF]
+    I_FRAIS_SUR_SRG = int(acc[ACCOUNT_IDX_I_FRAIS_SUR_SRG])
 
     ANNEE_COTIS = int(acc[ACCOUNT_IDX_ANNEE_COTIS]) if acc[ACCOUNT_IDX_ANNEE_COTIS] > 0 else ANNEE_EVALUATION_INI
     MOIS_COTIS = int(acc[ACCOUNT_IDX_MOIS_COTIS]) if acc[ACCOUNT_IDX_MOIS_COTIS] > 0 else 1
@@ -376,12 +408,15 @@ def external_generator_kernel(
             MT_VM_AV_RETRAIT = MT_VM_AV_RETRAIT_FRAIS * math.exp(-PC_RFG / freq_eval * AJUST_NOUV_AFFAIRES)
 
             # Calculate guarantee fees (SAS lines 540-551)
-            PRIMES_GARANTIES = 0.0
+            guarantee_fee_amount = 0.0
             if PC_FRAIS_GARANTIE > 0:
-                fee_base = MT_VM_AV_RETRAIT  # Default: fees on VM
-                # Note: I_FRAIS_SUR_SRG logic would go here if needed
-                PRIMES_GARANTIES = min(fee_base * PC_FRAIS_GARANTIE / freq_eval * AJUST_NOUV_AFFAIRES, MT_VM_AV_RETRAIT) * TX_SURVIE_DEB
-                MT_VM_AV_RETRAIT = max(MT_VM_AV_RETRAIT - PRIMES_GARANTIES / TX_SURVIE_DEB, 0.0)
+                base_fee_calc = MT_VM_AV_RETRAIT if I_FRAIS_SUR_SRG == 0 else MT_SRG_PROJ
+                guarantee_fee_amount = base_fee_calc * PC_FRAIS_GARANTIE / freq_eval * AJUST_NOUV_AFFAIRES
+                if guarantee_fee_amount > MT_VM_AV_RETRAIT:
+                    guarantee_fee_amount = MT_VM_AV_RETRAIT
+                MT_VM_AV_RETRAIT = max(MT_VM_AV_RETRAIT - guarantee_fee_amount, 0.0)
+
+            PRIMES_GARANTIES = guarantee_fee_amount * TX_SURVIE_DEB
 
             # FERR minimum calculation (SAS lines 444-449)
             if age < min_ferr_lookup.shape[0]:
@@ -421,11 +456,70 @@ def external_generator_kernel(
             # VM after withdrawals (SAS line 577)
             MT_VM_AP_RETRAIT = max(MT_VM_AV_RETRAIT - RETRAIT, 0.0)
 
-            # Death benefits calculation (SAS line 598)
-            PREST_DECES = qx * max(0.0, MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ - MT_VM_AP_RETRAIT) * TX_SURVIE_DEB
-
-            # Update final VM
             MT_VM_PROJ = MT_VM_AP_RETRAIT
+
+            PREST_MRV = 0.0
+            if I_PRODUIT_REGR == 1:
+                diff = RETRAIT - MT_VM_AV_RETRAIT
+                PREST_MRV = -diff * TX_SURVIE_DEB if diff > 0 else 0.0
+
+            depot_futur = 0.0
+            if (duree_max10 < deposits_pc.shape[0] and ID_DEPOT < deposits_pc.shape[1]):
+                pc_depot_annuel = deposits_pc[duree_max10, ID_DEPOT]
+                var_depot_fct = int(deposits_var[duree_max10, ID_DEPOT])
+                age_max_depot = int(deposits_age_max[duree_max10, ID_DEPOT])
+                i_even_cesse_depot = int(deposits_i_even[duree_max10, ID_DEPOT])
+            else:
+                pc_depot_annuel = 0.0
+                var_depot_fct = 0
+                age_max_depot = 999
+                i_even_cesse_depot = 0
+
+            age_retrait = age + 1
+            if (pc_depot_annuel == 0.0 or
+                (i_even_cesse_depot == 1 and age_retrait >= AGE_DECAISSEMENT) or
+                (age_max_depot < age) or
+                (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)):
+                depot_futur = 0.0
+            else:
+                base_depot = MT_VM_PROJ if var_depot_fct == 1 else (acc[ACCOUNT_IDX_MT_GAR_DECES] / max(PC_GAR_DECES_1, MIN_GUARANTEE_VALUE))
+                depot_futur = base_depot * pc_depot_annuel / freq_eval
+
+            if depot_futur > 0.0 and MT_VM_PROJ > 0.0:
+                MT_DEX_PROJ += depot_futur * (MT_DEX_PROJ / MT_VM_PROJ)
+                MT_MM_PROJ += depot_futur * (MT_MM_PROJ / MT_VM_PROJ)
+                MT_TSX_PROJ += depot_futur * (MT_TSX_PROJ / MT_VM_PROJ)
+                MT_SP500_PROJ += depot_futur * (MT_SP500_PROJ / MT_VM_PROJ)
+                MT_EAFE_PROJ += depot_futur * (MT_EAFE_PROJ / MT_VM_PROJ)
+                MT_GAR_DECES_PROJ += depot_futur
+                MT_GAR_ECH_PROJ += depot_futur * PC_GAR_ECH_DEP_FUT
+                if MT_SRG_PROJ > 0.0:
+                    MT_SRG_PROJ += depot_futur
+
+            if MT_VM_AP_RETRAIT > 0.0:
+                MT_VM_PROJ = MT_VM_AP_RETRAIT + depot_futur
+            else:
+                MT_VM_PROJ = MT_VM_AP_RETRAIT
+
+            # Death benefits calculation (SAS line 598)
+            claim = MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ - MT_VM_PROJ
+            PREST_DECES = -qx * claim * TX_SURVIE_DEB if claim > 0 else 0.0
+
+            PREST_ECH = 0.0
+            maturity_occurs = False
+            if annee_reelle == int(acc[ACCOUNT_IDX_ANNEE_ECH]) and mois_eval == int(acc[ACCOUNT_IDX_MOIS_ECH]):
+                maturity_occurs = True
+            else:
+                target_month = 12 if MOIS_NAIS == int(12 // freq_eval) else (MOIS_NAIS - int(12 // freq_eval))
+                if age == AGE_FIN_CONTRAT and mois_eval == target_month:
+                    maturity_occurs = True
+
+            if maturity_occurs:
+                diff_ech = MT_GAR_ECH_PROJ - MT_VM_PROJ
+                PREST_ECH = -diff_ech * TX_SURVIE if diff_ech > 0 else 0.0
+                if diff_ech > 0:
+                    MT_VM_PROJ = MT_VM_PROJ + diff_ech
+                    MT_GAR_ECH_PROJ = MT_VM_PROJ * PC_GAR_ECH
 
             # Portfolio rebalance (SAS lines 678-682)
             if MT_VM_ORIG > 0 and MT_VM_PROJ > 0:
@@ -438,6 +532,172 @@ def external_generator_kernel(
                     MT_EAFE_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_EAFE] / orig_total
                     MT_DEX_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_DEX] / orig_total
                     MT_MM_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_MM] / orig_total
+
+            comm_vente = 0.0
+            frais_acquis = 0.0
+            pc_commission_maintien = DEFAULT_COMMISSION_MAINTIEN
+            if MT_VM_AV_RETRAIT_FRAIS != 0.0:
+                if (duree_max10 < acq_vente_rf.shape[0] and ID_ACQUI < acq_vente_rf.shape[1]):
+                    pc_vente_rf_v = acq_vente_rf[duree_max10, ID_ACQUI]
+                    pc_vente_ac_v = acq_vente_ac[duree_max10, ID_ACQUI]
+                    pc_maintien_rf_v = acq_maintien_rf[duree_max10, ID_ACQUI]
+                    pc_maintien_ac_v = acq_maintien_ac[duree_max10, ID_ACQUI]
+                    pc_frais_ac_v = acq_frais_ac[duree_max10, ID_ACQUI]
+                    pc_frais_rf_v = acq_frais_rf[duree_max10, ID_ACQUI]
+                else:
+                    pc_vente_rf_v = pc_vente_ac_v = 0.0
+                    pc_maintien_rf_v = pc_maintien_ac_v = 0.0
+                    pc_frais_ac_v = pc_frais_rf_v = 0.0
+
+                mt_vm_base = acc[ACCOUNT_IDX_MT_VM]
+                mt_vm_for_rates = mt_vm_base if mt_vm_base != 0.0 else MT_VM_PROJ
+                if mt_vm_for_rates > 0.0:
+                    weight_rf = MT_RF / mt_vm_for_rates
+                    if weight_rf < 0.0:
+                        weight_rf = 0.0
+                    if weight_rf > 1.0:
+                        weight_rf = 1.0
+                    pc_commission_vente = ((pc_vente_ac_v * (1.0 - weight_rf)) + (pc_vente_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
+                    pc_commission_maintien = ((pc_maintien_ac_v * (1.0 - weight_rf)) + (pc_maintien_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
+                    pc_frais_an = (pc_frais_ac_v * (1.0 - weight_rf)) + (pc_frais_rf_v * weight_rf)
+                else:
+                    pc_commission_vente = 0.0
+                    pc_commission_maintien = 0.0
+                    pc_frais_an = 0.0
+
+                comm_vente = -pc_commission_vente * depot_futur * TX_SURVIE
+                frais_acquis = pc_frais_an * MT_VM_AP_RETRAIT * lapse * TX_SURVIE_DEB * (1.0 - qx)
+
+            fixed_fee_annual = 0.0
+            if ID_PRODUIT < fees_lookup.shape[0] and annee_reelle < fees_lookup.shape[1]:
+                fixed_fee_annual = fees_lookup[ID_PRODUIT, annee_reelle]
+            FRAIS_FIXES = -fixed_fee_annual / freq_eval * AJUST_NOUV_AFFAIRES * TX_SURVIE_DEB if MT_VM_AV_RETRAIT > 0.0 else 0.0
+
+            HON_GEST = -MT_VM_AV_RETRAIT_FRAIS * (math.exp(PC_HONORAIRES_GEST / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0) * TX_SURVIE_DEB
+
+            COMM_MAINTIEN = -MT_VM_AV_RETRAIT_FRAIS * (math.exp(pc_commission_maintien / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0) * TX_SURVIE_DEB
+
+            PRIMES_VARIABLES = MT_VM_AV_RETRAIT_FRAIS * math.exp(-(PC_RFG - PC_REVENU_FDS) / freq_eval * AJUST_NOUV_AFFAIRES) * (-(math.exp(-PC_REVENU_FDS / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0)) * TX_SURVIE_DEB
+
+            VALEUR_MARCHANDE = MT_VM_PROJ * TX_SURVIE
+
+            max_guarantee = MT_GAR_ECH_PROJ
+            if MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ > max_guarantee:
+                max_guarantee = MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ
+            if MT_SRG_PROJ > max_guarantee:
+                max_guarantee = MT_SRG_PROJ
+
+            if ID_PRODUIT == 22:
+                code_cat_produit = 0
+            elif ID_PRODUIT == 12 or ID_PRODUIT == 13 or ID_PRODUIT == 14 or ID_PRODUIT == 15 or ID_PRODUIT == 16:
+                code_cat_produit = 1
+            elif ID_PRODUIT == 17 or ID_PRODUIT == 18 or ID_PRODUIT == 19 or ID_PRODUIT == 20 or ID_PRODUIT == 21:
+                code_cat_produit = 2
+            elif ID_PRODUIT == 6:
+                code_cat_produit = 3
+            elif ID_PRODUIT == 4 or ID_PRODUIT == 7:
+                code_cat_produit = 4
+            elif ID_PRODUIT == 5 or ID_PRODUIT == 8:
+                code_cat_produit = 5
+            elif ID_PRODUIT == 2 or ID_PRODUIT == 3:
+                code_cat_produit = 6
+            else:
+                code_cat_produit = 7
+
+            pct_rf = 0.0
+            if MT_VM_PROJ > 0.0:
+                pct_rf = (MT_DEX_PROJ + MT_MM_PROJ) / MT_VM_PROJ
+
+            if code_cat_produit == 0 or code_cat_produit == 6:
+                cat_coussin_1 = 0
+            elif code_cat_produit == 7 and pct_rf < 0.5:
+                cat_coussin_1 = 4
+            elif code_cat_produit == 7:
+                cat_coussin_1 = 5
+            elif pct_rf < (1.0 / 3.0):
+                cat_coussin_1 = 1
+            elif pct_rf < (2.0 / 3.0):
+                cat_coussin_1 = 2
+            else:
+                cat_coussin_1 = 3
+
+            if code_cat_produit == 7 and VM_VG_RATIO < 0.7:
+                cat_coussin_2 = 4
+            elif code_cat_produit == 7 and VM_VG_RATIO < 0.9:
+                cat_coussin_2 = 5
+            elif code_cat_produit == 7:
+                cat_coussin_2 = 6
+            elif duree_max10 <= 3:
+                cat_coussin_2 = 1
+            elif duree_max10 <= 6:
+                cat_coussin_2 = 2
+            else:
+                cat_coussin_2 = 3
+
+            if age < 80:
+                age_factor = 1.0
+            elif age < 90:
+                age_factor = facteur_age_80[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            else:
+                age_factor = facteur_age_90[code_cat_produit, cat_coussin_1, cat_coussin_2]
+
+            tx_passif_v = tx_passif[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            tx_credit_v = tx_credit[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            tx_marche_v = tx_marche[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            tx_depense_v = tx_depense[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            tx_decheance_v = tx_decheance[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            tx_mortalite_v = tx_mortalite[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            tx_depot_v = tx_depot[code_cat_produit, cat_coussin_1, cat_coussin_2]
+
+            if code_cat_produit == 7 and MT_VM_PROJ == 0.0:
+                tx_credit_v = 0.0
+                tx_marche_v = 0.0
+                tx_decheance_v = 0.0
+                tx_depot_v = 0.0
+
+            base_passif_v = base_passif[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            base_credit_v = base_credit[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            base_marche_v = base_marche[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            base_depense_v = base_depense[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            base_decheance_v = base_decheance[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            base_mortalite_v = base_mortalite[code_cat_produit, cat_coussin_1, cat_coussin_2]
+            base_depot_v = base_depot[code_cat_produit, cat_coussin_1, cat_coussin_2]
+
+            base_amt_passif = max_guarantee if base_passif_v == 0 else MT_VM_PROJ
+            base_amt_credit = max_guarantee if base_credit_v == 0 else MT_VM_PROJ
+            base_amt_marche = max_guarantee if base_marche_v == 0 else MT_VM_PROJ
+            base_amt_depense = max_guarantee if base_depense_v == 0 else MT_VM_PROJ
+            base_amt_decheance = max_guarantee if base_decheance_v == 0 else MT_VM_PROJ
+            base_amt_mortalite = max_guarantee if base_mortalite_v == 0 else MT_VM_PROJ
+            base_amt_depot = max_guarantee if base_depot_v == 0 else MT_VM_PROJ
+
+            PASSIF_REDRESSE = tx_passif_v * base_amt_passif * age_factor * TX_SURVIE
+            COUSSIN_CREDIT = tx_credit_v * base_amt_credit * age_factor * TX_SURVIE
+            COUSSIN_MARCHE = tx_marche_v * base_amt_marche * age_factor * TX_SURVIE
+            COUSSIN_DEPENSE = tx_depense_v * base_amt_depense * age_factor * TX_SURVIE
+            COUSSIN_DECHEANCE = tx_decheance_v * base_amt_decheance * age_factor * TX_SURVIE
+            COUSSIN_MORTALITE = tx_mortalite_v * base_amt_mortalite * age_factor * TX_SURVIE
+            COUSSIN_DEPOT = tx_depot_v * base_amt_depot * age_factor * TX_SURVIE
+
+            if output_flux_agg is not None and an_eval < output_flux_agg.shape[0] and mois_eval < output_flux_agg.shape[1]:
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PRIMES_GARANTIES), PRIMES_GARANTIES)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PREST_DECES), PREST_DECES)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PREST_ECH), PREST_ECH)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PREST_MRV), PREST_MRV)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_FRAIS_ACQUIS), frais_acquis)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COMM_VENTE), comm_vente)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PRIMES_VARIABLES), PRIMES_VARIABLES)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_FRAIS_FIXES), FRAIS_FIXES)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_HON_GEST), HON_GEST)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COMM_MAINTIEN), COMM_MAINTIEN)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_VALEUR_MARCHANDE), VALEUR_MARCHANDE)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PASSIF_REDRESSE), PASSIF_REDRESSE)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_CREDIT), COUSSIN_CREDIT)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_MARCHE), COUSSIN_MARCHE)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_DEPENSE), COUSSIN_DEPENSE)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_DECHEANCE), COUSSIN_DECHEANCE)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_MORTALITE), COUSSIN_MORTALITE)
+                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_DEPOT), COUSSIN_DEPOT)
 
             # === SAVE STATE TO GLOBAL MEMORY ===
             if an_eval < n_years and output_year_idx < output_states.shape[2]:
@@ -725,3 +985,10 @@ def nested_valuation_kernel_five_chocs(
 STATE_SIZE = STATE_IDX_SIZE
 EXT_DEBUG_SIZE = EXT_DEBUG_IDX_SIZE
 INT_DEBUG_SIZE = INT_DEBUG_IDX_SIZE
+
+STATE_MT_VM = STATE_IDX_MT_VM
+STATE_MT_GAR_DECES = STATE_IDX_MT_GAR_DECES
+STATE_MT_GAR_ECH = STATE_IDX_MT_GAR_ECH
+STATE_MT_SRG = STATE_IDX_MT_SRG
+STATE_AGE = STATE_IDX_AGE
+STATE_TX_SURVIE = STATE_IDX_TX_SURVIE
