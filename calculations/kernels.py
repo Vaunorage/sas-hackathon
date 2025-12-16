@@ -106,6 +106,23 @@ class ExtDebugIdx:
     SIZE = EXT_DEBUG_IDX_SIZE
 
 
+class IntDebugIdx:
+    """Internal kernel debug output column indices (wrapper for backward compatibility)."""
+    START_VM = INT_DEBUG_IDX_START_VM
+    VM_CHOC = INT_DEBUG_IDX_VM_CHOC
+    AVG_PV_FLUX = INT_DEBUG_IDX_AVG_PV_FLUX
+    RESERVE = INT_DEBUG_IDX_RESERVE
+    CAPITAL = INT_DEBUG_IDX_CAPITAL
+    START_TX_SURVIE = INT_DEBUG_IDX_START_TX_SURVIE
+    START_AGE = INT_DEBUG_IDX_START_AGE
+    CURR_VM = INT_DEBUG_IDX_CURR_VM
+    FEES = INT_DEBUG_IDX_FEES
+    PV_PATH = INT_DEBUG_IDX_PV_PATH
+    R_PORTFOLIO = INT_DEBUG_IDX_R_PORTFOLIO
+    FWD_RATE = INT_DEBUG_IDX_FWD_RATE
+    SIZE = INT_DEBUG_IDX_SIZE
+
+
 @cuda.jit
 def external_generator_kernel(
         account_data,        # AccountData: (n_accounts, n_fields)
@@ -757,23 +774,6 @@ def external_generator_kernel(
                         debug_output[EXT_DEBUG_IDX_VM_VG_RATIO] = VM_VG_RATIO
 
                 output_year_idx += 1
-
-
-class IntDebugIdx:
-    """Internal kernel debug output column indices (wrapper for backward compatibility)."""
-    START_VM = INT_DEBUG_IDX_START_VM
-    VM_CHOC = INT_DEBUG_IDX_VM_CHOC
-    AVG_PV_FLUX = INT_DEBUG_IDX_AVG_PV_FLUX
-    RESERVE = INT_DEBUG_IDX_RESERVE
-    CAPITAL = INT_DEBUG_IDX_CAPITAL
-    START_TX_SURVIE = INT_DEBUG_IDX_START_TX_SURVIE
-    START_AGE = INT_DEBUG_IDX_START_AGE
-    CURR_VM = INT_DEBUG_IDX_CURR_VM
-    FEES = INT_DEBUG_IDX_FEES
-    PV_PATH = INT_DEBUG_IDX_PV_PATH
-    R_PORTFOLIO = INT_DEBUG_IDX_R_PORTFOLIO
-    FWD_RATE = INT_DEBUG_IDX_FWD_RATE
-    SIZE = INT_DEBUG_IDX_SIZE
 
 
 @cuda.jit

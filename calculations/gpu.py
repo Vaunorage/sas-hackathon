@@ -42,6 +42,7 @@ import pandas as pd
 import numpy as np
 import polars as pl
 import gc
+import sys
 from pathlib import Path
 from typing import Optional, List, TypedDict
 from dataclasses import dataclass
@@ -1047,6 +1048,7 @@ def run_projection_gpu_nested(
     print(f"Architecture: Two-Pass (Generator → Valuator with 5 Chocs)")
     print(f"External scenarios: {nb_ext_scenarios}")
     print(f"Internal scenarios per node: {nb_int_scenarios}")
+    sys.stdout.flush()
     print(f"Capital shock: {shock_capital_pct*100:.1f}%")
     enable_debug = debug_account >= 0 or debug_scenario >= 0 or debug_year >= 0 or debug_month >= 0
     if enable_debug:
@@ -1057,8 +1059,11 @@ def run_projection_gpu_nested(
     else:
         print(f"Debug mode: disabled")
     print("=" * 80)
+    sys.stdout.flush()
     
     # Initialize GPU
+    print("Initializing GPU...")
+    sys.stdout.flush()
     initialize_gpu()
 
     # Update config
