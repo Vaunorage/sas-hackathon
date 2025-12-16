@@ -48,6 +48,9 @@ from calculations.constants import (
     INT_DEBUG_IDX_START_AGE, INT_DEBUG_IDX_CURR_VM, INT_DEBUG_IDX_FEES,
     INT_DEBUG_IDX_PV_PATH, INT_DEBUG_IDX_R_PORTFOLIO, INT_DEBUG_IDX_FWD_RATE,
     INT_DEBUG_IDX_SIZE,
+    INT_TS_DEBUG_IDX_CURR_VM, INT_TS_DEBUG_IDX_FEES, INT_TS_DEBUG_IDX_PV_PATH,
+    INT_TS_DEBUG_IDX_R_PORTFOLIO, INT_TS_DEBUG_IDX_FWD_RATE, INT_TS_DEBUG_IDX_DF,
+    INT_TS_DEBUG_IDX_SIZE,
     FLUX_COMP_IDX_PRIMES_GARANTIES,
     FLUX_COMP_IDX_PREST_DECES,
     FLUX_COMP_IDX_PREST_ECH,
@@ -786,6 +789,7 @@ def nested_valuation_kernel_five_chocs(
         mortality_lookup,    # MortalityLookup: (sex, age, year, product)
         output_metrics,      # MetricsTensor: (batch, ext_scenarios, years, NUM_CHOCS, 2)
         debug_output=None,   # Optional: (NUM_CHOCS, INT_DEBUG_SIZE) - one row per choc for filtered debug
+        debug_ts_output=None,  # Optional: (NUM_CHOCS, n_internal_years, INT_TS_DEBUG_IDX_SIZE) - time series for filtered debug
         debug_int_scenario=-1,  # Internal scenario to debug (-1 = disabled, logs all)
         debug_int_year=-1,      # Internal year to debug (-1 = disabled, logs all)
         debug_account=-1,       # Account index to debug (-1 = disabled)
@@ -938,6 +942,23 @@ def nested_valuation_kernel_five_chocs(
                 fwd = rn_forward_rate[i_int % rn_forward_rate.shape[0], t_int % rn_forward_rate.shape[1]] if rn_forward_rate.size > 0 else DEFAULT_FORWARD_RATE
                 df = math.exp(-fwd * (t_int + 1))
                 pv_path += fees * df
+
+                # Capture internal loop time series for the filtered debug node.
+                # Only record a single internal scenario to avoid overwriting/huge buffers.
+                if debug_ts_output is not None:
+                    matches_filter = (
+                        (debug_account < 0 or acc_idx == debug_account) and
+                        (debug_ext_scenario < 0 or scn_idx == debug_ext_scenario) and
+                        (debug_ext_year < 0 or year_idx == debug_ext_year)
+                    )
+                    if matches_filter and debug_int_scenario >= 0 and i_int == debug_int_scenario:
+                        if debug_int_year < 0 or t_int == debug_int_year:
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_CURR_VM] = curr_vm
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_FEES] = fees
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_PV_PATH] = pv_path
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_R_PORTFOLIO] = r_portfolio
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_FWD_RATE] = fwd
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_DF] = df
                 
                 # Capture debug values at specific internal scenario/year
                 if (debug_int_scenario < 0 or i_int == debug_int_scenario) and \

@@ -234,6 +234,17 @@ INT_DEBUG_IDX_R_PORTFOLIO = 10   # Return applied at debug internal iteration
 INT_DEBUG_IDX_FWD_RATE = 11      # Forward rate at debug internal iteration
 INT_DEBUG_IDX_SIZE = 12  # Total number of debug columns
 
+INT_TS_DEBUG_IDX_CURR_VM = 0
+INT_TS_DEBUG_IDX_FEES = 1
+INT_TS_DEBUG_IDX_PV_PATH = 2
+INT_TS_DEBUG_IDX_R_PORTFOLIO = 3
+INT_TS_DEBUG_IDX_FWD_RATE = 4
+INT_TS_DEBUG_IDX_DF = 5
+INT_TS_DEBUG_IDX_SIZE = 6
+
+# =============================================================================
+# FLUX COMPONENT INDICES (for GPU kernel access)
+# =============================================================================
 FLUX_COMP_IDX_PRIMES_GARANTIES = 0
 FLUX_COMP_IDX_PREST_DECES = 1
 FLUX_COMP_IDX_PREST_ECH = 2
