@@ -68,6 +68,7 @@ class ProjectionResult:
     chocs_summary: Optional[pd.DataFrame]
     ext_debug_df: Optional[pd.DataFrame]
     int_debug_df: Optional[pd.DataFrame]
+    flux_projetes_df: Optional[pd.DataFrame]
     saved_files: List[str]
 
 
@@ -1301,6 +1302,7 @@ def run_projection_gpu_nested(
         chocs_summary=save_result['chocs_summary'],
         ext_debug_df=save_result['ext_debug_df'],
         int_debug_df=save_result['int_debug_df'],
+        flux_projetes_df=save_result['flux_projetes_df'],
         saved_files=save_result['saved_files'],
     )
 

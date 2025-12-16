@@ -282,6 +282,10 @@ def handler(job):
                 output['int_debug'] = result.int_debug_df.to_dict(orient='records')
                 print(f"  ✓ Converted int_debug: {len(result.int_debug_df)} rows")
             
+            if result.flux_projetes_df is not None:
+                output['flux_projetes'] = result.flux_projetes_df.to_dict(orient='records')
+                print(f"  ✓ Converted flux_projetes: {len(result.flux_projetes_df)} rows")
+            
             # Restore original kernel after job completes
             if custom_kernel_applied:
                 restore_original_kernel()

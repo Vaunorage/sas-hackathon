@@ -1165,6 +1165,16 @@ def poll_runpod_results(job_id: str, run_request):
                                         print(f"  ✓ Saved int_debug: {len(df)} rows")
                                     except Exception as e:
                                         print(f"  ✗ Failed to save int_debug: {e}")
+                                
+                                # Save flux_projetes (FLUX_PROJETES_GPU.csv data)
+                                if results_data.get('flux_projetes'):
+                                    try:
+                                        df = pd.DataFrame(results_data['flux_projetes'])
+                                        save_flux_projetes(job_id, df)
+                                        saved_any = True
+                                        print(f"  ✓ Saved flux_projetes: {len(df)} rows")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save flux_projetes: {e}")
                             
                             if saved_any:
                                 print(f"✓ Job {job_id} completed and results saved to database!")
