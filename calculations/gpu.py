@@ -28,6 +28,13 @@ from calculations.constants import (
     FLUX_COMP_IDX_COUSSIN_MORTALITE,
     FLUX_COMP_IDX_COUSSIN_DEPOT,
     FLUX_COMP_IDX_SIZE,
+    INT_TS_DEBUG_IDX_CURR_VM,
+    INT_TS_DEBUG_IDX_FEES,
+    INT_TS_DEBUG_IDX_PV_PATH,
+    INT_TS_DEBUG_IDX_R_PORTFOLIO,
+    INT_TS_DEBUG_IDX_FWD_RATE,
+    INT_TS_DEBUG_IDX_DF,
+    INT_TS_DEBUG_IDX_SIZE,
     LOOKUP_TABLE_OVERHEAD_MB, DEFAULT_GPU_MEMORY_GB, MEMORY_SAFETY_FACTOR, MEMORY_BATCH_THRESHOLD,
     DEFAULT_THREADS_PER_BLOCK_1D,
 )
@@ -62,7 +69,7 @@ class KernelIncompatibilityError(RuntimeError):
 
 
 EXPECTED_EXTERNAL_GENERATOR_ARGCOUNT = 18
-EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT = 13
+EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT = 14
 
 
 def validate_kernel_compatibility():
@@ -94,6 +101,7 @@ class ProjectionResult:
     chocs_summary: Optional[pd.DataFrame]
     ext_debug_df: Optional[pd.DataFrame]
     int_debug_df: Optional[pd.DataFrame]
+    int_debug_ts_df: Optional[pd.DataFrame]
     flux_projetes_df: Optional[pd.DataFrame]
     saved_files: List[str]
 
@@ -403,6 +411,7 @@ class ProcessBatchResult(TypedDict):
     batch_capital_5chocs: np.ndarray
     ext_debug: Optional[np.ndarray]  # Debug output from external kernel
     int_debug: Optional[np.ndarray]  # Debug output from internal kernel
+    int_debug_ts: Optional[np.ndarray]  # Debug time series output from internal kernel
     flux_agg: Optional[np.ndarray]   # Aggregated external cashflow components (years+1, 13, FLUX_COMP_IDX_SIZE)
 
 
@@ -504,6 +513,14 @@ def process_batch(
         # Always allocate debug arrays (kernel uses -1 flags to skip writing)
         d_ext_debug = cuda.device_array((EXT_DEBUG_SIZE,), dtype=np.float32)
         d_int_debug = cuda.device_array((NUM_CHOCS, INT_DEBUG_SIZE), dtype=np.float32)
+        enable_int_debug_ts = enable_int_debug and debug_int_scenario >= 0
+        if enable_int_debug_ts:
+            d_int_debug_ts = cuda.to_device(
+                np.zeros((NUM_CHOCS, nb_an_projection, INT_TS_DEBUG_IDX_SIZE), dtype=np.float32)
+            )
+        else:
+            # Always pass an array to the kernel to keep the CUDA signature stable.
+            d_int_debug_ts = cuda.to_device(np.zeros((1, 1, INT_TS_DEBUG_IDX_SIZE), dtype=np.float32))
     except Exception as e:
         raise RuntimeError(
             f"Failed to allocate GPU memory for batch {batch_idx+1}. "
@@ -563,6 +580,7 @@ def process_batch(
         gpu_lookups['mortality'],
         d_metrics,
         d_int_debug,
+        d_int_debug_ts,
         debug_int_scenario,
         debug_int_year,
         debug_account,
@@ -581,6 +599,7 @@ def process_batch(
     # Copy debug arrays if enabled
     h_ext_debug = None
     h_int_debug = None
+    h_int_debug_ts = None
     h_flux_agg = None
     if enable_ext_debug:
         logger.info("  Copying external debug output to CPU...")
@@ -588,6 +607,8 @@ def process_batch(
     if enable_int_debug:
         logger.info("  Copying internal debug output to CPU...")
         h_int_debug = d_int_debug.copy_to_host()
+        if enable_int_debug_ts:
+            h_int_debug_ts = d_int_debug_ts.copy_to_host()
 
     h_flux_agg = d_flux_agg.copy_to_host()
     
@@ -598,7 +619,7 @@ def process_batch(
     batch_capital = batch_capital_5chocs[:, 0]
     
     # Cleanup
-    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug, d_flux_agg
+    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug, d_int_debug_ts, d_flux_agg
     cuda.synchronize()
     del h_metrics
     gc.collect()
@@ -619,6 +640,7 @@ def process_batch(
         'batch_capital_5chocs': batch_capital_5chocs,
         'ext_debug': h_ext_debug,
         'int_debug': h_int_debug,
+        'int_debug_ts': h_int_debug_ts,
         'flux_agg': h_flux_agg,
     }
 
@@ -696,6 +718,7 @@ def save_results(
     n_accounts: int,
     ext_debug: Optional[np.ndarray] = None,
     int_debug: Optional[np.ndarray] = None,
+    int_debug_ts_df: Optional[pd.DataFrame] = None,
     debug_params: Optional[dict] = None,
     flux_projetes_periods: Optional[pd.DataFrame] = None,
 ):
@@ -744,6 +767,7 @@ def save_results(
     chocs_summary_df = None
     ext_debug_df = None
     int_debug_df = None
+    int_debug_ts_saved_df = None
     flux_projetes_df = None
     
     # ===========================================
@@ -888,6 +912,13 @@ def save_results(
         if debug_params:
             print(f"  Filter: int_scenario={debug_params.get('int_scenario', -1)}, int_year={debug_params.get('int_year', -1)}")
         saved_files.append("DEBUG_INTERNAL_KERNEL.csv (internal kernel debug)")
+
+    if int_debug_ts_df is not None and len(int_debug_ts_df) > 0:
+        int_debug_ts_saved_df = int_debug_ts_df.copy()
+        int_debug_ts_path = output_path / "DEBUG_INTERNAL_LOOP_TS.csv"
+        int_debug_ts_saved_df.to_csv(int_debug_ts_path, index=False, sep=';')
+        print(f"  Saved DEBUG_INTERNAL_LOOP_TS.csv ({len(int_debug_ts_saved_df)} rows)")
+        saved_files.append("DEBUG_INTERNAL_LOOP_TS.csv (internal loop time series debug)")
     
     # ===========================================
     # 3. SUMMARY
@@ -907,6 +938,7 @@ def save_results(
         'chocs_summary': chocs_summary_df if results_5chocs_df is not None else None,
         'ext_debug_df': ext_debug_df if ext_debug is not None else None,
         'int_debug_df': int_debug_df if int_debug is not None else None,
+        'int_debug_ts_df': int_debug_ts_saved_df,
         'flux_projetes_df': flux_projetes_df,
     }
     
@@ -1195,6 +1227,7 @@ def run_projection_gpu_nested(
     total_flux_agg = np.zeros((nb_an_projection + 1, 13, FLUX_COMP_IDX_SIZE), dtype=np.float64)
     ext_debug_result = None
     int_debug_result = None
+    int_debug_ts_result = None
     
     for i in range(num_batches):
         start_idx = i * batch_size
@@ -1236,6 +1269,8 @@ def run_projection_gpu_nested(
             ext_debug_result = batch_result['ext_debug']
         if batch_result['int_debug'] is not None:
             int_debug_result = batch_result['int_debug']
+        if batch_result.get('int_debug_ts') is not None:
+            int_debug_ts_result = batch_result['int_debug_ts']
 
         if batch_result.get('flux_agg') is not None:
             total_flux_agg += batch_result['flux_agg']
@@ -1317,6 +1352,34 @@ def run_projection_gpu_nested(
         flux_projetes_periods['COUSSIN_DECHEANCE'] = col(FLUX_COMP_IDX_COUSSIN_DECHEANCE)
         flux_projetes_periods['COUSSIN_MORTALITE'] = col(FLUX_COMP_IDX_COUSSIN_MORTALITE)
         flux_projetes_periods['COUSSIN_DEPOT'] = col(FLUX_COMP_IDX_COUSSIN_DEPOT)
+
+    int_debug_ts_df = None
+    if enable_debug and int_debug_ts_result is not None:
+        rows = []
+        max_years = int_debug_ts_result.shape[1]
+        years_iter = [debug_int_year] if debug_int_year is not None and debug_int_year >= 0 else range(max_years)
+        for choc_idx in range(int_debug_ts_result.shape[0]):
+            choc_name = CHOC_NAMES[choc_idx] if choc_idx < len(CHOC_NAMES) else f"CHOC_{choc_idx}"
+            for t_int in years_iter:
+                if t_int < 0 or t_int >= max_years:
+                    continue
+                rows.append({
+                    'CHOC_IDX': choc_idx,
+                    'CHOC_NAME': choc_name,
+                    'T_INT': int(t_int),
+                    'DEBUG_ACCOUNT': debug_account,
+                    'DEBUG_SCENARIO': debug_scenario,
+                    'DEBUG_YEAR': debug_year,
+                    'DEBUG_INT_SCENARIO': debug_int_scenario,
+                    'CURR_VM': float(int_debug_ts_result[choc_idx, t_int, INT_TS_DEBUG_IDX_CURR_VM]),
+                    'FEES': float(int_debug_ts_result[choc_idx, t_int, INT_TS_DEBUG_IDX_FEES]),
+                    'PV_PATH': float(int_debug_ts_result[choc_idx, t_int, INT_TS_DEBUG_IDX_PV_PATH]),
+                    'R_PORTFOLIO': float(int_debug_ts_result[choc_idx, t_int, INT_TS_DEBUG_IDX_R_PORTFOLIO]),
+                    'FWD_RATE': float(int_debug_ts_result[choc_idx, t_int, INT_TS_DEBUG_IDX_FWD_RATE]),
+                    'DF': float(int_debug_ts_result[choc_idx, t_int, INT_TS_DEBUG_IDX_DF]),
+                })
+        if rows:
+            int_debug_ts_df = pd.DataFrame(rows)
     
     # Save all results (including debug output if enabled)
     save_result = save_results(
@@ -1327,6 +1390,7 @@ def run_projection_gpu_nested(
         n_accounts=n_accounts,
         ext_debug=ext_debug_result,
         int_debug=int_debug_result,
+        int_debug_ts_df=int_debug_ts_df,
         debug_params=debug_params,
         flux_projetes_periods=flux_projetes_periods,
     )
@@ -1340,6 +1404,7 @@ def run_projection_gpu_nested(
         chocs_summary=save_result['chocs_summary'],
         ext_debug_df=save_result['ext_debug_df'],
         int_debug_df=save_result['int_debug_df'],
+        int_debug_ts_df=save_result['int_debug_ts_df'],
         flux_projetes_df=save_result['flux_projetes_df'],
         saved_files=save_result['saved_files'],
     )

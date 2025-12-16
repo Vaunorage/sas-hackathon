@@ -772,6 +772,66 @@ input[type="password"] {
             return fetch(url, options);
         }
 
+        function normalizeResultFile(file) {
+            if (!file) return { name: '', type: 'other' };
+            if (typeof file === 'string') return { name: file, type: 'other' };
+            return file;
+        }
+
+        function getUiFileCategory(file) {
+            const f = normalizeResultFile(file);
+            const name = String(f.name || '').toUpperCase();
+            const table = String(f.table || '').toLowerCase();
+            const apiType = String(f.type || '').toLowerCase();
+
+            if (apiType === 'input') return 'input';
+
+            if (apiType === 'debug' || name.includes('DEBUG') || name === 'EXT_DEBUG' || name === 'INT_DEBUG') {
+                return 'debug';
+            }
+
+            if (table === 'flux_projetes' || name === 'FLUX_PROJETES' || name === 'FLUX_PROJETES_GPU.CSV') {
+                return 'external_cashflows';
+            }
+
+            if (
+                table === 'nested_summary' ||
+                name === 'VP_FLUX_TOTAL' ||
+                name === 'VP_FLUX_TOTAL_GPU.CSV' ||
+                table === 'chocs_summary' ||
+                name === 'CHOCS_SUMMARY' ||
+                name === 'VP_FLUX_5CHOCS_SUMMARY_GPU.CSV'
+            ) {
+                return 'summary';
+            }
+
+            if (
+                table === 'nested_results' ||
+                name === 'NESTED_RESULTS' ||
+                name === 'VP_FLUX_COMPTE' ||
+                name === 'VP_FLUX_COMPTE_GPU.CSV'
+            ) {
+                return 'account_results';
+            }
+
+            if (
+                table === 'five_chocs_results' ||
+                name === 'FIVE_CHOCS_RESULTS' ||
+                name === 'VP_FLUX_5CHOCS_DETAILED_GPU.CSV'
+            ) {
+                return 'five_chocs';
+            }
+
+            if (table === 'sensitivities' || name === 'SENSITIVITIES' || name === 'VP_FLUX_SENSITIVITIES_GPU.CSV') {
+                return 'sensitivities';
+            }
+
+            if (apiType === 'summary') return 'summary';
+            if (apiType === 'detailed') return 'account_results';
+
+            return 'other';
+        }
+
         // Clear database (admin action)
         document.getElementById('clear-db-form').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -891,16 +951,34 @@ input[type="password"] {
                         const hasMetadata = typeof job.result_files[0] === 'object' && job.result_files[0].type;
                         if (hasMetadata) {
                             const counts = {
-                                summary: job.result_files.filter(f => f.type === 'summary').length,
-                                detailed: job.result_files.filter(f => f.type === 'detailed').length,
-                                internal: job.result_files.filter(f => f.type === 'internal').length,
-                                debug: job.result_files.filter(f => f.type === 'debug').length
+                                summary: 0,
+                                account_results: 0,
+                                external_cashflows: 0,
+                                five_chocs: 0,
+                                sensitivities: 0,
+                                debug: 0,
+                                input: 0,
+                                other: 0,
                             };
+
+                            job.result_files.forEach(f => {
+                                const category = getUiFileCategory(f);
+                                if (counts[category] === undefined) {
+                                    counts.other += 1;
+                                } else {
+                                    counts[category] += 1;
+                                }
+                            });
+
                             const parts = [];
                             if (counts.summary) parts.push(`${counts.summary} summary`);
-                            if (counts.detailed) parts.push(`${counts.detailed} detailed`);
-                            if (counts.internal) parts.push(`${counts.internal} internal`);
+                            if (counts.account_results) parts.push(`${counts.account_results} account results`);
+                            if (counts.external_cashflows) parts.push(`${counts.external_cashflows} cashflows`);
+                            if (counts.five_chocs) parts.push(`${counts.five_chocs} five chocs`);
+                            if (counts.sensitivities) parts.push(`${counts.sensitivities} sensitivities`);
                             if (counts.debug) parts.push(`${counts.debug} debug`);
+                            if (counts.other) parts.push(`${counts.other} other`);
+
                             fileInfo = `Results: ${parts.join(', ')}`;
                         } else {
                             fileInfo = `Results: ${job.result_files.length} files`;
@@ -1056,17 +1134,49 @@ input[type="password"] {
                 parametersHTML += '<ul style="font-size: 13px; margin: 5px 0; padding-left: 20px;">';
                 if (job.parameters) {
                     const params = typeof job.parameters === 'string' ? JSON.parse(job.parameters) : job.parameters;
-                    parametersHTML += `<li><strong>Years to Project:</strong> ${params.nb_an_projection || 'N/A'}</li>`;
-                    parametersHTML += `<li><strong>Scenarios:</strong> ${params.nb_scenarios || 'N/A'}</li>`;
-                    if (params.max_accounts) {
+
+                    const extScenarios = params.nb_ext_scenarios ?? params.nb_scenarios;
+                    const intScenarios = params.nb_int_scenarios;
+
+                    parametersHTML += `<li><strong>Years to Project:</strong> ${params.nb_an_projection ?? 'N/A'}</li>`;
+                    parametersHTML += `<li><strong>Scenarios:</strong> ${extScenarios ?? 'N/A'}</li>`;
+                    parametersHTML += `<li><strong>External Scenarios:</strong> ${extScenarios ?? 'N/A'}</li>`;
+                    parametersHTML += `<li><strong>Internal Scenarios:</strong> ${intScenarios ?? 'N/A'}</li>`;
+
+                    if (params.shock_capital_pct !== null && params.shock_capital_pct !== undefined) {
+                        const shockPct = Number(params.shock_capital_pct) * 100;
+                        parametersHTML += `<li><strong>Capital Shock:</strong> ${isNaN(shockPct) ? params.shock_capital_pct : shockPct.toFixed(1)}%</li>`;
+                    }
+
+                    if (params.max_accounts !== null && params.max_accounts !== undefined) {
                         parametersHTML += `<li><strong>Max Accounts:</strong> ${params.max_accounts}</li>`;
                     }
+
+                    if (params.debug_only !== null && params.debug_only !== undefined) {
+                        parametersHTML += `<li><strong>Debug Only:</strong> ${params.debug_only ? 'Yes' : 'No'}</li>`;
+                    }
+
                     if (params.debug_account !== null && params.debug_account !== undefined) {
                         parametersHTML += `<li><strong>Debug Account:</strong> ${params.debug_account}</li>`;
                     }
                     if (params.debug_scenario !== null && params.debug_scenario !== undefined) {
                         parametersHTML += `<li><strong>Debug Scenario:</strong> ${params.debug_scenario}</li>`;
                     }
+                    if (params.debug_year !== null && params.debug_year !== undefined) {
+                        parametersHTML += `<li><strong>Debug Year:</strong> ${params.debug_year}</li>`;
+                    }
+                    if (params.debug_month !== null && params.debug_month !== undefined) {
+                        parametersHTML += `<li><strong>Debug Month:</strong> ${params.debug_month}</li>`;
+                    }
+                    if (params.debug_int_scenario !== null && params.debug_int_scenario !== undefined) {
+                        parametersHTML += `<li><strong>Debug Internal Scenario:</strong> ${params.debug_int_scenario}</li>`;
+                    }
+                    if (params.debug_int_year !== null && params.debug_int_year !== undefined) {
+                        parametersHTML += `<li><strong>Debug Internal Year:</strong> ${params.debug_int_year}</li>`;
+                    }
+
+                    const customKernelUsed = Boolean(params.use_custom_kernel) || Boolean(params.kernel_code);
+                    parametersHTML += `<li><strong>Kernel Used:</strong> ${customKernelUsed ? 'Custom kernel' : 'Default kernel'}</li>`;
                 }
                 parametersHTML += '</ul></div>';
                 
@@ -1130,7 +1240,11 @@ input[type="password"] {
                     if (filesResponse.ok) {
                         const filesData = await filesResponse.json();
                         console.log(`Files data for job ${jobId}:`, filesData);
-                        resultsHTML = buildFilesHTML(jobId, filesData.result_files || []);
+                        const combinedFiles = [
+                            ...(filesData.uploaded_files || []),
+                            ...(filesData.result_files || [])
+                        ];
+                        resultsHTML = buildFilesHTML(jobId, combinedFiles);
                     } else {
                         resultsHTML = '<p style="color: #ff0000;">Error loading results</p>';
                     }
@@ -1170,24 +1284,42 @@ input[type="password"] {
             // Group files by type
             const filesByType = {
                 summary: [],
-                detailed: [],
-                internal: [],
+                account_results: [],
+                external_cashflows: [],
+                five_chocs: [],
+                sensitivities: [],
                 debug: [],
+                input: [],
                 other: []
             };
             
             resultFiles.forEach(file => {
-                const fileType = file.type || 'other';
-                if (!filesByType[fileType]) filesByType[fileType] = [];
-                filesByType[fileType].push(file);
+                const f = normalizeResultFile(file);
+                const category = getUiFileCategory(f);
+                if (!filesByType[category]) filesByType[category] = [];
+                filesByType[category].push(f);
             });
             
             const typeLabels = {
-                summary: '📊 Summary',
-                detailed: '📋 Detailed',
-                internal: '🔧 Internal',
+                summary: '📊 Portfolio Summary',
+                account_results: '📋 Account Results',
+                external_cashflows: '🧾 External Projection Cashflows',
+                five_chocs: '⚡ Five Chocs',
+                sensitivities: '📐 Sensitivities (Greeks)',
                 debug: '🐛 Debug',
+                input: '📎 Input Files',
                 other: '📄 Other'
+            };
+
+            const typeItemIcons = {
+                summary: '📊',
+                account_results: '📋',
+                external_cashflows: '🧾',
+                five_chocs: '⚡',
+                sensitivities: '📐',
+                debug: '🐛',
+                input: '📎',
+                other: '📄'
             };
             
             let html = '<div>';
@@ -1202,10 +1334,11 @@ input[type="password"] {
                         const fileSize = file.size ? `(${(file.size / 1024).toFixed(2)} KB)` : '';
                         const sizeInfo = rowCount || fileSize;
                         const description = file.description ? `<div style="font-size: 12px; color: #666;">${file.description}</div>` : '';
+                        const icon = typeItemIcons[type] || '📄';
                         html += `
                             <div style="padding: 10px; border: 1px solid #ccc; margin-bottom: 8px; background: #fff;">
                                 <div>
-                                    <strong style="font-size: 14px;">📊 ${fileName}</strong> ${sizeInfo}
+                                    <strong style="font-size: 14px;">${icon} ${fileName}</strong> ${sizeInfo}
                                     ${description}
                                 </div>
                                 <div style="margin-top: 8px;">
@@ -1255,68 +1388,11 @@ input[type="password"] {
                     return;
                 }
                 
-                if (!data.result_files || data.result_files.length === 0) {
-                    filesDiv.innerHTML = '<p style="color: #666; font-style: italic;">No results available yet. Job may still be running or failed.</p>';
-                    return;
-                }
-                
-                // Group files by type
-                const filesByType = {
-                    summary: [],
-                    detailed: [],
-                    internal: [],
-                    debug: [],
-                    other: []
-                };
-                
-                data.result_files.forEach(file => {
-                    const fileType = file.type || 'other';
-                    if (!filesByType[fileType]) filesByType[fileType] = [];
-                    filesByType[fileType].push(file);
-                });
-                
-                const typeLabels = {
-                    summary: '📊 Summary',
-                    detailed: '📋 Detailed',
-                    internal: '🔧 Internal',
-                    debug: '🐛 Debug',
-                    other: '📄 Other'
-                };
-                
-                let html = '<div>';
-                
-                Object.entries(filesByType).forEach(([type, files]) => {
-                    if (files.length > 0) {
-                        html += `<div>`;
-                        html += `<h4>${typeLabels[type]}</h4>`;
-                        files.forEach(file => {
-                            const fileName = file.name;
-                            const rowCount = file.row_count ? `(${file.row_count.toLocaleString()} rows)` : '';
-                            const fileSize = file.size ? `(${(file.size / 1024).toFixed(2)} KB)` : '';
-                            const sizeInfo = rowCount || fileSize;
-                            const description = file.description ? `<div style="font-size: 12px; color: #666;">${file.description}</div>` : '';
-                            html += `
-                                <div style="padding: 10px; border: 1px solid #ccc; margin-bottom: 8px; background: #fff;">
-                                    <div>
-                                        <strong style="font-size: 14px;">📊 ${fileName}</strong> ${sizeInfo}
-                                        ${description}
-                                    </div>
-                                    <div style="margin-top: 8px;">
-                                        <button class="file-preview-btn" onclick="previewFile('${jobId}', '${fileName}')">👁️ Preview</button>
-                                        <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${fileName}')">⬇️ Download CSV</button>
-                                    </div>
-                                </div>
-                            `;
-                        });
-                        html += '</div>';
-                    }
-                });
-                
-                html += '</div>';
-                console.log(`Setting filesDiv innerHTML for ${jobId}, html length: ${html.length}`);
-                console.log(`filesDiv element:`, filesDiv);
-                filesDiv.innerHTML = html;
-                console.log(`filesDiv after update:`, filesDiv.innerHTML.substring(0, 100));
+                const combinedFiles = [
+                    ...(data.uploaded_files || []),
+                    ...(data.result_files || [])
+                ];
+                filesDiv.innerHTML = buildFilesHTML(jobId, combinedFiles);
                 
             } catch (error) {
                 console.error('Failed to load files:', error);

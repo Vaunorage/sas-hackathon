@@ -297,6 +297,10 @@ def handler(job):
             if result.int_debug_df is not None:
                 output['int_debug'] = result.int_debug_df.to_dict(orient='records')
                 print(f"  ✓ Converted int_debug: {len(result.int_debug_df)} rows")
+
+            if getattr(result, 'int_debug_ts_df', None) is not None:
+                output['int_debug_ts'] = result.int_debug_ts_df.to_dict(orient='records')
+                print(f"  ✓ Converted int_debug_ts: {len(result.int_debug_ts_df)} rows")
             
             if result.flux_projetes_df is not None:
                 output['flux_projetes'] = result.flux_projetes_df.to_dict(orient='records')

@@ -491,6 +491,27 @@ def init_db():
             FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
         )
     """
+
+    int_debug_ts_table = f"""
+        CREATE TABLE IF NOT EXISTS int_debug_ts (
+            id {id_column},
+            job_id TEXT NOT NULL,
+            choc_idx INTEGER,
+            choc_name TEXT,
+            t_int INTEGER,
+            debug_account INTEGER,
+            debug_scenario INTEGER,
+            debug_year INTEGER,
+            debug_int_scenario INTEGER,
+            curr_vm REAL,
+            fees REAL,
+            pv_path REAL,
+            r_portfolio REAL,
+            fwd_rate REAL,
+            df REAL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+        )
+    """
     
     # Kernel versions table for storing kernel.py history
     kernel_versions_table = f"""
@@ -517,6 +538,7 @@ def init_db():
         cursor.execute(chocs_summary_table)
         cursor.execute(ext_debug_table)
         cursor.execute(int_debug_table)
+        cursor.execute(int_debug_ts_table)
         cursor.execute(kernel_versions_table)
         
         # Create indexes
@@ -559,6 +581,11 @@ def init_db():
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_int_debug_job_id 
             ON int_debug(job_id)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_int_debug_ts_job_id 
+            ON int_debug_ts(job_id)
         """)
         
         # Handle migrations for SQLite only (PostgreSQL schema has all columns from start)
@@ -855,6 +882,17 @@ def save_int_debug(job_id: str, df: pd.DataFrame) -> None:
     df_copy.to_sql('int_debug', engine, if_exists='append', index=False)
     engine.dispose()
     print(f"  Saved {len(df)} int_debug records to database")
+
+
+def save_int_debug_ts(job_id: str, df: pd.DataFrame) -> None:
+    """Save internal loop debug time series output to database table"""
+    engine = get_sqlalchemy_engine()
+    df_copy = df.copy()
+    df_copy.insert(0, 'job_id', job_id)
+    df_copy.columns = df_copy.columns.str.lower()
+    df_copy.to_sql('int_debug_ts', engine, if_exists='append', index=False)
+    engine.dispose()
+    print(f"  Saved {len(df)} int_debug_ts records to database")
 
 def get_nested_results(job_id: str, id_compte: int = None) -> Optional[pd.DataFrame]:
     """
@@ -1174,6 +1212,15 @@ def poll_runpod_results(job_id: str, run_request):
                                         print(f"  ✓ Saved int_debug: {len(df)} rows")
                                     except Exception as e:
                                         print(f"  ✗ Failed to save int_debug: {e}")
+
+                                if results_data.get('int_debug_ts'):
+                                    try:
+                                        df = pd.DataFrame(results_data['int_debug_ts'])
+                                        save_int_debug_ts(job_id, df)
+                                        saved_any = True
+                                        print(f"  ✓ Saved int_debug_ts: {len(df)} rows")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save int_debug_ts: {e}")
                                 
                                 # Save flux_projetes (FLUX_PROJETES_GPU.csv data)
                                 if results_data.get('flux_projetes'):
@@ -2270,6 +2317,21 @@ def list_job_files(job_id: str):
         except Exception as e:
             print(f"Error checking int_debug: {e}")
 
+        # Check for int_debug_ts
+        try:
+            sql = f"SELECT COUNT(*) as count FROM int_debug_ts WHERE job_id = {ph}"
+            int_debug_ts_count = fetch_all(sql, (job_id,))
+            if int_debug_ts_count and int_debug_ts_count[0]['count'] > 0:
+                result_files.append({
+                    'name': 'INT_DEBUG_TS',
+                    'type': 'debug',
+                    'description': f'Internal loop debug time series ({int_debug_ts_count[0]["count"]} rows)',
+                    'row_count': int_debug_ts_count[0]['count'],
+                    'table': 'int_debug_ts'
+                })
+        except Exception as e:
+            print(f"Error checking int_debug_ts: {e}")
+
         results_folder = get_job_results_folder(job_id)
         if results_folder.exists():
             output_file_metadata = {
@@ -2304,6 +2366,10 @@ def list_job_files(job_id: str):
                 'DEBUG_INTERNAL_KERNEL.csv': {
                     'type': 'debug',
                     'description': 'Internal kernel debug output'
+                },
+                'DEBUG_INTERNAL_LOOP_TS.csv': {
+                    'type': 'debug',
+                    'description': 'Internal loop debug time series'
                 },
             }
 
@@ -2355,7 +2421,8 @@ def preview_file(job_id: str, file_name: str):
             'SENSITIVITIES': 'sensitivities',
             'CHOCS_SUMMARY': 'chocs_summary',
             'EXT_DEBUG': 'ext_debug',
-            'INT_DEBUG': 'int_debug'
+            'INT_DEBUG': 'int_debug',
+            'INT_DEBUG_TS': 'int_debug_ts'
         }
         
         table_name = table_map.get(file_name.upper())
@@ -2455,7 +2522,8 @@ def download_file(job_id: str, file_name: str):
             'SENSITIVITIES': 'sensitivities',
             'CHOCS_SUMMARY': 'chocs_summary',
             'EXT_DEBUG': 'ext_debug',
-            'INT_DEBUG': 'int_debug'
+            'INT_DEBUG': 'int_debug',
+            'INT_DEBUG_TS': 'int_debug_ts'
         }
         
         table_name = table_map.get(file_name.upper())
