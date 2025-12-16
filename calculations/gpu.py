@@ -57,6 +57,32 @@ except ImportError:
     print("⚠ CuDF not available - falling back to pandas (CPU). Install with: pip install cudf-cu12")
 
 
+class KernelIncompatibilityError(RuntimeError):
+    pass
+
+
+EXPECTED_EXTERNAL_GENERATOR_ARGCOUNT = 18
+EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT = 13
+
+
+def validate_kernel_compatibility():
+    kernel_a_argcount = external_generator_kernel.py_func.__code__.co_argcount
+    if kernel_a_argcount != EXPECTED_EXTERNAL_GENERATOR_ARGCOUNT:
+        raise KernelIncompatibilityError(
+            "Kernel not compatible with the running methods: "
+            f"external_generator_kernel has {kernel_a_argcount} parameters but calculations.gpu expects {EXPECTED_EXTERNAL_GENERATOR_ARGCOUNT}. "
+            "Update calculations/kernels.py (or the service code) so the kernel signature matches."
+        )
+
+    kernel_b_argcount = nested_valuation_kernel_five_chocs.py_func.__code__.co_argcount
+    if kernel_b_argcount != EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT:
+        raise KernelIncompatibilityError(
+            "Kernel not compatible with the running methods: "
+            f"nested_valuation_kernel_five_chocs has {kernel_b_argcount} parameters but calculations.gpu expects {EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT}. "
+            "Update calculations/kernels.py (or the service code) so the kernel signature matches."
+        )
+
+
 @dataclass
 class ProjectionResult:
     """Result of run_projection_gpu_nested containing all output DataFrames."""
@@ -486,11 +512,17 @@ def process_batch(
     
     # === KERNEL A: EXTERNAL GENERATOR ===
     logger.info("  Launching Kernel A (External Generator)...")
+    validate_kernel_compatibility()
     blocks_x = (current_batch_size + threads_per_block[0] - 1) // threads_per_block[0]
     blocks_y = (nb_ext_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
     grid_A = (blocks_x, blocks_y)
     
     kernel_a_start = datetime.now()
+    if 'coussins' not in gpu_lookups:
+        raise RuntimeError(
+            "Kernel A expects 'coussins' lookup but gpu_lookups['coussins'] is missing. "
+            "Ensure create_gpu_coussins_lookup() is called and the lookup is transferred to device."
+        )
     external_generator_kernel[grid_A, threads_per_block](
         d_batch_accounts,
         nb_ext_scenarios, nb_an_projection,

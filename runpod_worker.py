@@ -51,6 +51,15 @@ def apply_custom_kernel(kernel_code: str) -> dict:
         importlib.reload(calculations.gpu)
         print("[KERNEL] Reloaded calculations.gpu")
         sys.stdout.flush()
+
+        try:
+            calculations.gpu.validate_kernel_compatibility()
+        except Exception as e:
+            restore_original_kernel()
+            return {
+                'error': 'Kernel not compatible with the running methods',
+                'details': str(e)
+            }
         
         return {'success': True}
         
