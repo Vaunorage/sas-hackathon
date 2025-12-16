@@ -2136,6 +2136,21 @@ def list_job_files(job_id: str):
         result_files = []
         ph = get_placeholder()
         
+        # Check for flux_projetes (projected cash flows)
+        try:
+            sql = f"SELECT COUNT(*) as count FROM flux_projetes WHERE job_id = {ph}"
+            flux_count = fetch_all(sql, (job_id,))
+            if flux_count and flux_count[0]['count'] > 0:
+                result_files.append({
+                    'name': 'FLUX_PROJETES',
+                    'type': 'internal',
+                    'description': f'Projected cash flows by period ({flux_count[0]["count"]} rows)',
+                    'row_count': flux_count[0]['count'],
+                    'table': 'flux_projetes'
+                })
+        except Exception as e:
+            print(f"Error checking flux_projetes: {e}")
+        
         # Check for nested_summary (portfolio totals - vp_flux_total)
         try:
             sql = f"SELECT COUNT(*) as count FROM nested_summary WHERE job_id = {ph}"

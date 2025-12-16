@@ -765,6 +765,7 @@ input[type="password"] {
         // API endpoint URL - points to Flask app (same origin)
         const API_BASE = window.location.origin;
         let selectedJobId = null;
+        let isLoadingDetails = false;  // Flag to prevent auto-refresh interference
         
         // Helper function to make API requests
         async function fetchWithToken(url, options = {}) {
@@ -835,18 +836,34 @@ input[type="password"] {
                 const response = await fetchWithToken(`${API_BASE}/info`);
                 const data = await response.json();
                 
-                document.getElementById('api-status').textContent = `API: v${data.version}`;
-                document.getElementById('api-status').className = 'status-badge healthy';
+                const apiStatus = document.getElementById('api-status');
+                const gpuStatus = document.getElementById('gpu-status');
                 
-                document.getElementById('gpu-status').className = data.gpu_available ? 'status-badge healthy' : 'status-badge error';
+                if (apiStatus) {
+                    apiStatus.textContent = `API: v${data.version}`;
+                    apiStatus.className = 'status-badge healthy';
+                }
+                
+                if (gpuStatus) {
+                    gpuStatus.className = data.gpu_available ? 'status-badge healthy' : 'status-badge error';
+                }
             } catch (error) {
-                document.getElementById('api-status').textContent = 'API: Offline';
-                document.getElementById('api-status').className = 'status-badge error';
+                const apiStatus = document.getElementById('api-status');
+                if (apiStatus) {
+                    apiStatus.textContent = 'API: Offline';
+                    apiStatus.className = 'status-badge error';
+                }
             }
         }
 
         // Load jobs list
         async function loadJobs() {
+            // Skip refresh if we're currently loading job details
+            if (isLoadingDetails) {
+                console.log('Skipping loadJobs - details are being loaded');
+                return;
+            }
+            
             try {
                 const response = await fetchWithToken(`${API_BASE}/jobs`);
                 const data = await response.json();
@@ -888,6 +905,11 @@ input[type="password"] {
                         } else {
                             fileInfo = `Results: ${job.result_files.length} files`;
                         }
+                    } else if (job.status === 'completed') {
+                        // Completed jobs have results in database tables even if result_files is empty
+                        fileInfo = 'Results: Available (click to view)';
+                    } else if (job.status === 'running') {
+                        fileInfo = 'Results: Processing...';
                     } else {
                         fileInfo = 'Results: No files yet';
                     }
@@ -939,7 +961,7 @@ input[type="password"] {
                     `;
                 }).join('');
                 
-                // Reload details for expanded running jobs to show live progress
+                // Reload details for expanded jobs
                 if (selectedJobId) {
                     const selectedJob = data.jobs.find(j => j.job_id === selectedJobId);
                     if (selectedJob && selectedJob.status === 'running') {
@@ -951,6 +973,9 @@ input[type="password"] {
                         if (detailsDiv) {
                             detailsDiv.innerHTML = expandedContent;
                         }
+                    } else {
+                        // No cached content - load details for the first time
+                        loadJobDetails(selectedJobId);
                     }
                 }
             } catch (error) {
@@ -977,14 +1002,53 @@ input[type="password"] {
                 selectedJobId = null;
             }
         }
+        
+        // Select and expand a specific job (used after job creation)
+        async function selectJob(jobId) {
+            const jobItem = document.getElementById(`job-${jobId}`);
+            if (!jobItem) {
+                console.warn(`Job item not found: ${jobId}`);
+                return;
+            }
+            
+            // Close all other jobs
+            document.querySelectorAll('.job-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            // Select this job
+            jobItem.classList.add('selected');
+            selectedJobId = jobId;
+            await loadJobDetails(jobId);
+            
+            // Scroll to the job
+            jobItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
 
         // Load job details inline
         async function loadJobDetails(jobId) {
             const detailsDiv = document.getElementById(`job-details-${jobId}`);
             
+            if (!detailsDiv) {
+                console.error(`Details div not found for job ${jobId}`);
+                return;
+            }
+            
+            isLoadingDetails = true;  // Prevent auto-refresh interference
+            
             try {
                 const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}`);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error(`API error for job ${jobId}:`, response.status, errorText);
+                    detailsDiv.innerHTML = `<div class="error">Error loading job details: ${response.status}</div>`;
+                    isLoadingDetails = false;
+                    return;
+                }
+                
                 const job = await response.json();
+                console.log(`Job details for ${jobId}:`, job);
                 
                 // Build parameters info
                 let parametersHTML = '<div style="background: #f8f8f8; padding: 10px; border: 1px solid #ccc; margin-bottom: 15px;">';
@@ -1008,9 +1072,18 @@ input[type="password"] {
                 
                 // Build file source info
                 let fileSourceHTML = '';
-                if (job.uploaded_files && job.uploaded_files.length > 0) {
+                // Parse uploaded_files if it's a JSON string
+                let uploadedFiles = job.uploaded_files;
+                if (typeof uploadedFiles === 'string') {
+                    try {
+                        uploadedFiles = JSON.parse(uploadedFiles);
+                    } catch (e) {
+                        uploadedFiles = [];
+                    }
+                }
+                if (uploadedFiles && uploadedFiles.length > 0) {
                     fileSourceHTML = '<p><strong>Uploaded files:</strong></p><ul style="font-size: 13px; color: #666;">';
-                    job.uploaded_files.forEach(filename => {
+                    uploadedFiles.forEach(filename => {
                         fileSourceHTML += `<li>${filename}</li>`;
                     });
                     fileSourceHTML += '</ul>';
@@ -1050,6 +1123,22 @@ input[type="password"] {
                     }
                 }
                 
+                // Fetch files data first, then build entire HTML at once
+                let resultsHTML = '<div class="loading">Loading results...</div>';
+                try {
+                    const filesResponse = await fetchWithToken(`${API_BASE}/jobs/${jobId}/files`);
+                    if (filesResponse.ok) {
+                        const filesData = await filesResponse.json();
+                        console.log(`Files data for job ${jobId}:`, filesData);
+                        resultsHTML = buildFilesHTML(jobId, filesData.result_files || []);
+                    } else {
+                        resultsHTML = '<p style="color: #ff0000;">Error loading results</p>';
+                    }
+                } catch (filesError) {
+                    console.error('Error fetching files:', filesError);
+                    resultsHTML = '<p style="color: #ff0000;">Failed to load results</p>';
+                }
+                
                 detailsDiv.innerHTML = `
                     <div style="margin-bottom: 20px;">
                         ${parametersHTML}
@@ -1062,24 +1151,109 @@ input[type="password"] {
                     </div>
                     
                     <h3>Results</h3>
-                    <div id="results-display-${jobId}"></div>
+                    <div id="results-display-${jobId}">${resultsHTML}</div>
                 `;
-                
-                // Load and display files
-                await displayJobFiles(jobId);
                 
             } catch (error) {
                 detailsDiv.innerHTML = '<div class="error">Failed to load job details</div>';
+            } finally {
+                isLoadingDetails = false;  // Allow auto-refresh again
             }
         }
 
-        // Display job files with preview buttons
+        // Build HTML for files list (used by loadJobDetails)
+        function buildFilesHTML(jobId, resultFiles) {
+            if (!resultFiles || resultFiles.length === 0) {
+                return '<p style="color: #666; font-style: italic;">No results available yet. Job may still be running or failed.</p>';
+            }
+            
+            // Group files by type
+            const filesByType = {
+                summary: [],
+                detailed: [],
+                internal: [],
+                debug: [],
+                other: []
+            };
+            
+            resultFiles.forEach(file => {
+                const fileType = file.type || 'other';
+                if (!filesByType[fileType]) filesByType[fileType] = [];
+                filesByType[fileType].push(file);
+            });
+            
+            const typeLabels = {
+                summary: '📊 Summary',
+                detailed: '📋 Detailed',
+                internal: '🔧 Internal',
+                debug: '🐛 Debug',
+                other: '📄 Other'
+            };
+            
+            let html = '<div>';
+            
+            Object.entries(filesByType).forEach(([type, files]) => {
+                if (files.length > 0) {
+                    html += `<div>`;
+                    html += `<h4>${typeLabels[type]}</h4>`;
+                    files.forEach(file => {
+                        const fileName = file.name;
+                        const rowCount = file.row_count ? `(${file.row_count.toLocaleString()} rows)` : '';
+                        const fileSize = file.size ? `(${(file.size / 1024).toFixed(2)} KB)` : '';
+                        const sizeInfo = rowCount || fileSize;
+                        const description = file.description ? `<div style="font-size: 12px; color: #666;">${file.description}</div>` : '';
+                        html += `
+                            <div style="padding: 10px; border: 1px solid #ccc; margin-bottom: 8px; background: #fff;">
+                                <div>
+                                    <strong style="font-size: 14px;">📊 ${fileName}</strong> ${sizeInfo}
+                                    ${description}
+                                </div>
+                                <div style="margin-top: 8px;">
+                                    <button class="file-preview-btn" onclick="previewFile('${jobId}', '${fileName}')">👁️ Preview</button>
+                                    <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${fileName}')">⬇️ Download CSV</button>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                }
+            });
+            
+            html += '</div>';
+            return html;
+        }
+
+        // Display job files with preview buttons (legacy function, kept for compatibility)
         async function displayJobFiles(jobId) {
+            // Re-fetch the div right before we need it (in case DOM was rebuilt)
+            let filesDiv = document.getElementById(`results-display-${jobId}`);
+            
+            if (!filesDiv) {
+                console.error(`Results display div not found for job ${jobId}`);
+                return;
+            }
+            
+            filesDiv.innerHTML = '<div class="loading">Loading results...</div>';
+            
             try {
                 const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}/files`);
-                const data = await response.json();
                 
-                const filesDiv = document.getElementById(`results-display-${jobId}`);
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error(`API error for job ${jobId}:`, response.status, errorText);
+                    filesDiv.innerHTML = `<p style="color: #ff0000;">Error loading results: ${response.status}</p>`;
+                    return;
+                }
+                
+                const data = await response.json();
+                console.log(`Files data for job ${jobId}:`, data);
+                
+                // Re-fetch filesDiv in case DOM was rebuilt during fetch
+                filesDiv = document.getElementById(`results-display-${jobId}`);
+                if (!filesDiv) {
+                    console.error(`Results display div disappeared for job ${jobId}`);
+                    return;
+                }
                 
                 if (!data.result_files || data.result_files.length === 0) {
                     filesDiv.innerHTML = '<p style="color: #666; font-style: italic;">No results available yet. Job may still be running or failed.</p>';
@@ -1139,10 +1313,16 @@ input[type="password"] {
                 });
                 
                 html += '</div>';
+                console.log(`Setting filesDiv innerHTML for ${jobId}, html length: ${html.length}`);
+                console.log(`filesDiv element:`, filesDiv);
                 filesDiv.innerHTML = html;
+                console.log(`filesDiv after update:`, filesDiv.innerHTML.substring(0, 100));
                 
             } catch (error) {
                 console.error('Failed to load files:', error);
+                if (filesDiv) {
+                    filesDiv.innerHTML = `<p style="color: #ff0000;">Failed to load results: ${error.message}</p>`;
+                }
             }
         }
 
