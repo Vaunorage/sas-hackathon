@@ -1207,10 +1207,18 @@ def poll_runpod_results(job_id: str, run_request):
                     error_msg = "RunPod job failed"
                     try:
                         output = run_request.output()
-                        if output and isinstance(output, dict) and 'error' in output:
-                            error_msg = output['error']
-                    except:
-                        pass
+                        print(f"  FAILED job output: {output}")
+                        if output and isinstance(output, dict):
+                            if 'error' in output:
+                                error_msg = output['error']
+                                if 'traceback' in output:
+                                    error_msg += f"\n\nTraceback:\n{output['traceback']}"
+                            elif 'message' in output:
+                                error_msg = f"RunPod error: {output['message']}"
+                        elif output:
+                            error_msg = f"RunPod job failed with output: {str(output)[:500]}"
+                    except Exception as e:
+                        error_msg = f"RunPod job failed (could not retrieve output: {e})"
                     update_job_status(job_id, 'failed', error_message=error_msg)
                     print(f"✗ Job {job_id} failed: {error_msg}")
                     return

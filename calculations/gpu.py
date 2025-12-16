@@ -1051,6 +1051,7 @@ def run_projection_gpu_nested(
     print(f"Internal scenarios per node: {nb_int_scenarios}")
     sys.stdout.flush()
     print(f"Capital shock: {shock_capital_pct*100:.1f}%")
+    sys.stdout.flush()
     enable_debug = debug_account >= 0 or debug_scenario >= 0 or debug_year >= 0 or debug_month >= 0
     if enable_debug:
         print(f"Debug mode: ENABLED (account={debug_account}, scenario={debug_scenario}, year={debug_year}, month={debug_month})")

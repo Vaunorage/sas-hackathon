@@ -209,6 +209,7 @@ def handler(job):
             if custom_kernel_applied:
                 log_parts.append("custom kernel")
             print(f"Starting GPU nested projection with {', '.join(log_parts)}.")
+            sys.stdout.flush()
             
             # Progress callback to report batch progress to RunPod
             def progress_callback(current_batch, total_batches):
@@ -219,11 +220,17 @@ def handler(job):
                         f"Processing batch {current_batch}/{total_batches} ({progress_percent}%)"
                     )
                     print(f"  Progress reported to RunPod: Batch {current_batch}/{total_batches} ({progress_percent}%)")
+                    sys.stdout.flush()
                 except Exception as e:
                     print(f"  Warning: Failed to report progress: {e}")
+                    sys.stdout.flush()
             
             # Import run_projection_gpu_nested from the (possibly reloaded) module
+            print("[DEBUG] Importing run_projection_gpu_nested...")
+            sys.stdout.flush()
             from calculations.gpu import run_projection_gpu_nested
+            print("[DEBUG] Import successful, starting projection...")
+            sys.stdout.flush()
             
             # run_projection_gpu_nested returns a ProjectionResult dataclass
             result = run_projection_gpu_nested(
@@ -293,6 +300,9 @@ def handler(job):
             return {'results': output}
 
         except Exception as e:
+            print(f"[ERROR] GPU projection failed: {e}")
+            print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
+            sys.stdout.flush()
             # Restore original kernel on error
             if custom_kernel_applied:
                 restore_original_kernel()
