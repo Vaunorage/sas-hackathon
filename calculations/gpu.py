@@ -930,6 +930,11 @@ def create_all_lookup_tables(data: dict, nb_int_scenarios: int, nb_an_projection
     return lookups
 
 
+def _to_device_contiguous(arr):
+    """Ensure array is C-contiguous before copying to GPU."""
+    return cuda.to_device(np.ascontiguousarray(arr))
+
+
 def copy_lookups_to_gpu(lookups: dict):
     """
     Copy all CPU lookup tables to GPU memory.
@@ -945,58 +950,58 @@ def copy_lookups_to_gpu(lookups: dict):
     gpu_lookups = {}
     
     # Mortality table
-    gpu_lookups['mortality'] = cuda.to_device(lookups['mortality'])
+    gpu_lookups['mortality'] = _to_device_contiguous(lookups['mortality'])
     
     # Returns lookups (7 arrays): forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe
     gpu_lookups['returns'] = (
-        cuda.to_device(lookups['forward_rate']),
-        cuda.to_device(lookups['ajust_forward']),
-        cuda.to_device(lookups['rend_dex']),
-        cuda.to_device(lookups['rend_mm']),
-        cuda.to_device(lookups['rend_tsx']),
-        cuda.to_device(lookups['rend_sp500']),
-        cuda.to_device(lookups['rend_eafe']),
+        _to_device_contiguous(lookups['forward_rate']),
+        _to_device_contiguous(lookups['ajust_forward']),
+        _to_device_contiguous(lookups['rend_dex']),
+        _to_device_contiguous(lookups['rend_mm']),
+        _to_device_contiguous(lookups['rend_tsx']),
+        _to_device_contiguous(lookups['rend_sp500']),
+        _to_device_contiguous(lookups['rend_eafe']),
     )
     
     # Lapse lookups (6 arrays): min_ferr, lapse_part_min, lapse_part_max, lapse_tot_min, lapse_tot_max, lapse_tot_fact
     gpu_lookups['lapse'] = (
-        cuda.to_device(lookups['min_ferr']),
-        cuda.to_device(lookups['lapse_part_min']),
-        cuda.to_device(lookups['lapse_part_max']),
-        cuda.to_device(lookups['lapse_tot_min']),
-        cuda.to_device(lookups['lapse_tot_max']),
-        cuda.to_device(lookups['lapse_tot_fact']),
+        _to_device_contiguous(lookups['min_ferr']),
+        _to_device_contiguous(lookups['lapse_part_min']),
+        _to_device_contiguous(lookups['lapse_part_max']),
+        _to_device_contiguous(lookups['lapse_tot_min']),
+        _to_device_contiguous(lookups['lapse_tot_max']),
+        _to_device_contiguous(lookups['lapse_tot_fact']),
     )
     
     # Policy lookups (5 arrays): deposits_pc, deposits_var, deposits_age_max, deposits_i_even, fees
     gpu_lookups['policy'] = (
-        cuda.to_device(lookups['deposits_pc']),
-        cuda.to_device(lookups['deposits_var']),
-        cuda.to_device(lookups['deposits_age_max']),
-        cuda.to_device(lookups['deposits_i_even']),
-        cuda.to_device(lookups['fees']),
+        _to_device_contiguous(lookups['deposits_pc']),
+        _to_device_contiguous(lookups['deposits_var']),
+        _to_device_contiguous(lookups['deposits_age_max']),
+        _to_device_contiguous(lookups['deposits_i_even']),
+        _to_device_contiguous(lookups['fees']),
     )
     
     # Commission lookups (6 arrays): acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf
     gpu_lookups['commission'] = (
-        cuda.to_device(lookups['acq_vente_rf']),
-        cuda.to_device(lookups['acq_vente_ac']),
-        cuda.to_device(lookups['acq_maintien_rf']),
-        cuda.to_device(lookups['acq_maintien_ac']),
-        cuda.to_device(lookups['acq_frais_ac']),
-        cuda.to_device(lookups['acq_frais_rf']),
+        _to_device_contiguous(lookups['acq_vente_rf']),
+        _to_device_contiguous(lookups['acq_vente_ac']),
+        _to_device_contiguous(lookups['acq_maintien_rf']),
+        _to_device_contiguous(lookups['acq_maintien_ac']),
+        _to_device_contiguous(lookups['acq_frais_ac']),
+        _to_device_contiguous(lookups['acq_frais_rf']),
     )
 
-    gpu_lookups['coussins'] = tuple(cuda.to_device(arr) for arr in lookups['coussins'])
+    gpu_lookups['coussins'] = tuple(_to_device_contiguous(arr) for arr in lookups['coussins'])
     
     # Risk-neutral returns (6 arrays): rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe
     gpu_lookups['rn_returns'] = (
-        cuda.to_device(lookups['rn_forward_rate']),
-        cuda.to_device(lookups['rn_rend_dex']),
-        cuda.to_device(lookups['rn_rend_mm']),
-        cuda.to_device(lookups['rn_rend_tsx']),
-        cuda.to_device(lookups['rn_rend_sp500']),
-        cuda.to_device(lookups['rn_rend_eafe']),
+        _to_device_contiguous(lookups['rn_forward_rate']),
+        _to_device_contiguous(lookups['rn_rend_dex']),
+        _to_device_contiguous(lookups['rn_rend_mm']),
+        _to_device_contiguous(lookups['rn_rend_tsx']),
+        _to_device_contiguous(lookups['rn_rend_sp500']),
+        _to_device_contiguous(lookups['rn_rend_eafe']),
     )
     
     print("✓ Lookup tables on GPU")
