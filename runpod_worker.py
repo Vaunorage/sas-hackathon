@@ -6,6 +6,7 @@ import requests
 import importlib
 import traceback
 import os
+import sys
 
 # Store original kernel content for restoration
 # Use environment variable or default path for Docker compatibility
@@ -38,15 +39,18 @@ def apply_custom_kernel(kernel_code: str) -> dict:
         # Write new kernel code
         KERNELS_PATH.write_text(kernel_code)
         print(f"[KERNEL] Custom kernel code written ({len(kernel_code)} bytes)")
+        sys.stdout.flush()
         
         # Reload modules
         import calculations.kernels
         importlib.reload(calculations.kernels)
         print("[KERNEL] Reloaded calculations.kernels")
+        sys.stdout.flush()
         
         import calculations.gpu
         importlib.reload(calculations.gpu)
         print("[KERNEL] Reloaded calculations.gpu")
+        sys.stdout.flush()
         
         return {'success': True}
         
@@ -277,6 +281,10 @@ def handler(job):
             if result.int_debug_df is not None:
                 output['int_debug'] = result.int_debug_df.to_dict(orient='records')
                 print(f"  ✓ Converted int_debug: {len(result.int_debug_df)} rows")
+            
+            if result.flux_projetes_df is not None:
+                output['flux_projetes'] = result.flux_projetes_df.to_dict(orient='records')
+                print(f"  ✓ Converted flux_projetes: {len(result.flux_projetes_df)} rows")
             
             # Restore original kernel after job completes
             if custom_kernel_applied:

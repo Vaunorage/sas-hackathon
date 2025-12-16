@@ -1165,6 +1165,16 @@ def poll_runpod_results(job_id: str, run_request):
                                         print(f"  ✓ Saved int_debug: {len(df)} rows")
                                     except Exception as e:
                                         print(f"  ✗ Failed to save int_debug: {e}")
+                                
+                                # Save flux_projetes (FLUX_PROJETES_GPU.csv data)
+                                if results_data.get('flux_projetes'):
+                                    try:
+                                        df = pd.DataFrame(results_data['flux_projetes'])
+                                        save_flux_projetes(job_id, df)
+                                        saved_any = True
+                                        print(f"  ✓ Saved flux_projetes: {len(df)} rows")
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save flux_projetes: {e}")
                             
                             if saved_any:
                                 print(f"✓ Job {job_id} completed and results saved to database!")
@@ -2227,6 +2237,54 @@ def list_job_files(job_id: str):
                 })
         except Exception as e:
             print(f"Error checking int_debug: {e}")
+
+        results_folder = get_job_results_folder(job_id)
+        if results_folder.exists():
+            output_file_metadata = {
+                'FLUX_PROJETES_GPU.csv': {
+                    'type': 'internal',
+                    'description': 'Projected cash flows by time period (year/month)'
+                },
+                'VP_FLUX_COMPTE_GPU.csv': {
+                    'type': 'detailed',
+                    'description': 'Present values by account'
+                },
+                'VP_FLUX_TOTAL_GPU.csv': {
+                    'type': 'summary',
+                    'description': 'Total present value across all accounts'
+                },
+                'VP_FLUX_5CHOCS_DETAILED_GPU.csv': {
+                    'type': 'detailed',
+                    'description': 'Five chocs detailed results'
+                },
+                'VP_FLUX_5CHOCS_SUMMARY_GPU.csv': {
+                    'type': 'summary',
+                    'description': 'Five chocs summary'
+                },
+                'VP_FLUX_SENSITIVITIES_GPU.csv': {
+                    'type': 'detailed',
+                    'description': 'Sensitivities/Greeks by account'
+                },
+                'DEBUG_EXTERNAL_KERNEL.csv': {
+                    'type': 'debug',
+                    'description': 'External kernel debug output'
+                },
+                'DEBUG_INTERNAL_KERNEL.csv': {
+                    'type': 'debug',
+                    'description': 'Internal kernel debug output'
+                },
+            }
+
+            for file in results_folder.glob('*.csv'):
+                file_info = {
+                    'name': file.name,
+                    'size': file.stat().st_size,
+                    'type': 'other',
+                    'description': 'Output CSV'
+                }
+                if file.name in output_file_metadata:
+                    file_info.update(output_file_metadata[file.name])
+                result_files.append(file_info)
         
         return jsonify({
             'job_id': job_id,
@@ -2306,10 +2364,14 @@ def preview_file(job_id: str, file_name: str):
                 'truncated': total_rows > limit
             })
         else:
-            # Fall back to file-based results (for uploaded input files)
+            # Fall back to file-based results (for uploaded input files and job output files)
             file_name = secure_filename(file_name)
             upload_folder = get_job_upload_folder(job_id)
             file_path = upload_folder / file_name
+
+            if not file_path.exists():
+                results_folder = get_job_results_folder(job_id)
+                file_path = results_folder / file_name
             
             if not file_path.exists():
                 return jsonify({
@@ -2402,6 +2464,10 @@ def download_file(job_id: str, file_name: str):
             upload_file = get_job_upload_folder(job_id) / file_name
             if upload_file.exists():
                 return send_file(upload_file, mimetype='text/plain', as_attachment=True)
+
+            results_file = get_job_results_folder(job_id) / file_name
+            if results_file.exists():
+                return send_file(results_file, mimetype='text/csv', as_attachment=True)
             
             return jsonify({
                 'error': 'File not found',

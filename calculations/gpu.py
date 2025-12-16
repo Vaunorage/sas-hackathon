@@ -9,6 +9,25 @@ from calculations.constants import (
     RN_DEFAULT_FORWARD_RATE, RN_DEFAULT_REND_DEX, RN_DEFAULT_REND_MM,
     RN_DEFAULT_REND_TSX, RN_DEFAULT_REND_SP500, RN_DEFAULT_REND_EAFE,
     NUM_CHOCS, CHOC_NAMES, METRICS_RESERVE_IDX, METRICS_CAPITAL_IDX, METRICS_OUTPUT_SIZE,
+    FLUX_COMP_IDX_PRIMES_GARANTIES,
+    FLUX_COMP_IDX_PREST_DECES,
+    FLUX_COMP_IDX_PREST_ECH,
+    FLUX_COMP_IDX_PREST_MRV,
+    FLUX_COMP_IDX_FRAIS_ACQUIS,
+    FLUX_COMP_IDX_COMM_VENTE,
+    FLUX_COMP_IDX_PRIMES_VARIABLES,
+    FLUX_COMP_IDX_FRAIS_FIXES,
+    FLUX_COMP_IDX_HON_GEST,
+    FLUX_COMP_IDX_COMM_MAINTIEN,
+    FLUX_COMP_IDX_VALEUR_MARCHANDE,
+    FLUX_COMP_IDX_PASSIF_REDRESSE,
+    FLUX_COMP_IDX_COUSSIN_CREDIT,
+    FLUX_COMP_IDX_COUSSIN_MARCHE,
+    FLUX_COMP_IDX_COUSSIN_DEPENSE,
+    FLUX_COMP_IDX_COUSSIN_DECHEANCE,
+    FLUX_COMP_IDX_COUSSIN_MORTALITE,
+    FLUX_COMP_IDX_COUSSIN_DEPOT,
+    FLUX_COMP_IDX_SIZE,
     LOOKUP_TABLE_OVERHEAD_MB, DEFAULT_GPU_MEMORY_GB, MEMORY_SAFETY_FACTOR, MEMORY_BATCH_THRESHOLD,
     DEFAULT_THREADS_PER_BLOCK_1D,
 )
@@ -23,6 +42,7 @@ import pandas as pd
 import numpy as np
 import polars as pl
 import gc
+import sys
 from pathlib import Path
 from typing import Optional, List, TypedDict
 from dataclasses import dataclass
@@ -48,6 +68,7 @@ class ProjectionResult:
     chocs_summary: Optional[pd.DataFrame]
     ext_debug_df: Optional[pd.DataFrame]
     int_debug_df: Optional[pd.DataFrame]
+    flux_projetes_df: Optional[pd.DataFrame]
     saved_files: List[str]
 
 
@@ -206,6 +227,71 @@ def create_gpu_acquisition_lookup(df: pd.DataFrame):
     return pc_vente_rf, pc_vente_ac, pc_maintien_rf, pc_maintien_ac, pc_frais_ac, pc_frais_rf
 
 
+def create_gpu_coussins_lookup(df: pd.DataFrame):
+    max_code_cat = int(df['CODE_CAT_PRODUIT'].max()) + 1 if len(df) > 0 else 8
+    max_cat1 = int(df['CAT_COUSSIN_1'].max()) + 1 if len(df) > 0 else 6
+    max_cat2 = int(df['CAT_COUSSIN_2'].max()) + 1 if len(df) > 0 else 7
+
+    max_code_cat = max(max_code_cat, 8)
+    max_cat1 = max(max_cat1, 6)
+    max_cat2 = max(max_cat2, 7)
+
+    shape = (max_code_cat, max_cat1, max_cat2)
+
+    base_passif = np.zeros(shape, dtype=np.int32)
+    tx_passif = np.zeros(shape, dtype=np.float32)
+    base_credit = np.zeros(shape, dtype=np.int32)
+    tx_credit = np.zeros(shape, dtype=np.float32)
+    base_marche = np.zeros(shape, dtype=np.int32)
+    tx_marche = np.zeros(shape, dtype=np.float32)
+    base_depense = np.zeros(shape, dtype=np.int32)
+    tx_depense = np.zeros(shape, dtype=np.float32)
+    base_decheance = np.zeros(shape, dtype=np.int32)
+    tx_decheance = np.zeros(shape, dtype=np.float32)
+    base_mortalite = np.zeros(shape, dtype=np.int32)
+    tx_mortalite = np.zeros(shape, dtype=np.float32)
+    base_depot = np.zeros(shape, dtype=np.int32)
+    tx_depot = np.zeros(shape, dtype=np.float32)
+    facteur_age_80 = np.ones(shape, dtype=np.float32)
+    facteur_age_90 = np.ones(shape, dtype=np.float32)
+
+    for _, row in df.iterrows():
+        code = int(row['CODE_CAT_PRODUIT'])
+        c1 = int(row['CAT_COUSSIN_1'])
+        c2 = int(row['CAT_COUSSIN_2'])
+        if code < 0 or c1 < 0 or c2 < 0:
+            continue
+        if code >= shape[0] or c1 >= shape[1] or c2 >= shape[2]:
+            continue
+        base_passif[code, c1, c2] = int(row.get('BASE_PASSIF_REDRESSE', 0))
+        tx_passif[code, c1, c2] = float(row.get('TX_PASSIF_REDRESSE', 0.0))
+        base_credit[code, c1, c2] = int(row.get('BASE_COUSSIN_CREDIT', 0))
+        tx_credit[code, c1, c2] = float(row.get('TX_COUSSIN_CREDIT', 0.0))
+        base_marche[code, c1, c2] = int(row.get('BASE_COUSSIN_MARCHE', 0))
+        tx_marche[code, c1, c2] = float(row.get('TX_COUSSIN_MARCHE', 0.0))
+        base_depense[code, c1, c2] = int(row.get('BASE_COUSSIN_DEPENSE', 0))
+        tx_depense[code, c1, c2] = float(row.get('TX_COUSSIN_DEPENSE', 0.0))
+        base_decheance[code, c1, c2] = int(row.get('BASE_COUSSIN_DECHEANCE', 0))
+        tx_decheance[code, c1, c2] = float(row.get('TX_COUSSIN_DECHEANCE', 0.0))
+        base_mortalite[code, c1, c2] = int(row.get('BASE_COUSSIN_MORTALITE', 0))
+        tx_mortalite[code, c1, c2] = float(row.get('TX_COUSSIN_MORTALITE', 0.0))
+        base_depot[code, c1, c2] = int(row.get('BASE_COUSSIN_DEPOT', 0))
+        tx_depot[code, c1, c2] = float(row.get('TX_COUSSIN_DEPOT', 0.0))
+        facteur_age_80[code, c1, c2] = float(row.get('FACTEUR_AGE_80', 1.0))
+        facteur_age_90[code, c1, c2] = float(row.get('FACTEUR_AGE_90', 1.0))
+
+    return (
+        base_passif, tx_passif,
+        base_credit, tx_credit,
+        base_marche, tx_marche,
+        base_depense, tx_depense,
+        base_decheance, tx_decheance,
+        base_mortalite, tx_mortalite,
+        base_depot, tx_depot,
+        facteur_age_80, facteur_age_90,
+    )
+
+
 def initialize_gpu():
     """
     Initialize GPU and check availability.
@@ -291,6 +377,7 @@ class ProcessBatchResult(TypedDict):
     batch_capital_5chocs: np.ndarray
     ext_debug: Optional[np.ndarray]  # Debug output from external kernel
     int_debug: Optional[np.ndarray]  # Debug output from internal kernel
+    flux_agg: Optional[np.ndarray]   # Aggregated external cashflow components (years+1, 13, FLUX_COMP_IDX_SIZE)
 
 
 def check_gpu_memory(batch_size: int, mem_per_account: float, batch_idx: int = 0):
@@ -361,6 +448,8 @@ def process_batch(
     # Prepare batch data
     batch_account_data_contiguous = np.ascontiguousarray(batch_account_data)
     d_batch_accounts = cuda.to_device(batch_account_data_contiguous)
+
+    d_flux_agg = cuda.to_device(np.zeros((nb_an_projection + 1, 13, FLUX_COMP_IDX_SIZE), dtype=np.float32))
     
     # Allocate tensors
     try:
@@ -411,8 +500,10 @@ def process_batch(
         gpu_lookups['lapse'],
         gpu_lookups['policy'],
         gpu_lookups['commission'],
+        gpu_lookups['coussins'],
         d_states,
         d_cashflows,
+        d_flux_agg,
         d_ext_debug,
         debug_account,
         debug_scenario,
@@ -458,12 +549,15 @@ def process_batch(
     # Copy debug arrays if enabled
     h_ext_debug = None
     h_int_debug = None
+    h_flux_agg = None
     if enable_ext_debug:
         logger.info("  Copying external debug output to CPU...")
         h_ext_debug = d_ext_debug.copy_to_host()
     if enable_int_debug:
         logger.info("  Copying internal debug output to CPU...")
         h_int_debug = d_int_debug.copy_to_host()
+
+    h_flux_agg = d_flux_agg.copy_to_host()
     
     # Process metrics
     batch_reserves_5chocs = h_metrics[:, :, :, :, METRICS_RESERVE_IDX].mean(axis=(1, 2))
@@ -472,7 +566,7 @@ def process_batch(
     batch_capital = batch_capital_5chocs[:, 0]
     
     # Cleanup
-    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug
+    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug, d_flux_agg
     cuda.synchronize()
     del h_metrics
     gc.collect()
@@ -493,6 +587,7 @@ def process_batch(
         'batch_capital_5chocs': batch_capital_5chocs,
         'ext_debug': h_ext_debug,
         'int_debug': h_int_debug,
+        'flux_agg': h_flux_agg,
     }
 
 
@@ -570,6 +665,7 @@ def save_results(
     ext_debug: Optional[np.ndarray] = None,
     int_debug: Optional[np.ndarray] = None,
     debug_params: Optional[dict] = None,
+    flux_projetes_periods: Optional[pd.DataFrame] = None,
 ):
     """
     Save all results (final simulation results and debug output) to CSV files.
@@ -616,6 +712,7 @@ def save_results(
     chocs_summary_df = None
     ext_debug_df = None
     int_debug_df = None
+    flux_projetes_df = None
     
     # ===========================================
     # 1. FINAL SIMULATION RESULTS
@@ -639,6 +736,34 @@ def save_results(
     print(f"  Total Capital Req:  ${vp_flux_total_df['VP_CAPITAL_REQ'].iloc[0]:,.2f}")
     print(f"  Total SCR:          ${vp_flux_total_df['VP_SCR'].iloc[0]:,.2f}")
     saved_files.append("VP_FLUX_TOTAL_GPU.csv (portfolio totals)")
+
+    if flux_projetes_periods is not None and len(flux_projetes_periods) > 0:
+        flux_cols = [
+            'AN_EVAL', 'MOIS_EVAL',
+            'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
+            'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES',
+            'FRAIS_FIXES', 'HON_GEST', 'COMM_MAINTIEN',
+            'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
+            'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE',
+            'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT'
+        ]
+
+        flux_projetes_df = flux_projetes_periods.copy()
+        for key in ('AN_EVAL', 'MOIS_EVAL'):
+            if key not in flux_projetes_df.columns:
+                flux_projetes_df[key] = 0
+
+        for col in flux_cols:
+            if col not in flux_projetes_df.columns:
+                if col in ('AN_EVAL', 'MOIS_EVAL'):
+                    continue
+                flux_projetes_df[col] = 0.0
+
+        flux_projetes_df = flux_projetes_df[flux_cols]
+        flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
+        flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
+        print(f"✓ Saved FLUX_PROJETES_GPU.csv")
+        saved_files.append("FLUX_PROJETES_GPU.csv (external loop logs)")
     
     # 1b. Five Chocs Results
     if results_5chocs_df is not None:
@@ -750,6 +875,7 @@ def save_results(
         'chocs_summary': chocs_summary_df if results_5chocs_df is not None else None,
         'ext_debug_df': ext_debug_df if ext_debug is not None else None,
         'int_debug_df': int_debug_df if int_debug is not None else None,
+        'flux_projetes_df': flux_projetes_df,
     }
     
     return result
@@ -785,6 +911,8 @@ def create_all_lookup_tables(data: dict, nb_int_scenarios: int, nb_an_projection
     (lookups['acq_vente_rf'], lookups['acq_vente_ac'], lookups['acq_maintien_rf'], 
      lookups['acq_maintien_ac'], lookups['acq_frais_ac'], 
      lookups['acq_frais_rf']) = create_gpu_acquisition_lookup(data['acquisition'])
+
+    lookups['coussins'] = create_gpu_coussins_lookup(data['coussins_escap'])
     
     print("✓ All CPU lookup tables created")
     
@@ -858,6 +986,8 @@ def copy_lookups_to_gpu(lookups: dict):
         cuda.to_device(lookups['acq_frais_ac']),
         cuda.to_device(lookups['acq_frais_rf']),
     )
+
+    gpu_lookups['coussins'] = tuple(cuda.to_device(arr) for arr in lookups['coussins'])
     
     # Risk-neutral returns (6 arrays): rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe
     gpu_lookups['rn_returns'] = (
@@ -919,6 +1049,7 @@ def run_projection_gpu_nested(
     print(f"Architecture: Two-Pass (Generator → Valuator with 5 Chocs)")
     print(f"External scenarios: {nb_ext_scenarios}")
     print(f"Internal scenarios per node: {nb_int_scenarios}")
+    sys.stdout.flush()
     print(f"Capital shock: {shock_capital_pct*100:.1f}%")
     enable_debug = debug_account >= 0 or debug_scenario >= 0 or debug_year >= 0 or debug_month >= 0
     if enable_debug:
@@ -929,8 +1060,11 @@ def run_projection_gpu_nested(
     else:
         print(f"Debug mode: disabled")
     print("=" * 80)
+    sys.stdout.flush()
     
     # Initialize GPU
+    print("Initializing GPU...")
+    sys.stdout.flush()
     initialize_gpu()
 
     # Update config
@@ -951,6 +1085,23 @@ def run_projection_gpu_nested(
                          acquisition_path=acquisition_path,
                          coussins_escap_path=coussins_escap_path)
     print("✓ Data loaded successfully")
+
+    flux_projetes_periods = None
+    if 'rendements' in data and data['rendements'] is not None:
+        try:
+            flux_projetes_periods = (
+                data['rendements'][['AN_EVAL', 'MOIS_EVAL']]
+                .drop_duplicates()
+                .sort_values(['AN_EVAL', 'MOIS_EVAL'])
+                .reset_index(drop=True)
+            )
+            if not ((flux_projetes_periods['AN_EVAL'] == 0) & (flux_projetes_periods['MOIS_EVAL'] == 12)).any():
+                flux_projetes_periods = pd.concat(
+                    [pd.DataFrame([{'AN_EVAL': 0, 'MOIS_EVAL': 12}]), flux_projetes_periods],
+                    ignore_index=True,
+                ).sort_values(['AN_EVAL', 'MOIS_EVAL']).reset_index(drop=True)
+        except Exception:
+            flux_projetes_periods = None
 
     # Filter to single account if debug_only mode
     if debug_only and debug_account >= 0:
@@ -1003,6 +1154,7 @@ def run_projection_gpu_nested(
     all_capital = []
     all_reserves_5chocs = []
     all_capital_5chocs = []
+    total_flux_agg = np.zeros((nb_an_projection + 1, 13, FLUX_COMP_IDX_SIZE), dtype=np.float64)
     ext_debug_result = None
     int_debug_result = None
     
@@ -1046,6 +1198,9 @@ def run_projection_gpu_nested(
             ext_debug_result = batch_result['ext_debug']
         if batch_result['int_debug'] is not None:
             int_debug_result = batch_result['int_debug']
+
+        if batch_result.get('flux_agg') is not None:
+            total_flux_agg += batch_result['flux_agg']
         
         # Call progress callback if provided
         if progress_callback is not None:
@@ -1094,6 +1249,36 @@ def run_projection_gpu_nested(
             'int_scenario': debug_int_scenario,
             'int_year': debug_int_year,
         }
+
+    if flux_projetes_periods is not None and len(flux_projetes_periods) > 0:
+        denom = float(nb_ext_scenarios) if nb_ext_scenarios > 0 else 1.0
+        flux_projetes_periods = flux_projetes_periods.copy()
+        an_vals = flux_projetes_periods['AN_EVAL'].astype(np.int64).to_numpy()
+        mois_vals = flux_projetes_periods['MOIS_EVAL'].astype(np.int64).to_numpy()
+        an_vals = np.clip(an_vals, 0, total_flux_agg.shape[0] - 1)
+        mois_vals = np.clip(mois_vals, 0, total_flux_agg.shape[1] - 1)
+
+        def col(idx: int) -> np.ndarray:
+            return (total_flux_agg[an_vals, mois_vals, idx] / denom).astype(np.float64)
+
+        flux_projetes_periods['PRIMES_GARANTIES'] = col(FLUX_COMP_IDX_PRIMES_GARANTIES)
+        flux_projetes_periods['PREST_DECES'] = col(FLUX_COMP_IDX_PREST_DECES)
+        flux_projetes_periods['PREST_ECH'] = col(FLUX_COMP_IDX_PREST_ECH)
+        flux_projetes_periods['PREST_MRV'] = col(FLUX_COMP_IDX_PREST_MRV)
+        flux_projetes_periods['FRAIS_ACQUIS'] = col(FLUX_COMP_IDX_FRAIS_ACQUIS)
+        flux_projetes_periods['COMM_VENTE'] = col(FLUX_COMP_IDX_COMM_VENTE)
+        flux_projetes_periods['PRIMES_VARIABLES'] = col(FLUX_COMP_IDX_PRIMES_VARIABLES)
+        flux_projetes_periods['FRAIS_FIXES'] = col(FLUX_COMP_IDX_FRAIS_FIXES)
+        flux_projetes_periods['HON_GEST'] = col(FLUX_COMP_IDX_HON_GEST)
+        flux_projetes_periods['COMM_MAINTIEN'] = col(FLUX_COMP_IDX_COMM_MAINTIEN)
+        flux_projetes_periods['VALEUR_MARCHANDE'] = col(FLUX_COMP_IDX_VALEUR_MARCHANDE)
+        flux_projetes_periods['PASSIF_REDRESSE'] = col(FLUX_COMP_IDX_PASSIF_REDRESSE)
+        flux_projetes_periods['COUSSIN_CREDIT'] = col(FLUX_COMP_IDX_COUSSIN_CREDIT)
+        flux_projetes_periods['COUSSIN_MARCHE'] = col(FLUX_COMP_IDX_COUSSIN_MARCHE)
+        flux_projetes_periods['COUSSIN_DEPENSE'] = col(FLUX_COMP_IDX_COUSSIN_DEPENSE)
+        flux_projetes_periods['COUSSIN_DECHEANCE'] = col(FLUX_COMP_IDX_COUSSIN_DECHEANCE)
+        flux_projetes_periods['COUSSIN_MORTALITE'] = col(FLUX_COMP_IDX_COUSSIN_MORTALITE)
+        flux_projetes_periods['COUSSIN_DEPOT'] = col(FLUX_COMP_IDX_COUSSIN_DEPOT)
     
     # Save all results (including debug output if enabled)
     save_result = save_results(
@@ -1105,6 +1290,7 @@ def run_projection_gpu_nested(
         ext_debug=ext_debug_result,
         int_debug=int_debug_result,
         debug_params=debug_params,
+        flux_projetes_periods=flux_projetes_periods,
     )
     
     return ProjectionResult(
@@ -1116,6 +1302,7 @@ def run_projection_gpu_nested(
         chocs_summary=save_result['chocs_summary'],
         ext_debug_df=save_result['ext_debug_df'],
         int_debug_df=save_result['int_debug_df'],
+        flux_projetes_df=save_result['flux_projetes_df'],
         saved_files=save_result['saved_files'],
     )
 
