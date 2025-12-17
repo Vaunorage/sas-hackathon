@@ -200,10 +200,16 @@ def handler(job):
                         file_paths[arg_name] = dest_file
                         print(f"  ✓ Using default: {filename}")
                     else:
-                        return {'error': f"Required file not found: {filename} (not uploaded and no default available)"}
+                        error_msg = f"Required file not found: {filename} (not uploaded and no default available)"
+                        print(f"  ✗ ERROR: {error_msg}")
+                        sys.stdout.flush()
+                        return {'error': error_msg}
                         
         except Exception as e:
-            return {'error': f"Failed to process data files: {str(e)}"}
+            error_msg = f"Failed to process data files: {str(e)}"
+            print(f"  ✗ ERROR: {error_msg}")
+            sys.stdout.flush()
+            return {'error': error_msg}
 
         # --- 4. Run the GPU projection ---
         try:

@@ -467,33 +467,314 @@ input[type="password"] {
 .kernel-btn-group button {
     margin-right: 5px;
 }
+
+/* Main Navigation Tabs */
+.main-tabs {
+    display: flex;
+    border-bottom: 2px solid #000;
+    margin-bottom: 15px;
+    background: #e0e0e0;
+}
+
+.main-tab {
+    padding: 12px 25px;
+    font-weight: bold;
+    font-size: 14px;
+    cursor: pointer;
+    border: 2px solid #000;
+    border-bottom: none;
+    margin-right: 2px;
+    background: #c0c0c0;
+    position: relative;
+    top: 2px;
+}
+
+.main-tab:hover {
+    background: #d0d0d0;
+}
+
+.main-tab.active {
+    background: #fff;
+    border-bottom: 2px solid #fff;
+    margin-bottom: -2px;
+}
+
+.main-tab-content {
+    display: none;
+}
+
+.main-tab-content.active {
+    display: block;
+}
+
+/* Two column layout for job form */
+.form-columns {
+    display: flex;
+    gap: 20px;
+}
+
+.form-column {
+    flex: 1;
+}
+
+.form-column.narrow {
+    flex: 0 0 300px;
+}
+
+/* Quick stats bar */
+.stats-bar {
+    display: flex;
+    gap: 15px;
+    padding: 10px;
+    background: #e0e0e0;
+    border: 1px solid #000;
+    margin-bottom: 15px;
+}
+
+.stat-item {
+    padding: 5px 15px;
+    border: 1px solid #808080;
+    background: #fff;
+    font-size: 13px;
+}
+
+.stat-item strong {
+    color: #000080;
+}
+
+/* Compact form styling */
+.form-row {
+    display: flex;
+    gap: 15px;
+    margin-bottom: 10px;
+}
+
+.form-row .form-group {
+    flex: 1;
+    margin-bottom: 0;
+}
+
+/* Section headers */
+.section-header {
+    background: #000080;
+    color: #fff;
+    padding: 8px 12px;
+    font-weight: bold;
+    margin: 15px 0 10px 0;
+    font-size: 14px;
+}
+
+.section-header:first-child {
+    margin-top: 0;
+}
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <div>
-                <div>
-                    <h1>GPU Actuarial Projections</h1>
-                    <p>High-performance actuarial modeling powered by GPU acceleration</p>
-                </div>
-            </div>
-
+            <h1>GPU Actuarial Projections</h1>
+            <p>High-performance actuarial modeling powered by GPU acceleration</p>
         </div>
 
-        <!-- Kernel Editor Section -->
-        <div class="card">
-            <h2 onclick="toggleKernelEditor()" style="cursor: pointer;">
-                <span id="kernel-toggle-icon">▶</span> Kernel Editor (Advanced)
-            </h2>
-            <div id="kernel-editor-content" style="display: none;">
-                <p style="color: #666; font-size: 13px;">
-                    Edit the GPU kernel code. Save versions to the database, then check "Use Custom Kernel Code" when creating a job to use your edited code.
+        <!-- Main Navigation Tabs -->
+        <div class="main-tabs">
+            <div class="main-tab active" onclick="switchMainTab('create')">📝 Create Job</div>
+            <div class="main-tab" onclick="switchMainTab('kernel')">🔧 Kernel</div>
+            <div class="main-tab" onclick="switchMainTab('jobs')">📋 Jobs <span id="jobs-count-badge" style="background:#000080;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;margin-left:5px;"></span></div>
+            <div class="main-tab" onclick="switchMainTab('advanced')">⚠️ Admin</div>
+        </div>
+
+        <!-- TAB 1: Create Job -->
+        <div id="tab-create" class="main-tab-content active">
+            <div class="card">
+                <h2>Create New Projection Job</h2>
+                <form id="job-form">
+                    <div class="form-columns">
+                        <!-- Left Column: Main Parameters -->
+                        <div class="form-column">
+                            <div class="section-header">Projection Parameters</div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="nb_an_projection">Years to Project:</label>
+                                    <input type="number" id="nb_an_projection" name="nb_an_projection" value="100" min="1" max="150">
+                                </div>
+                                <div class="form-group">
+                                    <label for="max_accounts">Max Accounts:</label>
+                                    <input type="number" id="max_accounts" name="max_accounts" value="20" min="1">
+                                </div>
+                            </div>
+                            
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="nb_scenarios">External Scenarios:</label>
+                                    <input type="number" id="nb_scenarios" name="nb_scenarios" value="100" min="1" max="1000">
+                                </div>
+                                <div class="form-group">
+                                    <label for="nb_int_scenarios">Internal Scenarios:</label>
+                                    <input type="number" id="nb_int_scenarios" name="nb_int_scenarios" value="100" min="1" max="1000">
+                                </div>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="shock_capital_pct">Capital Shock % (default 35%):</label>
+                                <input type="number" id="shock_capital_pct" name="shock_capital_pct" value="35" min="0" max="100" step="1">
+                            </div>
+
+                            <div class="form-group" style="margin-top: 15px; padding: 10px; background: #ffe0b0; border: 1px solid #ffa500;">
+                                <label>
+                                    <input type="checkbox" id="use_custom_kernel">
+                                    <strong>🧪 Use Custom Kernel Code</strong>
+                                </label>
+                                <p style="font-size: 12px; color: #666; margin: 5px 0 0 20px;">
+                                    Uses kernel from Kernel tab. <a href="#" onclick="switchMainTab('kernel'); return false;" style="color: #000080;">Edit kernel →</a>
+                                </p>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary" id="submit-btn" style="margin-top: 15px; width: 100%; padding: 12px;">🚀 Create Job</button>
+                            <div id="create-message" style="margin-top: 10px;"></div>
+                        </div>
+
+                        <!-- Right Column: Optional Settings -->
+                        <div class="form-column">
+                            <!-- Custom Files Section -->
+                            <div class="section-header" onclick="toggleFilePaths()" style="cursor: pointer;">
+                                <span id="file-paths-toggle-icon">▶</span> Custom Files (Optional)
+                            </div>
+                            <div id="file-paths-content" style="display: none; padding: 10px; background: #f8f8f8; border: 1px solid #ccc;">
+                                <p style="font-size: 12px; color: #666; margin-bottom: 10px;">
+                                    Upload to override defaults from data_in folder.
+                                    <button type="button" class="btn btn-secondary" onclick="clearAllFiles()" style="float: right; padding: 3px 8px; font-size: 11px;">Clear All</button>
+                                </p>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">POPULATION.csv:</label>
+                                        <input type="file" id="POPULATION" name="POPULATION" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">MORTALITE.csv:</label>
+                                        <input type="file" id="MORTALITE" name="MORTALITE" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">RENDEMENTS.csv:</label>
+                                        <input type="file" id="RENDEMENTS" name="RENDEMENTS" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">RENDEMENTS_INT.csv:</label>
+                                        <input type="file" id="RENDEMENTS_INT" name="RENDEMENTS_INT" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">DEPOTS_FUTURS.csv:</label>
+                                        <input type="file" id="DEPOTS_FUTURS" name="DEPOTS_FUTURS" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">FRAIS_ADMIN.csv:</label>
+                                        <input type="file" id="FRAIS_ADMIN" name="FRAIS_ADMIN" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">MIN_FERR.csv:</label>
+                                        <input type="file" id="MIN_FERR" name="MIN_FERR" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">TX_LAPSE_PART.csv:</label>
+                                        <input type="file" id="TX_LAPSE_PART" name="TX_LAPSE_PART" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">TX_LAPSE_TOT.csv:</label>
+                                        <input type="file" id="TX_LAPSE_TOT" name="TX_LAPSE_TOT" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">ACQUISITION.csv:</label>
+                                        <input type="file" id="ACQUISITION" name="ACQUISITION" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 5px;">
+                                        <label style="font-size: 11px;">COUSSINS_ESCAP.csv:</label>
+                                        <input type="file" id="COUSSINS_ESCAP" name="COUSSINS_ESCAP" accept=".csv" style="font-size: 11px;">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Debug Options Section -->
+                            <div class="section-header" onclick="toggleDebugOptions()" style="cursor: pointer; margin-top: 15px;">
+                                <span id="debug-toggle-icon">▶</span> Debug Options
+                            </div>
+                            <div id="debug-options-content" style="display: none; padding: 10px; background: #f8f8f8; border: 1px solid #ccc;">
+                                <div class="form-group" style="margin-bottom: 8px;">
+                                    <label>
+                                        <input type="checkbox" id="debug_only">
+                                        <strong>Debug Only Mode</strong> - Process ONLY the debug account
+                                    </label>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label style="font-size: 12px;">Debug Account ID:</label>
+                                        <input type="number" id="debug_account" name="debug_account" placeholder="Leave empty">
+                                    </div>
+                                    <div class="form-group">
+                                        <label style="font-size: 12px;">Debug Ext Scenario:</label>
+                                        <input type="number" id="debug_scenario" name="debug_scenario" placeholder="Leave empty" min="0">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label style="font-size: 12px;">Debug Year:</label>
+                                        <input type="number" id="debug_year" name="debug_year" placeholder="Leave empty" min="0">
+                                    </div>
+                                    <div class="form-group">
+                                        <label style="font-size: 12px;">Debug Month:</label>
+                                        <input type="number" id="debug_month" name="debug_month" placeholder="Leave empty" min="0" max="12">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label style="font-size: 12px;">Debug Int Scenario:</label>
+                                        <input type="number" id="debug_int_scenario" name="debug_int_scenario" placeholder="Leave empty" min="0">
+                                    </div>
+                                    <div class="form-group">
+                                        <label style="font-size: 12px;">Debug Int Year:</label>
+                                        <input type="number" id="debug_int_year" name="debug_int_year" placeholder="Leave empty" min="0">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- TAB 2: Jobs -->
+        <div id="tab-jobs" class="main-tab-content">
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <h2 style="margin: 0;">Job Management</h2>
+                    <button class="btn btn-secondary" onclick="loadJobs()">↻ Refresh</button>
+                </div>
+                <div id="jobs-list" class="jobs-list">
+                    <div class="loading">Loading jobs...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 3: Kernel Editor -->
+        <div id="tab-kernel" class="main-tab-content">
+            <div class="card">
+                <h2>🔧 Kernel Editor</h2>
+                <p style="color: #666; font-size: 13px; margin-bottom: 15px;">
+                    Edit the GPU kernel code. Save versions to the database, then check "Use Custom Kernel Code" in Create Job tab.
                 </p>
                 
-                <div class="form-group">
-                    <label for="kernel-password">Admin Password:</label>
-                    <input type="password" id="kernel-password" placeholder="Required for kernel changes">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="kernel-password">Admin Password:</label>
+                        <input type="password" id="kernel-password" placeholder="Required for kernel changes">
+                    </div>
+                    <div class="form-group">
+                        <label for="kernel-version-name">Version Name (optional):</label>
+                        <input type="text" id="kernel-version-name" placeholder="e.g., v1.1-fix-lapse">
+                    </div>
+                    <div class="form-group">
+                        <label for="kernel-description">Description (optional):</label>
+                        <input type="text" id="kernel-description" placeholder="e.g., Fixed lapse calculation bug">
+                    </div>
                 </div>
                 
                 <div class="kernel-btn-group">
@@ -503,17 +784,7 @@ input[type="password"] {
                     <button type="button" class="btn" onclick="restoreKernelBackup()">↩️ Restore Backup</button>
                 </div>
                 
-                <div class="form-group">
-                    <label for="kernel-version-name">Version Name (optional):</label>
-                    <input type="text" id="kernel-version-name" placeholder="e.g., v1.1-fix-lapse">
-                </div>
-                
-                <div class="form-group">
-                    <label for="kernel-description">Description (optional):</label>
-                    <input type="text" id="kernel-description" placeholder="e.g., Fixed lapse calculation bug">
-                </div>
-                
-                <div class="form-group">
+                <div class="form-group" style="margin-top: 15px;">
                     <label>Kernel Code (kernels.py):</label>
                     <div class="kernel-editor-container">
                         <div class="kernel-editor-toolbar">
@@ -535,11 +806,11 @@ input[type="password"] {
                 <div id="kernel-message"></div>
                 
                 <!-- Saved Versions -->
-                <h3 onclick="toggleKernelVersions()" style="cursor: pointer; margin-top: 20px;">
+                <div class="section-header" onclick="toggleKernelVersions()" style="cursor: pointer; margin-top: 20px;">
                     <span id="versions-toggle-icon">▶</span> Saved Versions
-                </h3>
-                <div id="kernel-versions-content" style="display: none;">
-                    <button type="button" class="btn btn-secondary" onclick="loadKernelVersions()">↻ Refresh</button>
+                </div>
+                <div id="kernel-versions-content" style="display: none; padding: 10px; background: #e8e8e8; border: 1px solid #ccc;">
+                    <button type="button" class="btn btn-secondary" onclick="loadKernelVersions()" style="margin-bottom: 10px;">↻ Refresh</button>
                     <div id="kernel-versions-list" class="kernel-versions-list">
                         <div class="loading">Click refresh to load versions...</div>
                     </div>
@@ -547,171 +818,16 @@ input[type="password"] {
             </div>
         </div>
 
-        <div class="card">
-            <h2>Create New Job</h2>
-            <form id="job-form">
-                <div id="custom-paths-section">
-                    <h3 onclick="toggleFilePaths()">
-                        <span id="file-paths-toggle-icon">▶</span> Upload Custom Files (Optional)
-                    </h3>
-                    <div id="file-paths-content" style="display: none;">
-                        <div>
-                            <p>
-                                Upload custom files to override defaults. Unspecified files will use defaults from data_in folder.
-                            </p>
-                            <button type="button" class="btn btn-secondary" onclick="clearAllFiles()">
-                                Clear All
-                            </button>
-                        </div>
-                        <div>
-                        <div class="form-group">
-                            <label for="POPULATION">POPULATION.csv:</label>
-                            <input type="file" id="POPULATION" name="POPULATION" accept=".csv">
-                        </div>
-                        <div class="form-group">
-                            <label for="MORTALITE">MORTALITE.csv:</label>
-                            <input type="file" id="MORTALITE" name="MORTALITE" accept=".csv">
-                        </div>
-                        <div class="form-group">
-                            <label for="RENDEMENTS">RENDEMENTS.csv:</label>
-                            <input type="file" id="RENDEMENTS" name="RENDEMENTS" accept=".csv">
-                        </div>
-                        <div class="form-group">
-                            <label for="RENDEMENTS_INT">RENDEMENTS_INT.csv (Internal/Risk-Neutral Scenarios):</label>
-                            <input type="file" id="RENDEMENTS_INT" name="RENDEMENTS_INT" accept=".csv">
-                        </div>
-                        <div class="form-group">
-                            <label for="DEPOTS_FUTURS">DEPOTS_FUTURS.csv:</label>
-                            <input type="file" id="DEPOTS_FUTURS" name="DEPOTS_FUTURS" accept=".csv">
-                        </div>
-                        <div class="form-group">
-                            <label for="FRAIS_ADMIN">FRAIS_ADMIN.csv:</label>
-                            <input type="file" id="FRAIS_ADMIN" name="FRAIS_ADMIN" accept=".csv">
-                        </div>
-                        <div class="form-group">
-                            <label for="MIN_FERR">MIN_FERR.csv:</label>
-                            <input type="file" id="MIN_FERR" name="MIN_FERR" accept=".csv">
-                        </div>
-                        <div class="form-group">
-                            <label for="TX_LAPSE_PART">TX_LAPSE_PART.csv:</label>
-                            <input type="file" id="TX_LAPSE_PART" name="TX_LAPSE_PART" accept=".csv">
-                        </div>
-                        <div class="form-group">
-                            <label for="TX_LAPSE_TOT">TX_LAPSE_TOT.csv:</label>
-                            <input type="file" id="TX_LAPSE_TOT" name="TX_LAPSE_TOT" accept=".csv">
-                        </div>
-                        <div class="form-group">
-                            <label for="ACQUISITION">ACQUISITION.csv:</label>
-                            <input type="file" id="ACQUISITION" name="ACQUISITION" accept=".csv">
-                        </div>
-                        <div class="form-group">
-                            <label for="COUSSINS_ESCAP">COUSSINS_ESCAP.csv:</label>
-                            <input type="file" id="COUSSINS_ESCAP" name="COUSSINS_ESCAP" accept=".csv">
-                        </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div>
-                    <div class="form-group">
-                        <label for="nb_an_projection">Years to Project:</label>
-                        <input type="number" id="nb_an_projection" name="nb_an_projection" value="100" min="1" max="150">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="nb_scenarios">External Scenarios (Real-World):</label>
-                        <input type="number" id="nb_scenarios" name="nb_scenarios" value="100" min="1" max="1000">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="nb_int_scenarios">Internal Scenarios (Risk-Neutral):</label>
-                        <input type="number" id="nb_int_scenarios" name="nb_int_scenarios" value="100" min="1" max="1000">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="shock_capital_pct">Capital Shock % (default 35%):</label>
-                        <input type="number" id="shock_capital_pct" name="shock_capital_pct" value="35" min="0" max="100" step="1">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="max_accounts">Max Accounts (optional):</label>
-                        <input type="number" id="max_accounts" name="max_accounts" value="20" min="1">
-                    </div>
-
-                    <!-- Debug Options (collapsible) -->
-                    <h4 onclick="toggleDebugOptions()" style="cursor: pointer; margin-top: 15px;">
-                        <span id="debug-toggle-icon">▶</span> Debug Options
-                    </h4>
-                    <div id="debug-options-content" style="display: none; padding: 10px; background: #f0f0f0; border: 1px solid #ccc;">
-                        <div class="form-group">
-                            <label for="debug_account">Debug Account ID:</label>
-                            <input type="number" id="debug_account" name="debug_account" placeholder="Leave empty for no debug">
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>
-                                <input type="checkbox" id="debug_only">
-                                <strong>Debug Only Mode</strong> - Process ONLY the debug account (ignores Max Accounts)
-                            </label>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="debug_scenario">Debug External Scenario:</label>
-                            <input type="number" id="debug_scenario" name="debug_scenario" placeholder="Leave empty for no debug" min="0">
-                        </div>
-
-                        <div class="form-group">
-                            <label for="debug_year">Debug Year:</label>
-                            <input type="number" id="debug_year" name="debug_year" placeholder="Leave empty for no debug" min="0">
-                        </div>
-
-                        <div class="form-group">
-                            <label for="debug_month">Debug Month:</label>
-                            <input type="number" id="debug_month" name="debug_month" placeholder="Leave empty for no debug" min="0" max="12">
-                        </div>
-
-                        <div class="form-group">
-                            <label for="debug_int_scenario">Debug Internal Scenario:</label>
-                            <input type="number" id="debug_int_scenario" name="debug_int_scenario" placeholder="Leave empty for no debug" min="0">
-                        </div>
-
-                        <div class="form-group">
-                            <label for="debug_int_year">Debug Internal Year:</label>
-                            <input type="number" id="debug_int_year" name="debug_int_year" placeholder="Leave empty for no debug" min="0">
-                        </div>
-                    </div>
-                    
-                    <div class="form-group" style="margin-top: 15px; padding: 10px; background: #ffe0b0; border: 1px solid #ffa500;">
-                        <label>
-                            <input type="checkbox" id="use_custom_kernel">
-                            <strong>🧪 Use Custom Kernel Code</strong>
-                        </label>
-                        <p style="font-size: 12px; color: #666; margin: 5px 0 0 20px;">
-                            If checked, the kernel code from the Kernel Editor above will be used for this job.
-                            Make sure to load/edit the kernel code first!
-                        </p>
-                    </div>
-                </div>
-
-                <button type="submit" class="btn btn-primary" id="submit-btn">Create Job</button>
-            </form>
-            <div id="create-message"></div>
-        </div>
-
-        <div class="card">
-            <div>
-                <h2>Job Management</h2>
-                <button class="btn btn-secondary" onclick="loadJobs()">↻ Refresh</button>
+        <!-- TAB 4: Admin -->
+        <div id="tab-advanced" class="main-tab-content">
+            <!-- Admin Actions -->
+            <div class="card">
+                <h2>⚠️ Admin Actions</h2>
+                <p style="color: #666; font-size: 13px; margin-bottom: 15px;">Dangerous operations - use with caution!</p>
+                <button class="btn admin-btn" onclick="openAdminModal()">
+                    🗑️ Clear Database
+                </button>
             </div>
-            <div id="jobs-list" class="jobs-list">
-                <div class="loading">Loading jobs...</div>
-            </div>
-        </div>
-
-        <div class="card">
-            <button class="btn admin-btn" onclick="openAdminModal()">
-                ⚙️ Admin Actions
-            </button>
         </div>
 
     </div>
@@ -770,6 +886,32 @@ input[type="password"] {
         const API_BASE = window.location.origin;
         let selectedJobId = null;
         let isLoadingDetails = false;  // Flag to prevent auto-refresh interference
+        
+        // Cache for job details and files to avoid redundant API calls
+        const jobDetailsCache = new Map();
+        const jobFilesCache = new Map();
+        const CACHE_TTL_MS = 30000;  // 30 second cache TTL for completed jobs
+        
+        // Main tab switching function
+        function switchMainTab(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('.main-tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelector(`.main-tab[onclick="switchMainTab('${tabName}')"]`).classList.add('active');
+            
+            // Update tab content
+            document.querySelectorAll('.main-tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById(`tab-${tabName}`).classList.add('active');
+            
+            // Refresh jobs when Jobs tab is opened
+            if (tabName === 'jobs') {
+                loadJobs();
+            }
+            
+            // Initialize kernel editor when Kernel tab is opened
+            if (tabName === 'kernel') {
+                setTimeout(initKernelEditor, 100);
+            }
+        }
         
         // Helper function to make API requests
         async function fetchWithToken(url, options = {}) {
@@ -934,8 +1076,22 @@ input[type="password"] {
                 
                 const jobsList = document.getElementById('jobs-list');
                 
+                // Update jobs count badge
+                const badge = document.getElementById('jobs-count-badge');
+                if (badge) {
+                    const runningCount = data.jobs.filter(j => j.status === 'running').length;
+                    if (runningCount > 0) {
+                        badge.textContent = `${runningCount} running`;
+                        badge.style.background = '#00aa00';
+                    } else {
+                        badge.textContent = data.jobs.length;
+                        badge.style.background = '#000080';
+                    }
+                }
+                
                 if (data.jobs.length === 0) {
                     jobsList.innerHTML = '<div class="loading">No jobs found</div>';
+                    if (badge) badge.textContent = '0';
                     return;
                 }
                 
@@ -1049,14 +1205,14 @@ input[type="password"] {
                     if (selectedJob && selectedJob.status === 'running') {
                         // Refresh details for running job to show progress
                         loadJobDetails(selectedJobId);
-                    } else if (expandedContent) {
-                        // Restore content for non-running jobs
+                    } else if (expandedContent && !expandedContent.includes('Loading details...')) {
+                        // Restore content for non-running jobs (only if actually loaded)
                         const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
                         if (detailsDiv) {
                             detailsDiv.innerHTML = expandedContent;
                         }
                     } else {
-                        // No cached content - load details for the first time
+                        // No cached content or still loading - load details
                         loadJobDetails(selectedJobId);
                     }
                 }
@@ -1107,7 +1263,7 @@ input[type="password"] {
             jobItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
-        // Load job details inline
+        // Load job details inline with caching - single API call for job + files
         async function loadJobDetails(jobId) {
             const detailsDiv = document.getElementById(`job-details-${jobId}`);
             
@@ -1119,17 +1275,34 @@ input[type="password"] {
             isLoadingDetails = true;  // Prevent auto-refresh interference
             
             try {
-                const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}`);
+                // Check cache first for completed jobs
+                const cached = jobDetailsCache.get(jobId);
+                const now = Date.now();
+                let job;
                 
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    console.error(`API error for job ${jobId}:`, response.status, errorText);
-                    detailsDiv.innerHTML = `<div class="error">Error loading job details: ${response.status}</div>`;
-                    isLoadingDetails = false;
-                    return;
+                if (cached && cached.data.status === 'completed' && (now - cached.timestamp) < CACHE_TTL_MS) {
+                    job = cached.data;
+                    console.log(`Using cached details for job ${jobId}`);
+                } else {
+                    // Single API call that includes files data
+                    const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}?include_files=true`);
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        console.error(`API error for job ${jobId}:`, response.status, errorText);
+                        detailsDiv.innerHTML = `<div class="error">Error loading job details: ${response.status}</div>`;
+                        isLoadingDetails = false;
+                        return;
+                    }
+                    
+                    job = await response.json();
+                    
+                    // Cache completed jobs
+                    if (job.status === 'completed') {
+                        jobDetailsCache.set(jobId, { data: job, timestamp: now });
+                    }
                 }
                 
-                const job = await response.json();
                 console.log(`Job details for ${jobId}:`, job);
                 
                 // Build parameters info
@@ -1237,24 +1410,16 @@ input[type="password"] {
                     }
                 }
                 
-                // Fetch files data first, then build entire HTML at once
-                let resultsHTML = '<div class="loading">Loading results...</div>';
-                try {
-                    const filesResponse = await fetchWithToken(`${API_BASE}/jobs/${jobId}/files`);
-                    if (filesResponse.ok) {
-                        const filesData = await filesResponse.json();
-                        console.log(`Files data for job ${jobId}:`, filesData);
-                        const combinedFiles = [
-                            ...(filesData.uploaded_files || []),
-                            ...(filesData.result_files || [])
-                        ];
+                // Use files data from the combined API response (no separate call needed)
+                let resultsHTML = '<p style="color: #666; font-style: italic;">No results available yet.</p>';
+                if (job.files) {
+                    const combinedFiles = [
+                        ...(job.files.uploaded_files || []),
+                        ...(job.files.result_files || [])
+                    ];
+                    if (combinedFiles.length > 0) {
                         resultsHTML = buildFilesHTML(jobId, combinedFiles);
-                    } else {
-                        resultsHTML = '<p style="color: #ff0000;">Error loading results</p>';
                     }
-                } catch (filesError) {
-                    console.error('Error fetching files:', filesError);
-                    resultsHTML = '<p style="color: #ff0000;">Failed to load results</p>';
                 }
                 
                 detailsDiv.innerHTML = `
@@ -1273,7 +1438,8 @@ input[type="password"] {
                 `;
                 
             } catch (error) {
-                detailsDiv.innerHTML = '<div class="error">Failed to load job details</div>';
+                console.error('Error loading job details:', error);
+                detailsDiv.innerHTML = `<div class="error">Failed to load job details: ${error.message}</div>`;
             } finally {
                 isLoadingDetails = false;  // Allow auto-refresh again
             }
@@ -1897,8 +2063,10 @@ input[type="password"] {
                 if (response.ok) {
                     const kernelMsg = useCustomKernel ? ' (with custom kernel)' : '';
                     messageDiv.innerHTML = `<div class="success">Job created successfully${kernelMsg}! Job ID: ${data.job_id}</div>`;
-                    loadJobs();
-                    setTimeout(() => selectJob(data.job_id), 1000);
+                    // Switch to Jobs tab and select the new job
+                    switchMainTab('jobs');
+                    await loadJobs();
+                    setTimeout(() => selectJob(data.job_id), 500);
                 } else {
                     messageDiv.innerHTML = `<div class="error">${data.error || data.message || 'Failed to create job'}</div>`;
                 }
@@ -1970,16 +2138,6 @@ input[type="password"] {
             // Set placeholder text
             kernelEditor.setValue('# Click "Load Current" to load the kernel code...\n');
         }
-        
-        // Initialize editor when kernel section is expanded
-        const originalToggleKernelEditor = toggleKernelEditor;
-        toggleKernelEditor = function() {
-            originalToggleKernelEditor();
-            const content = document.getElementById('kernel-editor-content');
-            if (content.style.display === 'block') {
-                setTimeout(initKernelEditor, 100);
-            }
-        };
         
         // Editor helper functions
         function kernelEditorUndo() {

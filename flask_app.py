@@ -1045,13 +1045,32 @@ def get_vp_flux_total(job_id: str) -> Optional[pd.DataFrame]:
         print(f"Error retrieving vp_flux_total: {e}")
         return None
 
-def get_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get job details by ID"""
+def get_job(job_id: str, include_results_data: bool = False) -> Optional[Dict[str, Any]]:
+    """Get job details by ID
+    
+    Args:
+        job_id: The job ID to fetch
+        include_results_data: If False (default), excludes the large results_data field for faster loading
+    """
     ph = get_placeholder()
-    sql = f"SELECT * FROM jobs WHERE job_id = {ph}"
+    
+    # Exclude results_data by default for faster loading
+    if include_results_data:
+        sql = f"SELECT * FROM jobs WHERE job_id = {ph}"
+    else:
+        sql = f"""SELECT job_id, status, created_at, started_at, completed_at, error_message,
+                         parameters, uploaded_files, result_files, current_batch, total_batches, progress_percent
+                  FROM jobs WHERE job_id = {ph}"""
+    
     row = fetch_one(sql, (job_id,))
     
     if row:
+        # Parse parameters and exclude large kernel_code field for faster loading
+        params = json.loads(row['parameters']) if row['parameters'] else {}
+        if 'kernel_code' in params:
+            params['kernel_code'] = None  # Exclude large kernel code, just indicate it was used
+            params['use_custom_kernel'] = True
+        
         job_data = {
             'job_id': row['job_id'],
             'status': row['status'],
@@ -1059,7 +1078,7 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
             'started_at': row['started_at'],
             'completed_at': row['completed_at'],
             'error_message': row['error_message'],
-            'parameters': json.loads(row['parameters']) if row['parameters'] else {},
+            'parameters': params,
             'uploaded_files': json.loads(row['uploaded_files']) if row['uploaded_files'] else [],
             'result_files': json.loads(row['result_files']) if row['result_files'] else []
         }
@@ -1074,11 +1093,12 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
             job_data['total_batches'] = 0
             job_data['progress_percent'] = 0.0
         
-        # Handle results_data field (may not exist in old records)
-        try:
-            job_data['results_data'] = json.loads(row['results_data']) if row['results_data'] else None
-        except (KeyError, IndexError):
-            job_data['results_data'] = None
+        # Only include results_data if explicitly requested
+        if include_results_data:
+            try:
+                job_data['results_data'] = json.loads(row['results_data']) if row['results_data'] else None
+            except (KeyError, IndexError):
+                job_data['results_data'] = None
         
         return job_data
     return None
@@ -1453,9 +1473,20 @@ def trigger_runpod_job(job_id: str):
         print(f"RunPod job trigger for {job_id} failed: {error_msg}")
         update_job_status(job_id, 'failed', error_message=error_msg)
 
-def get_all_jobs() -> list:
-    """Get all jobs ordered by creation date"""
-    sql = "SELECT * FROM jobs ORDER BY created_at DESC"
+def get_all_jobs(lightweight: bool = False) -> list:
+    """Get all jobs ordered by creation date
+    
+    Args:
+        lightweight: If True, exclude heavy fields like results_data and parameters for faster loading
+    """
+    # Select only needed columns for lightweight mode
+    if lightweight:
+        sql = """SELECT job_id, status, created_at, started_at, completed_at, error_message,
+                        current_batch, total_batches, progress_percent, result_files
+                 FROM jobs ORDER BY created_at DESC"""
+    else:
+        sql = "SELECT * FROM jobs ORDER BY created_at DESC"
+    
     rows = fetch_all(sql)
     
     jobs = []
@@ -1467,8 +1498,6 @@ def get_all_jobs() -> list:
             'started_at': row['started_at'],
             'completed_at': row['completed_at'],
             'error_message': row['error_message'],
-            'parameters': json.loads(row['parameters']) if row['parameters'] else {},
-            'uploaded_files': json.loads(row['uploaded_files']) if row['uploaded_files'] else [],
             'result_files': json.loads(row['result_files']) if row['result_files'] else []
         }
         
@@ -1482,11 +1511,14 @@ def get_all_jobs() -> list:
             job_data['total_batches'] = 0
             job_data['progress_percent'] = 0.0
         
-        # Handle results_data field (may not exist in old records)
-        try:
-            job_data['results_data'] = json.loads(row['results_data']) if row['results_data'] else None
-        except (KeyError, IndexError):
-            job_data['results_data'] = None
+        # Only include heavy fields in non-lightweight mode
+        if not lightweight:
+            job_data['parameters'] = json.loads(row['parameters']) if row['parameters'] else {}
+            job_data['uploaded_files'] = json.loads(row['uploaded_files']) if row['uploaded_files'] else []
+            try:
+                job_data['results_data'] = json.loads(row['results_data']) if row['results_data'] else None
+            except (KeyError, IndexError):
+                job_data['results_data'] = None
         
         jobs.append(job_data)
     return jobs
@@ -1819,7 +1851,7 @@ def welcome():
                 'population_path': 'Custom path for POPULATION.csv',
                 'mortalite_path': 'Custom path for MORTALITE.csv',
                 'rendements_path': 'Custom path for RENDEMENTS.csv',
-                'rendements_int_path': 'Custom path for RENDEMENTS_INT.csv (internal/risk-neutral scenarios)',
+                'rendements_int_path': 'Custom path for RENDEMENTS_INT.csv',
                 'depots_futurs_path': 'Custom path for DEPOTS_FUTURS.csv',
                 'frais_admin_path': 'Custom path for FRAIS_ADMIN.csv',
                 'min_ferr_path': 'Custom path for MIN_FERR.csv',
@@ -1895,7 +1927,7 @@ def create_job_endpoint():
     - population_path: Custom path for POPULATION.csv
     - mortalite_path: Custom path for MORTALITE.csv
     - rendements_path: Custom path for RENDEMENTS.csv
-    - rendements_int_path: Custom path for RENDEMENTS_INT.csv (internal/risk-neutral scenarios)
+    - rendements_int_path: Custom path for RENDEMENTS_INT.csv
     - depots_futurs_path: Custom path for DEPOTS_FUTURS.csv
     - frais_admin_path: Custom path for FRAIS_ADMIN.csv
     - min_ferr_path: Custom path for MIN_FERR.csv
@@ -2003,7 +2035,8 @@ def create_job_endpoint():
 def list_jobs():
     """List all jobs sorted by creation date (newest first)"""
     try:
-        jobs = get_all_jobs()
+        # Use lightweight mode for faster loading (excludes results_data, parameters)
+        jobs = get_all_jobs(lightweight=True)
         return jsonify({
             'jobs': jobs,
             'count': len(jobs)
@@ -2016,7 +2049,7 @@ def list_jobs():
 
 @app.route('/jobs/<job_id>', methods=['GET'])
 def get_job_details(job_id: str):
-    """Get specific job details"""
+    """Get specific job details, optionally with files included"""
     try:
         job = get_job(job_id)
         if not job:
@@ -2025,6 +2058,10 @@ def get_job_details(job_id: str):
                 'job_id': job_id
             }), 404
         
+        # If include_files=true, also fetch files data in same request
+        if request.args.get('include_files') == 'true':
+            job['files'] = get_job_files_fast(job_id)
+        
         return jsonify(job)
         
     except Exception as e:
@@ -2032,6 +2069,67 @@ def get_job_details(job_id: str):
             'error': 'Failed to get job details',
             'message': str(e)
         }), 500
+
+def get_job_files_fast(job_id: str) -> dict:
+    """Get job files data quickly for embedding in job details response"""
+    ph = get_placeholder()
+    
+    # Get uploaded files
+    upload_folder = get_job_upload_folder(job_id)
+    uploaded_files = []
+    if upload_folder.exists():
+        for file in upload_folder.glob('*'):
+            if file.is_file():
+                uploaded_files.append({
+                    'name': file.name,
+                    'size': file.stat().st_size,
+                    'type': 'input'
+                })
+    
+    # Get result files from database tables
+    result_files = []
+    table_metadata = {
+        'flux_projetes': {'name': 'FLUX_PROJETES', 'type': 'internal', 'desc': 'Projected cash flows'},
+        'nested_summary': {'name': 'VP_FLUX_TOTAL', 'type': 'summary', 'desc': 'Portfolio totals'},
+        'nested_results': {'name': 'NESTED_RESULTS', 'type': 'detailed', 'desc': 'Per-account results'},
+        'five_chocs_results': {'name': 'FIVE_CHOCS_RESULTS', 'type': 'detailed', 'desc': 'Five chocs'},
+        'sensitivities': {'name': 'SENSITIVITIES', 'type': 'detailed', 'desc': 'Greeks/Deltas'},
+        'chocs_summary': {'name': 'CHOCS_SUMMARY', 'type': 'summary', 'desc': 'Chocs summary'},
+        'ext_debug': {'name': 'EXT_DEBUG', 'type': 'debug', 'desc': 'External debug'},
+        'int_debug': {'name': 'INT_DEBUG', 'type': 'debug', 'desc': 'Internal debug'},
+        'int_debug_ts': {'name': 'INT_DEBUG_TS', 'type': 'debug', 'desc': 'Internal debug TS'},
+    }
+    
+    for table_name, meta in table_metadata.items():
+        try:
+            sql = f"SELECT COUNT(*) as count FROM {table_name} WHERE job_id = {ph}"
+            result = fetch_one(sql, (job_id,))
+            if result and result['count'] > 0:
+                result_files.append({
+                    'name': meta['name'],
+                    'type': meta['type'],
+                    'description': f"{meta['desc']} ({result['count']} rows)",
+                    'row_count': result['count'],
+                    'table': table_name
+                })
+        except Exception:
+            pass
+    
+    # Check results folder for CSV files
+    results_folder = get_job_results_folder(job_id)
+    if results_folder.exists():
+        for file in results_folder.glob('*.csv'):
+            result_files.append({
+                'name': file.name,
+                'size': file.stat().st_size,
+                'type': 'output'
+            })
+    
+    return {
+        'uploaded_files': uploaded_files,
+        'result_files': result_files,
+        'total_files': len(uploaded_files) + len(result_files)
+    }
 
 @app.route('/jobs/<job_id>', methods=['DELETE'])
 def cancel_job(job_id: str):
@@ -2170,10 +2268,12 @@ def get_job_results(job_id: str):
 
 @app.route('/jobs/<job_id>/files', methods=['GET'])
 def list_job_files(job_id: str):
-    """List files uploaded with a job"""
+    """List files uploaded with a job - optimized with batched queries"""
     try:
-        job = get_job(job_id)
-        if not job:
+        # Quick job existence check without loading full job data
+        ph = get_placeholder()
+        job_exists = fetch_one(f"SELECT job_id FROM jobs WHERE job_id = {ph}", (job_id,))
+        if not job_exists:
             return jsonify({
                 'error': 'Job not found',
                 'job_id': job_id
@@ -2191,149 +2291,57 @@ def list_job_files(job_id: str):
                         'type': 'input'
                     })
         
-        # Get result DataFrames from database tables
+        # Get result DataFrames from database tables - batched queries for speed
         result_files = []
-        ph = get_placeholder()
         
-        # Check for flux_projetes (projected cash flows)
-        try:
-            sql = f"SELECT COUNT(*) as count FROM flux_projetes WHERE job_id = {ph}"
-            flux_count = fetch_all(sql, (job_id,))
-            if flux_count and flux_count[0]['count'] > 0:
-                result_files.append({
-                    'name': 'FLUX_PROJETES',
-                    'type': 'internal',
-                    'description': f'Projected cash flows by period ({flux_count[0]["count"]} rows)',
-                    'row_count': flux_count[0]['count'],
-                    'table': 'flux_projetes'
-                })
-        except Exception as e:
-            print(f"Error checking flux_projetes: {e}")
+        # Table metadata for building result files
+        table_metadata = {
+            'flux_projetes': {'name': 'FLUX_PROJETES', 'type': 'internal', 'desc': 'Projected cash flows by period'},
+            'nested_summary': {'name': 'VP_FLUX_TOTAL', 'type': 'summary', 'desc': 'Portfolio totals'},
+            'nested_results': {'name': 'NESTED_RESULTS', 'type': 'detailed', 'desc': 'Per-account reserves/capital'},
+            'five_chocs_results': {'name': 'FIVE_CHOCS_RESULTS', 'type': 'detailed', 'desc': 'Five chocs per account'},
+            'sensitivities': {'name': 'SENSITIVITIES', 'type': 'detailed', 'desc': 'Greeks/Deltas per account'},
+            'chocs_summary': {'name': 'CHOCS_SUMMARY', 'type': 'summary', 'desc': 'Chocs summary by type'},
+            'ext_debug': {'name': 'EXT_DEBUG', 'type': 'debug', 'desc': 'External kernel debug output'},
+            'int_debug': {'name': 'INT_DEBUG', 'type': 'debug', 'desc': 'Internal kernel debug output'},
+            'int_debug_ts': {'name': 'INT_DEBUG_TS', 'type': 'debug', 'desc': 'Internal loop debug time series'},
+        }
         
-        # Check for nested_summary (portfolio totals - vp_flux_total)
-        try:
-            sql = f"SELECT COUNT(*) as count FROM nested_summary WHERE job_id = {ph}"
-            total_count = fetch_all(sql, (job_id,))
-            if total_count and total_count[0]['count'] > 0:
-                # Get the actual total value
-                sql = f"SELECT vp_reserve_be, vp_capital_req, vp_scr FROM nested_summary WHERE job_id = {ph} LIMIT 1"
-                total_val = fetch_all(sql, (job_id,))
-                pv_value = total_val[0]['vp_reserve_be'] if total_val else 0
-                result_files.append({
-                    'name': 'VP_FLUX_TOTAL',
-                    'type': 'summary',
-                    'description': f'Total Reserve BE: ${pv_value:,.2f}',
-                    'row_count': total_count[0]['count'],
-                    'table': 'nested_summary',
-                    'pv_total': pv_value
-                })
-        except Exception as e:
-            print(f"Error checking nested_summary: {e}")
+        # Batch count queries - run them all at once
+        table_counts = {}
+        for table_name in table_metadata.keys():
+            try:
+                sql = f"SELECT COUNT(*) as count FROM {table_name} WHERE job_id = {ph}"
+                result = fetch_one(sql, (job_id,))
+                if result and result['count'] > 0:
+                    table_counts[table_name] = result['count']
+            except Exception:
+                pass  # Table might not exist
         
-        # Check for nested_results (per-account reserves/capital)
-        try:
-            sql = f"SELECT COUNT(*) as count FROM nested_results WHERE job_id = {ph}"
-            results_count = fetch_all(sql, (job_id,))
-            if results_count and results_count[0]['count'] > 0:
-                result_files.append({
-                    'name': 'NESTED_RESULTS',
-                    'type': 'detailed',
-                    'description': f'Per-account reserves/capital ({results_count[0]["count"]} accounts)',
-                    'row_count': results_count[0]['count'],
-                    'table': 'nested_results'
-                })
-        except Exception as e:
-            print(f"Error checking nested_results: {e}")
-        
-        # Check for five_chocs_results
-        try:
-            sql = f"SELECT COUNT(*) as count FROM five_chocs_results WHERE job_id = {ph}"
-            chocs_count = fetch_all(sql, (job_id,))
-            if chocs_count and chocs_count[0]['count'] > 0:
-                result_files.append({
-                    'name': 'FIVE_CHOCS_RESULTS',
-                    'type': 'detailed',
-                    'description': f'Five chocs per account ({chocs_count[0]["count"]} rows)',
-                    'row_count': chocs_count[0]['count'],
-                    'table': 'five_chocs_results'
-                })
-        except Exception as e:
-            print(f"Error checking five_chocs_results: {e}")
-        
-        # Check for sensitivities (Greeks/deltas)
-        try:
-            sql = f"SELECT COUNT(*) as count FROM sensitivities WHERE job_id = {ph}"
-            sens_count = fetch_all(sql, (job_id,))
-            if sens_count and sens_count[0]['count'] > 0:
-                result_files.append({
-                    'name': 'SENSITIVITIES',
-                    'type': 'detailed',
-                    'description': f'Greeks/Deltas per account ({sens_count[0]["count"]} rows)',
-                    'row_count': sens_count[0]['count'],
-                    'table': 'sensitivities'
-                })
-        except Exception as e:
-            print(f"Error checking sensitivities: {e}")
-        
-        # Check for chocs_summary
-        try:
-            sql = f"SELECT COUNT(*) as count FROM chocs_summary WHERE job_id = {ph}"
-            chocs_sum_count = fetch_all(sql, (job_id,))
-            if chocs_sum_count and chocs_sum_count[0]['count'] > 0:
-                result_files.append({
-                    'name': 'CHOCS_SUMMARY',
-                    'type': 'summary',
-                    'description': f'Chocs summary by type ({chocs_sum_count[0]["count"]} rows)',
-                    'row_count': chocs_sum_count[0]['count'],
-                    'table': 'chocs_summary'
-                })
-        except Exception as e:
-            print(f"Error checking chocs_summary: {e}")
-        
-        # Check for ext_debug
-        try:
-            sql = f"SELECT COUNT(*) as count FROM ext_debug WHERE job_id = {ph}"
-            ext_debug_count = fetch_all(sql, (job_id,))
-            if ext_debug_count and ext_debug_count[0]['count'] > 0:
-                result_files.append({
-                    'name': 'EXT_DEBUG',
-                    'type': 'debug',
-                    'description': f'External kernel debug output ({ext_debug_count[0]["count"]} rows)',
-                    'row_count': ext_debug_count[0]['count'],
-                    'table': 'ext_debug'
-                })
-        except Exception as e:
-            print(f"Error checking ext_debug: {e}")
-        
-        # Check for int_debug
-        try:
-            sql = f"SELECT COUNT(*) as count FROM int_debug WHERE job_id = {ph}"
-            int_debug_count = fetch_all(sql, (job_id,))
-            if int_debug_count and int_debug_count[0]['count'] > 0:
-                result_files.append({
-                    'name': 'INT_DEBUG',
-                    'type': 'debug',
-                    'description': f'Internal kernel debug output ({int_debug_count[0]["count"]} rows)',
-                    'row_count': int_debug_count[0]['count'],
-                    'table': 'int_debug'
-                })
-        except Exception as e:
-            print(f"Error checking int_debug: {e}")
-
-        # Check for int_debug_ts
-        try:
-            sql = f"SELECT COUNT(*) as count FROM int_debug_ts WHERE job_id = {ph}"
-            int_debug_ts_count = fetch_all(sql, (job_id,))
-            if int_debug_ts_count and int_debug_ts_count[0]['count'] > 0:
-                result_files.append({
-                    'name': 'INT_DEBUG_TS',
-                    'type': 'debug',
-                    'description': f'Internal loop debug time series ({int_debug_ts_count[0]["count"]} rows)',
-                    'row_count': int_debug_ts_count[0]['count'],
-                    'table': 'int_debug_ts'
-                })
-        except Exception as e:
-            print(f"Error checking int_debug_ts: {e}")
+        # Build result files from counts
+        for table_name, count in table_counts.items():
+            meta = table_metadata[table_name]
+            file_info = {
+                'name': meta['name'],
+                'type': meta['type'],
+                'description': f"{meta['desc']} ({count} rows)",
+                'row_count': count,
+                'table': table_name
+            }
+            
+            # Get summary value for nested_summary
+            if table_name == 'nested_summary':
+                try:
+                    sql = f"SELECT vp_reserve_be FROM nested_summary WHERE job_id = {ph} LIMIT 1"
+                    total_val = fetch_one(sql, (job_id,))
+                    if total_val:
+                        pv_value = total_val['vp_reserve_be'] or 0
+                        file_info['description'] = f'Total Reserve BE: ${pv_value:,.2f}'
+                        file_info['pv_total'] = pv_value
+                except Exception:
+                    pass
+            
+            result_files.append(file_info)
 
         results_folder = get_job_results_folder(job_id)
         if results_folder.exists():

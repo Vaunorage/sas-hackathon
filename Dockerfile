@@ -37,8 +37,9 @@ COPY calculations/ ./calculations/
 # Create directories for data (runpod_worker uses temp dirs, but these are useful for debugging)
 RUN mkdir -p uploads results static data_in data_out
 
-# Copy zip files from default_data
+# Copy zip files and CSV files from default_data
 COPY default_data/*.zip ./default_data/
+COPY default_data/*.csv ./default_data/
 
 # Extract CSV files from zips during build
 RUN uv run python extract_csv_from_zips.py
