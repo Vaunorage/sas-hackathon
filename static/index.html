@@ -749,38 +749,8 @@ input[type="password"] {
                     <h2 style="margin: 0;">Job Management</h2>
                     <button class="btn btn-secondary" onclick="loadJobs()">↻ Refresh</button>
                 </div>
-                <div style="max-height: 600px; overflow-y: auto; border: 1px solid #000;">
-                    <table class="preview-table" id="jobs-table">
-                        <thead>
-                            <tr>
-                                <th>Job ID</th>
-                                <th>Status</th>
-                                <th>Years</th>
-                                <th>Ext Scen</th>
-                                <th>Int Scen</th>
-                                <th>Max Accts</th>
-                                <th>Shock %</th>
-                                <th>Debug</th>
-                                <th>Kernel</th>
-                                <th>Duration</th>
-                                <th>Created</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="jobs-table-body">
-                            <tr><td colspan="12" style="text-align: center;">Loading...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-                <!-- Job details panel (shown when a job is selected) -->
-                <div id="job-details-panel" style="display: none; margin-top: 15px; border: 2px solid #000080; padding: 15px; background: #f8f8f8;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <h3 style="margin: 0; color: #000080;">Job Details: <span id="selected-job-id"></span></h3>
-                        <button class="btn btn-secondary" onclick="closeJobDetails()" style="padding: 5px 10px;">✕ Close</button>
-                    </div>
-                    <div id="job-details-content">
-                        <div class="loading">Loading details...</div>
-                    </div>
+                <div id="jobs-list" class="jobs-list">
+                    <div class="loading">Loading jobs...</div>
                 </div>
             </div>
         </div>
@@ -872,7 +842,7 @@ input[type="password"] {
                 
                 <!-- Jobs Table -->
                 <div class="section-header">Completed Jobs Details</div>
-                <div style="max-height: 400px; overflow-y: auto; border: 1px solid #000;">
+                <div style="max-height: 400px; overflow-x: auto; overflow-y: auto; border: 1px solid #000;">
                     <table class="preview-table" id="stats-table">
                         <thead>
                             <tr>
@@ -882,12 +852,21 @@ input[type="password"] {
                                 <th>Ext Scenarios</th>
                                 <th>Int Scenarios</th>
                                 <th>Max Accounts</th>
+                                <th>Shock %</th>
+                                <th>Debug Only</th>
+                                <th>Debug Account</th>
+                                <th>Debug Scenario</th>
+                                <th>Debug Year</th>
+                                <th>Debug Month</th>
+                                <th>Debug Int Scen</th>
+                                <th>Debug Int Year</th>
+                                <th>Custom Kernel</th>
                                 <th>Duration</th>
                                 <th>Created</th>
                             </tr>
                         </thead>
                         <tbody id="stats-table-body">
-                            <tr><td colspan="8" style="text-align: center;">Loading...</td></tr>
+                            <tr><td colspan="17" style="text-align: center;">Loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1143,7 +1122,7 @@ input[type="password"] {
             }
         }
 
-        // Load jobs list as table
+        // Load jobs list
         async function loadJobs() {
             // Skip refresh if we're currently loading job details
             if (isLoadingDetails) {
@@ -1155,7 +1134,7 @@ input[type="password"] {
                 const response = await fetchWithToken(`${API_BASE}/jobs`);
                 const data = await response.json();
                 
-                const tbody = document.getElementById('jobs-table-body');
+                const jobsList = document.getElementById('jobs-list');
                 
                 // Update jobs count badge
                 const badge = document.getElementById('jobs-count-badge');
@@ -1171,253 +1150,180 @@ input[type="password"] {
                 }
                 
                 if (data.jobs.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="12" style="text-align: center;">No jobs found</td></tr>';
+                    jobsList.innerHTML = '<div class="loading">No jobs found</div>';
                     if (badge) badge.textContent = '0';
                     return;
                 }
                 
-                // Sort by created_at descending
-                data.jobs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                // Store expanded job details content before rebuilding
+                let expandedContent = null;
+                if (selectedJobId) {
+                    const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
+                    if (detailsDiv) {
+                        expandedContent = detailsDiv.innerHTML;
+                    }
+                }
                 
-                tbody.innerHTML = data.jobs.map(job => {
-                    const params = job.parameters || {};
+                jobsList.innerHTML = data.jobs.map(job => {
+                    // Count files by type
+                    let fileInfo = '';
+                    if (job.result_files && job.result_files.length > 0) {
+                        const hasMetadata = typeof job.result_files[0] === 'object' && job.result_files[0].type;
+                        if (hasMetadata) {
+                            const counts = {
+                                summary: 0,
+                                account_results: 0,
+                                external_cashflows: 0,
+                                five_chocs: 0,
+                                sensitivities: 0,
+                                debug: 0,
+                                input: 0,
+                                other: 0,
+                            };
+
+                            job.result_files.forEach(f => {
+                                const category = getUiFileCategory(f);
+                                if (counts[category] === undefined) {
+                                    counts.other += 1;
+                                } else {
+                                    counts[category] += 1;
+                                }
+                            });
+
+                            const parts = [];
+                            if (counts.summary) parts.push(`${counts.summary} summary`);
+                            if (counts.account_results) parts.push(`${counts.account_results} account results`);
+                            if (counts.external_cashflows) parts.push(`${counts.external_cashflows} cashflows`);
+                            if (counts.five_chocs) parts.push(`${counts.five_chocs} five chocs`);
+                            if (counts.sensitivities) parts.push(`${counts.sensitivities} sensitivities`);
+                            if (counts.debug) parts.push(`${counts.debug} debug`);
+                            if (counts.other) parts.push(`${counts.other} other`);
+
+                            fileInfo = `Results: ${parts.join(', ')}`;
+                        } else {
+                            fileInfo = `Results: ${job.result_files.length} files`;
+                        }
+                    } else if (job.status === 'completed') {
+                        // Completed jobs have results in database tables even if result_files is empty
+                        fileInfo = 'Results: Available (click to view)';
+                    } else if (job.status === 'running') {
+                        fileInfo = 'Results: Processing...';
+                    } else {
+                        fileInfo = 'Results: No files yet';
+                    }
                     
-                    // Calculate duration
-                    let duration = '-';
+                    // Progress info for running jobs
+                    let progressInfo = '';
                     if (job.status === 'running' && job.total_batches > 0) {
                         const progressPercent = job.progress_percent || 0;
-                        duration = `${progressPercent.toFixed(0)}%`;
-                    } else if (job.started_at && job.completed_at) {
-                        const start = new Date(job.started_at);
-                        const end = new Date(job.completed_at);
-                        const durationSec = (end - start) / 1000;
-                        if (durationSec > 0 && durationSec < 86400) {
-                            duration = formatDuration(durationSec);
+                        progressInfo = `<br><small>⏳ Batch ${job.current_batch || 0}/${job.total_batches} (${progressPercent.toFixed(0)}%)</small>`;
+                    }
+                    
+                    // Duration info for completed jobs
+                    let durationInfo = '';
+                    if (job.status === 'completed' && job.completed_at && job.started_at) {
+                        const startTime = new Date(job.started_at);
+                        const endTime = new Date(job.completed_at);
+                        const durationMs = endTime - startTime;
+                        const seconds = Math.floor(durationMs / 1000);
+                        const minutes = Math.floor(seconds / 60);
+                        const hours = Math.floor(minutes / 60);
+                        
+                        let durationStr = '';
+                        if (hours > 0) {
+                            durationStr = `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+                        } else if (minutes > 0) {
+                            durationStr = `${minutes}m ${seconds % 60}s`;
+                        } else {
+                            durationStr = `${seconds}s`;
                         }
+                        durationInfo = `<br>Duration: ${durationStr}`;
                     }
-                    
-                    // Status styling
-                    const statusClass = job.status === 'completed' ? 'color: green;' : 
-                                       job.status === 'failed' ? 'color: red;' : 
-                                       job.status === 'running' ? 'color: blue;' : 
-                                       job.status === 'cancelled' ? 'color: gray;' : '';
-                    
-                    // Extract parameters
-                    const years = params.nb_an_projection || '-';
-                    const extScen = params.nb_ext_scenarios || params.nb_scenarios || '-';
-                    const intScen = params.nb_int_scenarios || '-';
-                    const maxAccts = params.max_accounts || 'All';
-                    
-                    // Shock percentage
-                    let shockPct = '-';
-                    if (params.shock_capital_pct !== null && params.shock_capital_pct !== undefined) {
-                        const pct = Number(params.shock_capital_pct);
-                        shockPct = isNaN(pct) ? params.shock_capital_pct : (pct < 1 ? (pct * 100).toFixed(0) : pct.toFixed(0)) + '%';
-                    }
-                    
-                    // Debug info
-                    let debugInfo = '-';
-                    if (params.debug_only) {
-                        debugInfo = 'Only';
-                    } else if (params.debug_account !== null && params.debug_account !== undefined) {
-                        debugInfo = `Acct ${params.debug_account}`;
-                    }
-                    
-                    // Kernel info
-                    const kernelUsed = Boolean(params.use_custom_kernel) || Boolean(params.kernel_code) ? 'Custom' : 'Default';
-                    
-                    // Row highlight for selected job
-                    const rowStyle = job.job_id === selectedJobId ? 'background: #ffffd0;' : '';
                     
                     return `
-                        <tr style="${rowStyle} cursor: pointer;" onclick="selectJobRow('${job.job_id}')">
-                            <td style="font-size: 11px; white-space: nowrap;">${job.job_id.replace('job_', '')}</td>
-                            <td style="${statusClass} font-weight: bold;">${job.status}</td>
-                            <td>${years}</td>
-                            <td>${extScen}</td>
-                            <td>${intScen}</td>
-                            <td>${maxAccts}</td>
-                            <td>${shockPct}</td>
-                            <td>${debugInfo}</td>
-                            <td>${kernelUsed}</td>
-                            <td>${duration}</td>
-                            <td style="font-size: 11px; white-space: nowrap;">${new Date(job.created_at).toLocaleString()}</td>
-                            <td>
-                                <button class="btn btn-secondary" onclick="event.stopPropagation(); selectJobRow('${job.job_id}')" style="padding: 2px 6px; font-size: 11px;">View</button>
-                                ${job.status === 'running' ? `<button class="btn cancel-btn" onclick="event.stopPropagation(); cancelJob('${job.job_id}')" style="padding: 2px 6px; font-size: 11px;">Cancel</button>` : ''}
-                            </td>
-                        </tr>
+                        <div class="job-item ${job.job_id === selectedJobId ? 'selected' : ''}" id="job-${job.job_id}">
+                            <div class="job-item-header" onclick="toggleJob('${job.job_id}')">
+                                <div class="job-header">
+                                    <span class="job-id">${job.job_id}</span>
+                                    <span class="job-status ${job.status}">${job.status}</span>
+                                </div>
+                                <div class="job-details">
+                                    Created: ${new Date(job.created_at).toLocaleString()}<br>
+                                    ${fileInfo}${progressInfo}${durationInfo}
+                                </div>
+                            </div>
+                            <div class="job-item-details" id="job-details-${job.job_id}">
+                                <div class="loading">Loading details...</div>
+                            </div>
+                        </div>
                     `;
                 }).join('');
                 
-                // If a job is selected, keep the details panel open
+                // Reload details for expanded jobs
                 if (selectedJobId) {
                     const selectedJob = data.jobs.find(j => j.job_id === selectedJobId);
                     if (selectedJob && selectedJob.status === 'running') {
                         // Refresh details for running job to show progress
-                        loadJobDetailsPanel(selectedJobId);
+                        loadJobDetails(selectedJobId);
+                    } else if (expandedContent && !expandedContent.includes('Loading details...')) {
+                        // Restore content for non-running jobs (only if actually loaded)
+                        const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
+                        if (detailsDiv) {
+                            detailsDiv.innerHTML = expandedContent;
+                        }
+                    } else {
+                        // No cached content or still loading - load details
+                        loadJobDetails(selectedJobId);
                     }
                 }
             } catch (error) {
-                document.getElementById('jobs-table-body').innerHTML = '<tr><td colspan="12" style="text-align: center;" class="error">Failed to load jobs</td></tr>';
+                document.getElementById('jobs-list').innerHTML = '<div class="error">Failed to load jobs</div>';
             }
         }
 
-        // Select a job row and show details panel
-        async function selectJobRow(jobId) {
-            if (selectedJobId === jobId) {
-                // Toggle off if clicking same job
-                closeJobDetails();
-                return;
+        // Toggle job expansion
+        async function toggleJob(jobId) {
+            const jobItem = document.getElementById(`job-${jobId}`);
+            const wasSelected = jobItem.classList.contains('selected');
+            
+            // Close all other jobs
+            document.querySelectorAll('.job-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            // Toggle this job
+            if (!wasSelected) {
+                jobItem.classList.add('selected');
+                selectedJobId = jobId;
+                await loadJobDetails(jobId);
+            } else {
+                selectedJobId = null;
             }
-            
-            selectedJobId = jobId;
-            
-            // Show details panel
-            const panel = document.getElementById('job-details-panel');
-            const jobIdSpan = document.getElementById('selected-job-id');
-            panel.style.display = 'block';
-            jobIdSpan.textContent = jobId;
-            
-            // Highlight selected row
-            loadJobs(); // Refresh to update row highlighting
-            
-            // Load details
-            await loadJobDetailsPanel(jobId);
-        }
-        
-        // Close job details panel
-        function closeJobDetails() {
-            selectedJobId = null;
-            document.getElementById('job-details-panel').style.display = 'none';
-            loadJobs(); // Refresh to remove row highlighting
         }
         
         // Select and expand a specific job (used after job creation)
         async function selectJob(jobId) {
-            await selectJobRow(jobId);
-        }
-        
-        // Load job details into the details panel
-        async function loadJobDetailsPanel(jobId) {
-            const detailsDiv = document.getElementById('job-details-content');
-            
-            if (!detailsDiv) {
-                console.error('Job details content div not found');
+            const jobItem = document.getElementById(`job-${jobId}`);
+            if (!jobItem) {
+                console.warn(`Job item not found: ${jobId}`);
                 return;
             }
             
-            detailsDiv.innerHTML = '<div class="loading">Loading details...</div>';
-            isLoadingDetails = true;
+            // Close all other jobs
+            document.querySelectorAll('.job-item').forEach(item => {
+                item.classList.remove('selected');
+            });
             
-            try {
-                // Check cache first for completed jobs
-                const cached = jobDetailsCache.get(jobId);
-                const now = Date.now();
-                let job;
-                
-                if (cached && cached.data.status === 'completed' && (now - cached.timestamp) < CACHE_TTL_MS) {
-                    job = cached.data;
-                    console.log(`Using cached details for job ${jobId}`);
-                } else {
-                    const response = await fetchWithToken(`${API_BASE}/jobs/${jobId}?include_files=true`);
-                    
-                    if (!response.ok) {
-                        const errorText = await response.text();
-                        console.error(`API error for job ${jobId}:`, response.status, errorText);
-                        detailsDiv.innerHTML = `<div class="error">Error loading job details: ${response.status}</div>`;
-                        isLoadingDetails = false;
-                        return;
-                    }
-                    
-                    job = await response.json();
-                    
-                    if (job.status === 'completed') {
-                        jobDetailsCache.set(jobId, { data: job, timestamp: now });
-                    }
-                }
-                
-                // Build status and timing info
-                let statusHTML = `
-                    <div style="display: flex; gap: 20px; margin-bottom: 15px;">
-                        <div><strong>Status:</strong> <span class="job-status ${job.status}">${job.status}</span></div>
-                        <div><strong>Started:</strong> ${job.started_at ? new Date(job.started_at).toLocaleString() : 'Not started'}</div>
-                        <div><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : '-'}</div>
-                    </div>
-                `;
-                
-                // Progress bar for running jobs
-                let progressHTML = '';
-                if (job.status === 'running') {
-                    if (job.total_batches > 0) {
-                        const progressPercent = job.progress_percent || 0;
-                        progressHTML = `
-                            <div style="margin: 15px 0;">
-                                <strong>Progress:</strong>
-                                <div class="progress-container">
-                                    <div class="progress-text">Batch ${job.current_batch || 0} / ${job.total_batches} (${progressPercent.toFixed(1)}%)</div>
-                                    <div class="progress-bar" style="width: ${progressPercent}%;"></div>
-                                </div>
-                            </div>
-                        `;
-                    } else {
-                        progressHTML = `<p style="color: #0074bc; font-size: 13px;"><em>⏳ Initializing...</em></p>`;
-                    }
-                }
-                
-                // Error message
-                let errorHTML = '';
-                if (job.error_message && job.status !== 'running') {
-                    errorHTML = `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>`;
-                }
-                
-                // Cancel button
-                let cancelButton = '';
-                if (job.status === 'pending' || job.status === 'running') {
-                    cancelButton = `<button class="btn cancel-btn" onclick="cancelJob('${job.job_id}')" style="margin-bottom: 15px;">❌ Cancel Job</button>`;
-                }
-                
-                // Uploaded files info
-                let uploadedFilesHTML = '';
-                let uploadedFiles = job.uploaded_files;
-                if (typeof uploadedFiles === 'string') {
-                    try { uploadedFiles = JSON.parse(uploadedFiles); } catch (e) { uploadedFiles = []; }
-                }
-                if (uploadedFiles && uploadedFiles.length > 0) {
-                    uploadedFilesHTML = '<p style="font-size: 12px; color: #666;"><strong>Custom files:</strong> ' + uploadedFiles.join(', ') + '</p>';
-                }
-                
-                // Results files
-                let resultsHTML = '<p style="color: #666; font-style: italic;">No results available yet.</p>';
-                if (job.files) {
-                    const combinedFiles = [
-                        ...(job.files.uploaded_files || []),
-                        ...(job.files.result_files || [])
-                    ];
-                    if (combinedFiles.length > 0) {
-                        resultsHTML = buildFilesHTML(jobId, combinedFiles);
-                    }
-                }
-                
-                detailsDiv.innerHTML = `
-                    ${statusHTML}
-                    ${progressHTML}
-                    ${errorHTML}
-                    ${cancelButton}
-                    ${uploadedFilesHTML}
-                    <h4 style="margin-top: 15px; border-bottom: 1px solid #ccc; padding-bottom: 5px;">Results</h4>
-                    <div id="results-display-panel">${resultsHTML}</div>
-                `;
-                
-            } catch (error) {
-                console.error('Error loading job details:', error);
-                detailsDiv.innerHTML = `<div class="error">Failed to load job details: ${error.message}</div>`;
-            } finally {
-                isLoadingDetails = false;
-            }
+            // Select this job
+            jobItem.classList.add('selected');
+            selectedJobId = jobId;
+            await loadJobDetails(jobId);
+            
+            // Scroll to the job
+            jobItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
-        // Load job details inline with caching - single API call for job + files (legacy, kept for compatibility)
+        // Load job details inline with caching - single API call for job + files
         async function loadJobDetails(jobId) {
             const detailsDiv = document.getElementById(`job-details-${jobId}`);
             
@@ -2712,7 +2618,7 @@ input[type="password"] {
             const tbody = document.getElementById('stats-table-body');
             
             if (jobs.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center;">No jobs found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="17" style="text-align: center;">No jobs found</td></tr>';
                 return;
             }
             
@@ -2735,6 +2641,16 @@ input[type="password"] {
                                    job.status === 'failed' ? 'color: red;' : 
                                    job.status === 'running' ? 'color: blue;' : '';
                 
+                // Format shock percentage
+                let shockPct = '-';
+                if (params.shock_capital_pct !== null && params.shock_capital_pct !== undefined) {
+                    const pct = Number(params.shock_capital_pct) * 100;
+                    shockPct = isNaN(pct) ? params.shock_capital_pct : pct.toFixed(1) + '%';
+                }
+                
+                // Check if custom kernel was used
+                const customKernel = Boolean(params.use_custom_kernel) || Boolean(params.kernel_code) ? 'Yes' : 'No';
+                
                 return `
                     <tr>
                         <td style="font-size: 11px;">${job.job_id.replace('job_', '')}</td>
@@ -2742,7 +2658,16 @@ input[type="password"] {
                         <td>${params.nb_an_projection || '-'}</td>
                         <td>${params.nb_ext_scenarios || params.nb_scenarios || '-'}</td>
                         <td>${params.nb_int_scenarios || '-'}</td>
-                        <td>${params.max_accounts || 'All'}</td>
+                        <td>${params.max_accounts !== null && params.max_accounts !== undefined ? params.max_accounts : 'All'}</td>
+                        <td>${shockPct}</td>
+                        <td>${params.debug_only ? 'Yes' : 'No'}</td>
+                        <td>${params.debug_account !== null && params.debug_account !== undefined ? params.debug_account : '-'}</td>
+                        <td>${params.debug_scenario !== null && params.debug_scenario !== undefined ? params.debug_scenario : '-'}</td>
+                        <td>${params.debug_year !== null && params.debug_year !== undefined ? params.debug_year : '-'}</td>
+                        <td>${params.debug_month !== null && params.debug_month !== undefined ? params.debug_month : '-'}</td>
+                        <td>${params.debug_int_scenario !== null && params.debug_int_scenario !== undefined ? params.debug_int_scenario : '-'}</td>
+                        <td>${params.debug_int_year !== null && params.debug_int_year !== undefined ? params.debug_int_year : '-'}</td>
+                        <td>${customKernel}</td>
                         <td>${duration}</td>
                         <td style="font-size: 11px;">${new Date(job.created_at).toLocaleString()}</td>
                     </tr>

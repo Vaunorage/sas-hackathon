@@ -1477,12 +1477,12 @@ def get_all_jobs(lightweight: bool = False) -> list:
     """Get all jobs ordered by creation date
     
     Args:
-        lightweight: If True, exclude heavy fields like results_data and parameters for faster loading
+        lightweight: If True, exclude heavy results_data field for faster loading (still includes parameters)
     """
-    # Select only needed columns for lightweight mode
+    # Select columns - lightweight excludes only results_data (which can be huge)
     if lightweight:
         sql = """SELECT job_id, status, created_at, started_at, completed_at, error_message,
-                        current_batch, total_batches, progress_percent, result_files
+                        current_batch, total_batches, progress_percent, result_files, parameters
                  FROM jobs ORDER BY created_at DESC"""
     else:
         sql = "SELECT * FROM jobs ORDER BY created_at DESC"
@@ -1511,9 +1511,18 @@ def get_all_jobs(lightweight: bool = False) -> list:
             job_data['total_batches'] = 0
             job_data['progress_percent'] = 0.0
         
+        # Always include parameters (small), exclude kernel_code for speed
+        try:
+            params = json.loads(row['parameters']) if row['parameters'] else {}
+            if 'kernel_code' in params:
+                params['kernel_code'] = None  # Exclude large kernel code
+                params['use_custom_kernel'] = True
+            job_data['parameters'] = params
+        except (KeyError, IndexError):
+            job_data['parameters'] = {}
+        
         # Only include heavy fields in non-lightweight mode
         if not lightweight:
-            job_data['parameters'] = json.loads(row['parameters']) if row['parameters'] else {}
             job_data['uploaded_files'] = json.loads(row['uploaded_files']) if row['uploaded_files'] else []
             try:
                 job_data['results_data'] = json.loads(row['results_data']) if row['results_data'] else None
@@ -2033,10 +2042,16 @@ def create_job_endpoint():
 
 @app.route('/jobs', methods=['GET'])
 def list_jobs():
-    """List all jobs sorted by creation date (newest first)"""
+    """List all jobs sorted by creation date (newest first)
+    
+    Query parameters:
+        include_params: If 'true', include job parameters (default: false for faster loading)
+    """
     try:
-        # Use lightweight mode for faster loading (excludes results_data, parameters)
-        jobs = get_all_jobs(lightweight=True)
+        # Check if full parameters are requested
+        include_params = request.args.get('include_params', 'false').lower() == 'true'
+        # Use lightweight mode unless parameters are explicitly requested
+        jobs = get_all_jobs(lightweight=not include_params)
         return jsonify({
             'jobs': jobs,
             'count': len(jobs)
