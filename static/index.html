@@ -578,14 +578,15 @@ input[type="password"] {
 
         <!-- Main Navigation Tabs -->
         <div class="main-tabs">
-            <div class="main-tab active" onclick="switchMainTab('create')">📝 Create Job</div>
-            <div class="main-tab" onclick="switchMainTab('kernel')">🔧 Kernel</div>
+            <div class="main-tab active" onclick="switchMainTab('kernel')">🔧 Kernel</div>
+            <div class="main-tab" onclick="switchMainTab('create')">📝 Create Job</div>
             <div class="main-tab" onclick="switchMainTab('jobs')">📋 Jobs <span id="jobs-count-badge" style="background:#000080;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;margin-left:5px;"></span></div>
+            <div class="main-tab" onclick="switchMainTab('stats')">📊 Stats</div>
             <div class="main-tab" onclick="switchMainTab('advanced')">⚠️ Admin</div>
         </div>
 
         <!-- TAB 1: Create Job -->
-        <div id="tab-create" class="main-tab-content active">
+        <div id="tab-create" class="main-tab-content">
             <div class="card">
                 <h2>Create New Projection Job</h2>
                 <form id="job-form">
@@ -755,7 +756,7 @@ input[type="password"] {
         </div>
 
         <!-- TAB 3: Kernel Editor -->
-        <div id="tab-kernel" class="main-tab-content">
+        <div id="tab-kernel" class="main-tab-content active">
             <div class="card">
                 <h2>🔧 Kernel Editor</h2>
                 <p style="color: #666; font-size: 13px; margin-bottom: 15px;">
@@ -818,7 +819,52 @@ input[type="password"] {
             </div>
         </div>
 
-        <!-- TAB 4: Admin -->
+        <!-- TAB 4: Stats -->
+        <div id="tab-stats" class="main-tab-content">
+            <div class="card">
+                <h2>📊 Job Statistics</h2>
+                <p style="color: #666; font-size: 13px; margin-bottom: 15px;">Performance metrics and job history visualization</p>
+                <button class="btn btn-secondary" onclick="loadStats()" style="margin-bottom: 15px;">↻ Refresh Stats</button>
+                
+                <!-- Summary Stats -->
+                <div class="stats-bar" id="stats-summary">
+                    <div class="stat-item"><strong>Total Jobs:</strong> <span id="stat-total">-</span></div>
+                    <div class="stat-item"><strong>Completed:</strong> <span id="stat-completed">-</span></div>
+                    <div class="stat-item"><strong>Failed:</strong> <span id="stat-failed">-</span></div>
+                    <div class="stat-item"><strong>Avg Duration:</strong> <span id="stat-avg-duration">-</span></div>
+                </div>
+                
+                <!-- Duration Chart -->
+                <div class="section-header">Job Duration by Parameters</div>
+                <div style="background: #fff; border: 1px solid #000; padding: 15px; margin-bottom: 15px;">
+                    <canvas id="duration-chart" height="300"></canvas>
+                </div>
+                
+                <!-- Jobs Table -->
+                <div class="section-header">Completed Jobs Details</div>
+                <div style="max-height: 400px; overflow-y: auto; border: 1px solid #000;">
+                    <table class="preview-table" id="stats-table">
+                        <thead>
+                            <tr>
+                                <th>Job ID</th>
+                                <th>Status</th>
+                                <th>Years</th>
+                                <th>Ext Scenarios</th>
+                                <th>Int Scenarios</th>
+                                <th>Max Accounts</th>
+                                <th>Duration</th>
+                                <th>Created</th>
+                            </tr>
+                        </thead>
+                        <tbody id="stats-table-body">
+                            <tr><td colspan="8" style="text-align: center;">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 5: Admin -->
         <div id="tab-advanced" class="main-tab-content">
             <!-- Admin Actions -->
             <div class="card">
@@ -910,6 +956,11 @@ input[type="password"] {
             // Initialize kernel editor when Kernel tab is opened
             if (tabName === 'kernel') {
                 setTimeout(initKernelEditor, 100);
+            }
+            
+            // Load stats when Stats tab is opened
+            if (tabName === 'stats') {
+                loadStats();
             }
         }
         
@@ -2407,7 +2458,198 @@ input[type="password"] {
                 }
             }
         };
+        // =============================================
+        // STATS TAB FUNCTIONALITY
+        // =============================================
+        let durationChart = null;
+        
+        async function loadStats() {
+            try {
+                const response = await fetchWithToken(`${API_BASE}/jobs`);
+                const data = await response.json();
+                const jobs = data.jobs || [];
+                
+                // Calculate summary stats
+                const completed = jobs.filter(j => j.status === 'completed');
+                const failed = jobs.filter(j => j.status === 'failed');
+                
+                document.getElementById('stat-total').textContent = jobs.length;
+                document.getElementById('stat-completed').textContent = completed.length;
+                document.getElementById('stat-failed').textContent = failed.length;
+                
+                // Calculate average duration for completed jobs
+                let totalDuration = 0;
+                let durationCount = 0;
+                const jobsWithDuration = [];
+                
+                completed.forEach(job => {
+                    if (job.started_at && job.completed_at) {
+                        const start = new Date(job.started_at);
+                        const end = new Date(job.completed_at);
+                        const durationSec = (end - start) / 1000;
+                        if (durationSec > 0 && durationSec < 86400) { // Ignore invalid durations
+                            totalDuration += durationSec;
+                            durationCount++;
+                            jobsWithDuration.push({
+                                ...job,
+                                durationSec: durationSec
+                            });
+                        }
+                    }
+                });
+                
+                const avgDuration = durationCount > 0 ? totalDuration / durationCount : 0;
+                document.getElementById('stat-avg-duration').textContent = formatDuration(avgDuration);
+                
+                // Update chart
+                updateDurationChart(jobsWithDuration);
+                
+                // Update table
+                updateStatsTable(jobs);
+                
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+        
+        function formatDuration(seconds) {
+            if (seconds < 60) return `${Math.round(seconds)}s`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+            return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+        }
+        
+        function updateDurationChart(jobs) {
+            const ctx = document.getElementById('duration-chart').getContext('2d');
+            
+            // Sort by creation date
+            jobs.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            
+            // Prepare data
+            const labels = jobs.map(j => {
+                const params = j.parameters || {};
+                const extScen = params.nb_ext_scenarios || params.nb_scenarios || '?';
+                const intScen = params.nb_int_scenarios || '?';
+                return `${extScen}x${intScen}`;
+            });
+            
+            const durations = jobs.map(j => j.durationSec);
+            const colors = jobs.map(j => {
+                const params = j.parameters || {};
+                const total = (params.nb_ext_scenarios || params.nb_scenarios || 100) * (params.nb_int_scenarios || 100);
+                if (total > 50000) return '#ff6384';
+                if (total > 10000) return '#ffce56';
+                return '#36a2eb';
+            });
+            
+            // Destroy existing chart if any
+            if (durationChart) {
+                durationChart.destroy();
+            }
+            
+            durationChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Duration (seconds)',
+                        data: durations,
+                        backgroundColor: colors,
+                        borderColor: '#000',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        title: {
+                            display: true,
+                            text: 'Job Duration by Scenario Count (ExtxInt)',
+                            font: { size: 14, weight: 'bold' }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const job = jobs[context.dataIndex];
+                                    const params = job.parameters || {};
+                                    return [
+                                        `Duration: ${formatDuration(context.raw)}`,
+                                        `Years: ${params.nb_an_projection || 'N/A'}`,
+                                        `Ext Scenarios: ${params.nb_ext_scenarios || params.nb_scenarios || 'N/A'}`,
+                                        `Int Scenarios: ${params.nb_int_scenarios || 'N/A'}`,
+                                        `Max Accounts: ${params.max_accounts || 'All'}`
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Duration (seconds)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Scenarios (Ext x Int)'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        function updateStatsTable(jobs) {
+            const tbody = document.getElementById('stats-table-body');
+            
+            if (jobs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center;">No jobs found</td></tr>';
+                return;
+            }
+            
+            // Sort by created_at descending
+            jobs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            
+            tbody.innerHTML = jobs.map(job => {
+                const params = job.parameters || {};
+                let duration = '-';
+                if (job.started_at && job.completed_at) {
+                    const start = new Date(job.started_at);
+                    const end = new Date(job.completed_at);
+                    const durationSec = (end - start) / 1000;
+                    if (durationSec > 0 && durationSec < 86400) {
+                        duration = formatDuration(durationSec);
+                    }
+                }
+                
+                const statusClass = job.status === 'completed' ? 'color: green;' : 
+                                   job.status === 'failed' ? 'color: red;' : 
+                                   job.status === 'running' ? 'color: blue;' : '';
+                
+                return `
+                    <tr>
+                        <td style="font-size: 11px;">${job.job_id.replace('job_', '')}</td>
+                        <td style="${statusClass} font-weight: bold;">${job.status}</td>
+                        <td>${params.nb_an_projection || '-'}</td>
+                        <td>${params.nb_ext_scenarios || params.nb_scenarios || '-'}</td>
+                        <td>${params.nb_int_scenarios || '-'}</td>
+                        <td>${params.max_accounts || 'All'}</td>
+                        <td>${duration}</td>
+                        <td style="font-size: 11px;">${new Date(job.created_at).toLocaleString()}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
     </script>
+    
+    <!-- Chart.js for stats visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <!-- CodeMirror JS -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>

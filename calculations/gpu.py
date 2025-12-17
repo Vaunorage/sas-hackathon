@@ -543,9 +543,9 @@ def process_batch(
     
     # Prepare batch data
     batch_account_data_contiguous = np.ascontiguousarray(batch_account_data)
-    d_batch_accounts = cuda.to_device(batch_account_data_contiguous)
+    d_batch_accounts = _to_device_contiguous(batch_account_data_contiguous)
 
-    d_flux_agg = cuda.to_device(np.zeros((nb_an_projection + 1, 13, FLUX_COMP_IDX_SIZE), dtype=np.float32))
+    d_flux_agg = _to_device_contiguous(np.zeros((nb_an_projection + 1, 13, FLUX_COMP_IDX_SIZE), dtype=np.float32))
     
     # Allocate tensors
     try:
@@ -576,12 +576,12 @@ def process_batch(
         d_int_debug = cuda.device_array((NUM_CHOCS, INT_DEBUG_SIZE), dtype=np.float32)
         enable_int_debug_ts = enable_int_debug and debug_int_scenario >= 0
         if enable_int_debug_ts:
-            d_int_debug_ts = cuda.to_device(
+            d_int_debug_ts = _to_device_contiguous(
                 np.zeros((NUM_CHOCS, nb_an_projection, INT_TS_DEBUG_IDX_SIZE), dtype=np.float32)
             )
         else:
             # Always pass an array to the kernel to keep the CUDA signature stable.
-            d_int_debug_ts = cuda.to_device(np.zeros((1, 1, INT_TS_DEBUG_IDX_SIZE), dtype=np.float32))
+            d_int_debug_ts = _to_device_contiguous(np.zeros((1, 1, INT_TS_DEBUG_IDX_SIZE), dtype=np.float32))
     except Exception as e:
         raise RuntimeError(
             f"Failed to allocate GPU memory for batch {batch_idx+1}. "
@@ -1061,9 +1061,35 @@ def create_all_lookup_tables(data: dict, nb_int_scenarios: int, nb_an_projection
     return lookups
 
 
+# Global list to keep cupy arrays alive (prevents garbage collection)
+_cupy_array_refs = []
+
+
+def _clear_cupy_refs():
+    """Clear cupy array references to free GPU memory."""
+    global _cupy_array_refs
+    _cupy_array_refs.clear()
+
+
 def _to_device_contiguous(arr):
-    """Ensure array is C-contiguous before copying to GPU."""
-    return cuda.to_device(np.ascontiguousarray(arr))
+    """Ensure array is C-contiguous before copying to GPU.
+    
+    Uses cupy for array transfer to work around numba-cuda bug
+    where device_pointer_value incorrectly parses bytes as int.
+    """
+    import cupy as cp
+    
+    # Ensure array is C-contiguous and float32
+    host_arr = np.ascontiguousarray(arr, dtype=np.float32)
+    
+    # Use cupy to transfer to GPU, then get numba device array view
+    cp_arr = cp.asarray(host_arr)
+    
+    # Keep reference to prevent garbage collection
+    _cupy_array_refs.append(cp_arr)
+    
+    # Convert cupy array to numba device array using __cuda_array_interface__
+    return cuda.as_cuda_array(cp_arr)
 
 
 def copy_lookups_to_gpu(lookups: dict):
@@ -1077,6 +1103,9 @@ def copy_lookups_to_gpu(lookups: dict):
         Dictionary containing grouped GPU device arrays as tuples
     """
     print("\nCopying lookup tables to GPU...")
+    
+    # Clear previous cupy references to free GPU memory
+    _clear_cupy_refs()
     
     gpu_lookups = {}
     
