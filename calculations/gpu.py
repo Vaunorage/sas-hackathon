@@ -792,6 +792,7 @@ def save_results(
     int_debug_ts_df: Optional[pd.DataFrame] = None,
     debug_params: Optional[dict] = None,
     flux_projetes_periods: Optional[pd.DataFrame] = None,
+    population_ids: Optional[np.ndarray] = None,
 ):
     """
     Save all results (final simulation results and debug output) to CSV files.
@@ -805,6 +806,7 @@ def save_results(
         ext_debug: Optional external kernel debug array (EXT_DEBUG_SIZE,) - single row
         int_debug: Optional internal kernel debug array (NUM_CHOCS, INT_DEBUG_SIZE) - one row per choc
         debug_params: Optional dictionary with debug filter parameters for context
+        population_ids: Optional array of real account IDs (ID_COMPTE) for mapping debug account index
     
     Returns:
         Dictionary containing all created DataFrames:
@@ -941,7 +943,13 @@ def save_results(
         # Create single-row DataFrame with debug filter context
         row = {}
         if debug_params:
-            row['DEBUG_ACCOUNT'] = debug_params.get('account', -1)
+            debug_account_idx = debug_params.get('account', -1)
+            row['DEBUG_ACCOUNT_IDX'] = debug_account_idx
+            # Map account index to real ID_COMPTE if available
+            if population_ids is not None and debug_account_idx >= 0 and debug_account_idx < len(population_ids):
+                row['ID_COMPTE'] = int(population_ids[debug_account_idx])
+            else:
+                row['ID_COMPTE'] = -1
             row['DEBUG_SCENARIO'] = debug_params.get('scenario', -1)
             row['DEBUG_YEAR'] = debug_params.get('year', -1)
             row['DEBUG_MONTH'] = debug_params.get('month', -1)
@@ -969,6 +977,13 @@ def save_results(
                 'CHOC_NAME': choc_name,
             }
             if debug_params:
+                debug_account_idx = debug_params.get('account', -1)
+                row['DEBUG_ACCOUNT_IDX'] = debug_account_idx
+                # Map account index to real ID_COMPTE if available
+                if population_ids is not None and debug_account_idx >= 0 and debug_account_idx < len(population_ids):
+                    row['ID_COMPTE'] = int(population_ids[debug_account_idx])
+                else:
+                    row['ID_COMPTE'] = -1
                 row['DEBUG_INT_SCENARIO'] = debug_params.get('int_scenario', -1)
                 row['DEBUG_INT_YEAR'] = debug_params.get('int_year', -1)
             
@@ -1491,11 +1506,14 @@ def run_projection_gpu_nested(
             for t_int in years_iter:
                 if t_int < 0 or t_int >= max_years:
                     continue
+                # Map account index to real ID_COMPTE
+                id_compte = int(population_ids[debug_account]) if population_ids is not None and debug_account >= 0 and debug_account < len(population_ids) else -1
                 rows.append({
                     'CHOC_IDX': choc_idx,
                     'CHOC_NAME': choc_name,
                     'T_INT': int(t_int),
-                    'DEBUG_ACCOUNT': debug_account,
+                    'DEBUG_ACCOUNT_IDX': debug_account,
+                    'ID_COMPTE': id_compte,
                     'DEBUG_SCENARIO': debug_scenario,
                     'DEBUG_YEAR': debug_year,
                     'DEBUG_INT_SCENARIO': debug_int_scenario,
@@ -1521,6 +1539,7 @@ def run_projection_gpu_nested(
         int_debug_ts_df=int_debug_ts_df,
         debug_params=debug_params,
         flux_projetes_periods=flux_projetes_periods,
+        population_ids=population_ids,
     )
     
     return ProjectionResult(
