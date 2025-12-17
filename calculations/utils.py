@@ -179,7 +179,7 @@ def clean_numeric(df, columns):
 
 def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     """Convert all column names to uppercase for consistency."""
-    df.columns = df.columns.str.upper()
+    df.columns = [str(col).upper() for col in df.columns]
     return df
 
 
