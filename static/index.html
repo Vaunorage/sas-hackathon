@@ -842,7 +842,7 @@ input[type="password"] {
                 
                 <!-- Jobs Table -->
                 <div class="section-header">Completed Jobs Details</div>
-                <div style="max-height: 400px; overflow-y: auto; border: 1px solid #000;">
+                <div style="max-height: 400px; overflow-x: auto; overflow-y: auto; border: 1px solid #000;">
                     <table class="preview-table" id="stats-table">
                         <thead>
                             <tr>
@@ -852,12 +852,21 @@ input[type="password"] {
                                 <th>Ext Scenarios</th>
                                 <th>Int Scenarios</th>
                                 <th>Max Accounts</th>
+                                <th>Shock %</th>
+                                <th>Debug Only</th>
+                                <th>Debug Account</th>
+                                <th>Debug Scenario</th>
+                                <th>Debug Year</th>
+                                <th>Debug Month</th>
+                                <th>Debug Int Scen</th>
+                                <th>Debug Int Year</th>
+                                <th>Custom Kernel</th>
                                 <th>Duration</th>
                                 <th>Created</th>
                             </tr>
                         </thead>
                         <tbody id="stats-table-body">
-                            <tr><td colspan="8" style="text-align: center;">Loading...</td></tr>
+                            <tr><td colspan="17" style="text-align: center;">Loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -2609,7 +2618,7 @@ input[type="password"] {
             const tbody = document.getElementById('stats-table-body');
             
             if (jobs.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center;">No jobs found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="17" style="text-align: center;">No jobs found</td></tr>';
                 return;
             }
             
@@ -2632,6 +2641,16 @@ input[type="password"] {
                                    job.status === 'failed' ? 'color: red;' : 
                                    job.status === 'running' ? 'color: blue;' : '';
                 
+                // Format shock percentage
+                let shockPct = '-';
+                if (params.shock_capital_pct !== null && params.shock_capital_pct !== undefined) {
+                    const pct = Number(params.shock_capital_pct) * 100;
+                    shockPct = isNaN(pct) ? params.shock_capital_pct : pct.toFixed(1) + '%';
+                }
+                
+                // Check if custom kernel was used
+                const customKernel = Boolean(params.use_custom_kernel) || Boolean(params.kernel_code) ? 'Yes' : 'No';
+                
                 return `
                     <tr>
                         <td style="font-size: 11px;">${job.job_id.replace('job_', '')}</td>
@@ -2639,7 +2658,16 @@ input[type="password"] {
                         <td>${params.nb_an_projection || '-'}</td>
                         <td>${params.nb_ext_scenarios || params.nb_scenarios || '-'}</td>
                         <td>${params.nb_int_scenarios || '-'}</td>
-                        <td>${params.max_accounts || 'All'}</td>
+                        <td>${params.max_accounts !== null && params.max_accounts !== undefined ? params.max_accounts : 'All'}</td>
+                        <td>${shockPct}</td>
+                        <td>${params.debug_only ? 'Yes' : 'No'}</td>
+                        <td>${params.debug_account !== null && params.debug_account !== undefined ? params.debug_account : '-'}</td>
+                        <td>${params.debug_scenario !== null && params.debug_scenario !== undefined ? params.debug_scenario : '-'}</td>
+                        <td>${params.debug_year !== null && params.debug_year !== undefined ? params.debug_year : '-'}</td>
+                        <td>${params.debug_month !== null && params.debug_month !== undefined ? params.debug_month : '-'}</td>
+                        <td>${params.debug_int_scenario !== null && params.debug_int_scenario !== undefined ? params.debug_int_scenario : '-'}</td>
+                        <td>${params.debug_int_year !== null && params.debug_int_year !== undefined ? params.debug_int_year : '-'}</td>
+                        <td>${customKernel}</td>
                         <td>${duration}</td>
                         <td style="font-size: 11px;">${new Date(job.created_at).toLocaleString()}</td>
                     </tr>
