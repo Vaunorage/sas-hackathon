@@ -813,12 +813,12 @@ def nested_valuation_kernel_five_chocs(
         account_data: Account attributes for fee calculations
         n_internal_scenarios: Number of risk-neutral scenarios per node
         n_internal_years: Internal projection horizon
-        rn_returns_lookups: (rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
+        rn_returns_lookups: (rn_forward_rate, rn_ajust_forward, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
         mortality_lookup: Mortality rates (reused from Kernel A)
         output_metrics: Output tensor with reserve/capital per choc
     """
-    # Unpack risk-neutral returns tuple
-    rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe = rn_returns_lookups
+    # Unpack risk-neutral returns tuple (7 arrays)
+    rn_forward_rate, rn_ajust_forward, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe = rn_returns_lookups
 
     # Thread setup - one thread per external node
     global_idx = cuda.grid(1)
@@ -937,15 +937,30 @@ def nested_valuation_kernel_five_chocs(
                     break
 
                 # Get scenario/year indices with bounds checking
-                scn_idx_int = i_int % rn_rend_dex.shape[0] if rn_rend_dex.size > 0 else 0
-                t_idx_int = t_int % rn_rend_dex.shape[1] if rn_rend_dex.size > 0 else 0
+                # rn_returns arrays are shaped (nb_int_scenarios, nb_an_projection)
+                # i_int is 0-based internal scenario index, t_int is 0-based year index
+                n_scn_avail = rn_rend_dex.shape[0]
+                n_yr_avail = rn_rend_dex.shape[1]
+                
+                # Map internal scenario to available scenarios (wrap if needed)
+                scn_idx_int = i_int % n_scn_avail if n_scn_avail > 0 else 0
+                # Map internal year to available years (wrap if needed)
+                t_idx_int = t_int % n_yr_avail if n_yr_avail > 0 else 0
 
                 # Get risk-neutral returns for each asset class from RENDEMENTS_INT
-                r_dex = rn_rend_dex[scn_idx_int, t_idx_int] if rn_rend_dex.size > 0 else DEFAULT_RETURN_RATE
-                r_mm = rn_rend_mm[scn_idx_int, t_idx_int] if rn_rend_mm.size > 0 else DEFAULT_RETURN_RATE
-                r_tsx = rn_rend_tsx[scn_idx_int, t_idx_int] if rn_rend_tsx.size > 0 else DEFAULT_RETURN_RATE
-                r_sp500 = rn_rend_sp500[scn_idx_int, t_idx_int] if rn_rend_sp500.size > 0 else DEFAULT_RETURN_RATE
-                r_eafe = rn_rend_eafe[scn_idx_int, t_idx_int] if rn_rend_eafe.size > 0 else DEFAULT_RETURN_RATE
+                # Check bounds before accessing
+                if n_scn_avail > 0 and n_yr_avail > 0:
+                    r_dex = rn_rend_dex[scn_idx_int, t_idx_int]
+                    r_mm = rn_rend_mm[scn_idx_int, t_idx_int]
+                    r_tsx = rn_rend_tsx[scn_idx_int, t_idx_int]
+                    r_sp500 = rn_rend_sp500[scn_idx_int, t_idx_int]
+                    r_eafe = rn_rend_eafe[scn_idx_int, t_idx_int]
+                else:
+                    r_dex = DEFAULT_RETURN_RATE
+                    r_mm = DEFAULT_RETURN_RATE
+                    r_tsx = DEFAULT_RETURN_RATE
+                    r_sp500 = DEFAULT_RETURN_RATE
+                    r_eafe = DEFAULT_RETURN_RATE
 
                 # Apply returns to each asset class separately
                 curr_mt_dex *= math.exp(r_dex)
@@ -976,8 +991,8 @@ def nested_valuation_kernel_five_chocs(
                     curr_mt_sp500 *= fee_factor
                     curr_mt_eafe *= fee_factor
 
-                # Discount cashflow
-                fwd = rn_forward_rate[scn_idx_int, t_idx_int] if rn_forward_rate.size > 0 else DEFAULT_FORWARD_RATE
+                # Discount cashflow - use same bounds check as returns
+                fwd = rn_forward_rate[scn_idx_int, t_idx_int] if (n_scn_avail > 0 and n_yr_avail > 0) else DEFAULT_FORWARD_RATE
                 df = math.exp(-fwd * (t_int + 1))
                 pv_path += fees * df
 

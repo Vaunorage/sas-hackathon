@@ -165,9 +165,11 @@ def create_gpu_rn_returns_lookup(df: pd.DataFrame, nb_int_scenarios: int, nb_an_
     - SCN_EVAL_INT (or SCN_EVAL)
     - MOIS_EVAL (optional; if present we keep only month=12)
 
-    Returns arrays shaped (nb_int_scenarios, nb_an_projection) with scenario indices 1..N mapped to 0..N-1.
+    Returns 7 arrays shaped (nb_int_scenarios, nb_an_projection) with scenario indices 1..N mapped to 0..N-1.
+    Order: (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe)
     """
     rn_forward_rate = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_FORWARD_RATE, dtype=np.float32)
+    rn_ajust_forward = np.zeros((nb_int_scenarios, nb_an_projection), dtype=np.float32)
     rn_rend_dex = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_DEX, dtype=np.float32)
     rn_rend_mm = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_MM, dtype=np.float32)
     rn_rend_tsx = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_TSX, dtype=np.float32)
@@ -175,13 +177,13 @@ def create_gpu_rn_returns_lookup(df: pd.DataFrame, nb_int_scenarios: int, nb_an_
     rn_rend_eafe = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_EAFE, dtype=np.float32)
 
     if df is None or len(df) == 0 or nb_int_scenarios <= 0 or nb_an_projection <= 0:
-        return (rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
+        return (rn_forward_rate, rn_ajust_forward, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
 
     scn_col = 'SCN_EVAL_INT' if 'SCN_EVAL_INT' in df.columns else ('SCN_EVAL' if 'SCN_EVAL' in df.columns else None)
     an_col = 'AN_EVAL_INT' if 'AN_EVAL_INT' in df.columns else ('AN_EVAL' if 'AN_EVAL' in df.columns else None)
     mois_col = 'MOIS_EVAL' if 'MOIS_EVAL' in df.columns else None
     if scn_col is None or an_col is None:
-        return (rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
+        return (rn_forward_rate, rn_ajust_forward, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
 
     df_iter = df
     if mois_col is not None:
@@ -189,6 +191,15 @@ def create_gpu_rn_returns_lookup(df: pd.DataFrame, nb_int_scenarios: int, nb_an_
             df_iter = df_iter[df_iter[mois_col] == 12]
         except Exception:
             df_iter = df
+
+    # Pre-check which columns exist in the DataFrame
+    has_forward_rate = 'FORWARD_RATE' in df_iter.columns
+    has_ajust_forward = 'AJUST_FORWARD_RATE_VM_0' in df_iter.columns
+    has_rend_dex = 'RENDDEX_AN' in df_iter.columns
+    has_rend_mm = 'RENDMM_AN' in df_iter.columns
+    has_rend_tsx = 'RENDTSX_AN' in df_iter.columns
+    has_rend_sp500 = 'RENDSP500_AN' in df_iter.columns
+    has_rend_eafe = 'RENDEAFE_AN' in df_iter.columns
 
     for _, row in df_iter.iterrows():
         try:
@@ -201,20 +212,22 @@ def create_gpu_rn_returns_lookup(df: pd.DataFrame, nb_int_scenarios: int, nb_an_
         if scn < 0 or scn >= nb_int_scenarios or an < 0 or an >= nb_an_projection:
             continue
 
-        if 'FORWARD_RATE' in row:
+        if has_forward_rate:
             rn_forward_rate[scn, an] = float(row['FORWARD_RATE'])
-        if 'RENDDEX_AN' in row:
+        if has_ajust_forward:
+            rn_ajust_forward[scn, an] = float(row['AJUST_FORWARD_RATE_VM_0'])
+        if has_rend_dex:
             rn_rend_dex[scn, an] = float(row['RENDDEX_AN'])
-        if 'RENDMM_AN' in row:
+        if has_rend_mm:
             rn_rend_mm[scn, an] = float(row['RENDMM_AN'])
-        if 'RENDTSX_AN' in row:
+        if has_rend_tsx:
             rn_rend_tsx[scn, an] = float(row['RENDTSX_AN'])
-        if 'RENDSP500_AN' in row:
+        if has_rend_sp500:
             rn_rend_sp500[scn, an] = float(row['RENDSP500_AN'])
-        if 'RENDEAFE_AN' in row:
+        if has_rend_eafe:
             rn_rend_eafe[scn, an] = float(row['RENDEAFE_AN'])
 
-    return (rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
+    return (rn_forward_rate, rn_ajust_forward, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
 
 
 def create_gpu_min_ferr_lookup(df: pd.DataFrame):
@@ -1044,12 +1057,13 @@ def create_all_lookup_tables(data: dict, nb_int_scenarios: int, nb_an_projection
     # Create risk-neutral scenario tables
     print("\nCreating risk-neutral scenario tables...")
     if 'rendements_int' in data and data['rendements_int'] is not None and len(data['rendements_int']) > 0:
-        (lookups['rn_forward_rate'], lookups['rn_rend_dex'], lookups['rn_rend_mm'],
+        (lookups['rn_forward_rate'], lookups['rn_ajust_forward'], lookups['rn_rend_dex'], lookups['rn_rend_mm'],
          lookups['rn_rend_tsx'], lookups['rn_rend_sp500'], lookups['rn_rend_eafe']) = create_gpu_rn_returns_lookup(
             data['rendements_int'], nb_int_scenarios, nb_an_projection
         )
     else:
         lookups['rn_forward_rate'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_FORWARD_RATE, dtype=np.float32)
+        lookups['rn_ajust_forward'] = np.zeros((nb_int_scenarios, nb_an_projection), dtype=np.float32)
         lookups['rn_rend_dex'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_DEX, dtype=np.float32)
         lookups['rn_rend_mm'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_MM, dtype=np.float32)
         lookups['rn_rend_tsx'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_TSX, dtype=np.float32)
@@ -1154,9 +1168,10 @@ def copy_lookups_to_gpu(lookups: dict):
 
     gpu_lookups['coussins'] = tuple(_to_device_contiguous(arr) for arr in lookups['coussins'])
     
-    # Risk-neutral returns (6 arrays): rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe
+    # Risk-neutral returns (7 arrays): rn_forward_rate, rn_ajust_forward, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe
     gpu_lookups['rn_returns'] = (
         _to_device_contiguous(lookups['rn_forward_rate']),
+        _to_device_contiguous(lookups['rn_ajust_forward']),
         _to_device_contiguous(lookups['rn_rend_dex']),
         _to_device_contiguous(lookups['rn_rend_mm']),
         _to_device_contiguous(lookups['rn_rend_tsx']),
