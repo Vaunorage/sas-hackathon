@@ -71,61 +71,6 @@ from calculations.constants import (
     FLUX_COMP_IDX_COUSSIN_DEPOT,
 )
 
-# Backward compatibility: class wrappers for non-kernel code
-class StateIdx:
-    """State tensor column indices (wrapper for backward compatibility)."""
-    MT_VM = STATE_IDX_MT_VM
-    MT_GAR_DECES = STATE_IDX_MT_GAR_DECES
-    MT_GAR_ECH = STATE_IDX_MT_GAR_ECH
-    MT_SRG = STATE_IDX_MT_SRG
-    AGE = STATE_IDX_AGE
-    TX_SURVIE = STATE_IDX_TX_SURVIE
-    MT_DEX = STATE_IDX_MT_DEX
-    MT_MM = STATE_IDX_MT_MM
-    MT_TSX = STATE_IDX_MT_TSX
-    MT_SP500 = STATE_IDX_MT_SP500
-    MT_EAFE = STATE_IDX_MT_EAFE
-    MT_BONI_DECES = STATE_IDX_MT_BONI_DECES
-    SIZE = STATE_IDX_SIZE
-
-
-class ExtDebugIdx:
-    """External kernel debug output column indices (wrapper for backward compatibility)."""
-    VM = EXT_DEBUG_IDX_VM
-    AGE = EXT_DEBUG_IDX_AGE
-    QX = EXT_DEBUG_IDX_QX
-    LAPSE_TOT = EXT_DEBUG_IDX_LAPSE_TOT
-    LAPSE_PART = EXT_DEBUG_IDX_LAPSE_PART
-    TX_SURVIE = EXT_DEBUG_IDX_TX_SURVIE
-    FORWARD_RATE = EXT_DEBUG_IDX_FORWARD_RATE
-    REND_SP500 = EXT_DEBUG_IDX_REND_SP500
-    REND_TSX = EXT_DEBUG_IDX_REND_TSX
-    REND_EAFE = EXT_DEBUG_IDX_REND_EAFE
-    REND_DEX = EXT_DEBUG_IDX_REND_DEX
-    RETRAIT = EXT_DEBUG_IDX_RETRAIT
-    PREST_DECES = EXT_DEBUG_IDX_PREST_DECES
-    PRIMES_GARANTIES = EXT_DEBUG_IDX_PRIMES_GARANTIES
-    VM_VG_RATIO = EXT_DEBUG_IDX_VM_VG_RATIO
-    SIZE = EXT_DEBUG_IDX_SIZE
-
-
-class IntDebugIdx:
-    """Internal kernel debug output column indices (wrapper for backward compatibility)."""
-    START_VM = INT_DEBUG_IDX_START_VM
-    VM_CHOC = INT_DEBUG_IDX_VM_CHOC
-    AVG_PV_FLUX = INT_DEBUG_IDX_AVG_PV_FLUX
-    RESERVE = INT_DEBUG_IDX_RESERVE
-    CAPITAL = INT_DEBUG_IDX_CAPITAL
-    START_TX_SURVIE = INT_DEBUG_IDX_START_TX_SURVIE
-    START_AGE = INT_DEBUG_IDX_START_AGE
-    CURR_VM = INT_DEBUG_IDX_CURR_VM
-    FEES = INT_DEBUG_IDX_FEES
-    PV_PATH = INT_DEBUG_IDX_PV_PATH
-    R_PORTFOLIO = INT_DEBUG_IDX_R_PORTFOLIO
-    FWD_RATE = INT_DEBUG_IDX_FWD_RATE
-    SIZE = INT_DEBUG_IDX_SIZE
-
-
 @cuda.jit
 def external_generator_kernel(
         account_data,        # AccountData: (n_accounts, n_fields)
