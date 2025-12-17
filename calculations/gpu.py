@@ -1423,8 +1423,9 @@ def run_projection_gpu_nested(
             progress_callback(i + 1, num_batches)
     
     # Create results DataFrames
+    population_ids = data['population']['ID_COMPTE'].values
     results_df, results_5chocs_df, sensitivities_df = create_results_dataframes(
-        population_ids=data['population']['ID_COMPTE'].values,
+        population_ids=population_ids,
         all_reserves=all_reserves,
         all_capital=all_capital,
         all_reserves_5chocs=all_reserves_5chocs,

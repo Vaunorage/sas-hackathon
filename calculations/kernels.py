@@ -813,6 +813,19 @@ def nested_valuation_kernel_five_chocs(
     # LOOP THROUGH ALL 5 CHOCS
     # ===========================================
 
+    # Pre-compute debug filter match ONCE outside all loops
+    is_debug_node = False
+    if debug_output is not None or debug_ts_output is not None:
+        is_debug_node = (
+            (debug_account < 0 or acc_idx == debug_account) and
+            (debug_ext_scenario < 0 or scn_idx == debug_ext_scenario) and
+            (debug_ext_year < 0 or year_idx == debug_ext_year)
+        )
+
+    # Pre-fetch array dimensions ONCE (avoid repeated shape lookups)
+    n_scn_avail = rn_rend_dex.shape[0]
+    n_yr_avail = rn_rend_dex.shape[1]
+
     for choc_idx in range(NUM_CHOCS):
         # Apply shock according to SAS logic (lines 219-234)
         if choc_idx == 0:
@@ -867,6 +880,10 @@ def nested_valuation_kernel_five_chocs(
         debug_r_portfolio = 0.0
         debug_fwd_rate = 0.0
 
+        # Pre-compute fee factor (constant across iterations)
+        fee_factor = 1.0 - (PC_RFG / FREQ_EVAL)
+        fee_rate = PC_RFG / FREQ_EVAL
+
         for i_int in range(n_internal_scenarios):
             # Track individual asset values through internal projection
             curr_mt_dex = mt_dex_choc
@@ -877,35 +894,31 @@ def nested_valuation_kernel_five_chocs(
             curr_vm = vm_choc_start
             pv_path = 0.0
 
+            # Map internal scenario to available scenarios (wrap if needed)
+            scn_idx_int = i_int % n_scn_avail if n_scn_avail > 0 else 0
+
             for t_int in range(n_internal_years):
                 if curr_vm <= 0:
                     break
 
-                # Get scenario/year indices with bounds checking
-                # rn_returns arrays are shaped (nb_int_scenarios, nb_an_projection)
-                # i_int is 0-based internal scenario index, t_int is 0-based year index
-                n_scn_avail = rn_rend_dex.shape[0]
-                n_yr_avail = rn_rend_dex.shape[1]
-                
-                # Map internal scenario to available scenarios (wrap if needed)
-                scn_idx_int = i_int % n_scn_avail if n_scn_avail > 0 else 0
                 # Map internal year to available years (wrap if needed)
                 t_idx_int = t_int % n_yr_avail if n_yr_avail > 0 else 0
 
                 # Get risk-neutral returns for each asset class from RENDEMENTS_INT
-                # Check bounds before accessing
                 if n_scn_avail > 0 and n_yr_avail > 0:
                     r_dex = rn_rend_dex[scn_idx_int, t_idx_int]
                     r_mm = rn_rend_mm[scn_idx_int, t_idx_int]
                     r_tsx = rn_rend_tsx[scn_idx_int, t_idx_int]
                     r_sp500 = rn_rend_sp500[scn_idx_int, t_idx_int]
                     r_eafe = rn_rend_eafe[scn_idx_int, t_idx_int]
+                    fwd = rn_forward_rate[scn_idx_int, t_idx_int]
                 else:
                     r_dex = DEFAULT_RETURN_RATE
                     r_mm = DEFAULT_RETURN_RATE
                     r_tsx = DEFAULT_RETURN_RATE
                     r_sp500 = DEFAULT_RETURN_RATE
                     r_eafe = DEFAULT_RETURN_RATE
+                    fwd = DEFAULT_FORWARD_RATE
 
                 # Apply returns to each asset class separately
                 curr_mt_dex *= math.exp(r_dex)
@@ -917,55 +930,45 @@ def nested_valuation_kernel_five_chocs(
                 # Recalculate total VM from individual assets
                 curr_vm = curr_mt_dex + curr_mt_mm + curr_mt_tsx + curr_mt_sp500 + curr_mt_eafe
 
-                # Calculate weighted portfolio return for debug output
-                if vm_choc_start > 0:
-                    r_portfolio = (r_dex * mt_dex_choc + r_mm * mt_mm_choc + r_tsx * mt_tsx_choc + 
-                                   r_sp500 * mt_sp500_choc + r_eafe * mt_eafe_choc) / vm_choc_start
-                else:
-                    r_portfolio = 0.0
-
                 # Apply fees
-                fees = curr_vm * PC_RFG / FREQ_EVAL
+                fees = curr_vm * fee_rate
                 curr_vm -= fees
                 # Proportionally reduce each asset by fees
                 if curr_vm > 0:
-                    fee_factor = 1.0 - (PC_RFG / FREQ_EVAL)
                     curr_mt_dex *= fee_factor
                     curr_mt_mm *= fee_factor
                     curr_mt_tsx *= fee_factor
                     curr_mt_sp500 *= fee_factor
                     curr_mt_eafe *= fee_factor
 
-                # Discount cashflow - use same bounds check as returns
-                fwd = rn_forward_rate[scn_idx_int, t_idx_int] if (n_scn_avail > 0 and n_yr_avail > 0) else DEFAULT_FORWARD_RATE
+                # Discount cashflow
                 df = math.exp(-fwd * (t_int + 1))
                 pv_path += fees * df
 
-                # Capture internal loop time series for the filtered debug node.
-                # Only record a single internal scenario to avoid overwriting/huge buffers.
-                if debug_ts_output is not None:
-                    matches_filter = (
-                        (debug_account < 0 or acc_idx == debug_account) and
-                        (debug_ext_scenario < 0 or scn_idx == debug_ext_scenario) and
-                        (debug_ext_year < 0 or year_idx == debug_ext_year)
-                    )
-                    if matches_filter and debug_int_scenario >= 0 and i_int == debug_int_scenario:
-                        if debug_int_year < 0 or t_int == debug_int_year:
-                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_CURR_VM] = curr_vm
-                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_FEES] = fees
-                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_PV_PATH] = pv_path
-                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_R_PORTFOLIO] = r_portfolio
-                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_FWD_RATE] = fwd
-                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_DF] = df
-                
-                # Capture debug values at specific internal scenario/year
-                if (debug_int_scenario < 0 or i_int == debug_int_scenario) and \
-                   (debug_int_year < 0 or t_int == debug_int_year):
-                    debug_curr_vm = curr_vm
-                    debug_fees = fees
-                    debug_pv_path = pv_path
-                    debug_r_portfolio = r_portfolio
-                    debug_fwd_rate = fwd
+                # Debug capture - only for the specific debug node (pre-filtered)
+                if is_debug_node and debug_int_scenario >= 0 and i_int == debug_int_scenario:
+                    # Calculate weighted portfolio return only when needed for debug
+                    if vm_choc_start > 0:
+                        r_portfolio = (r_dex * mt_dex_choc + r_mm * mt_mm_choc + r_tsx * mt_tsx_choc + 
+                                       r_sp500 * mt_sp500_choc + r_eafe * mt_eafe_choc) / vm_choc_start
+                    else:
+                        r_portfolio = 0.0
+                    
+                    if debug_int_year < 0 or t_int == debug_int_year:
+                        debug_curr_vm = curr_vm
+                        debug_fees = fees
+                        debug_pv_path = pv_path
+                        debug_r_portfolio = r_portfolio
+                        debug_fwd_rate = fwd
+                    
+                    # Time series debug output
+                    if debug_ts_output is not None and (debug_int_year < 0 or t_int == debug_int_year):
+                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_CURR_VM] = curr_vm
+                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_FEES] = fees
+                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_PV_PATH] = pv_path
+                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_R_PORTFOLIO] = r_portfolio
+                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_FWD_RATE] = fwd
+                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_DF] = df
 
             sum_pv_flux_choc += pv_path
 
