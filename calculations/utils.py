@@ -183,6 +183,73 @@ def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _standardize_rendements_columns(df: pd.DataFrame, internal: bool) -> pd.DataFrame:
+    if df is None or len(df) == 0:
+        return df
+
+    def _find_col(pattern: str):
+        for c in df.columns:
+            if c.endswith(pattern):
+                return c
+        for c in df.columns:
+            if pattern in c:
+                return c
+        return None
+
+    mapping = {}
+
+    for target in [
+        'FORWARD_RATE',
+        'AJUST_FORWARD_RATE_VM_0',
+        'RENDDEX_AN',
+        'RENDMM_AN',
+        'RENDTSX_AN',
+        'RENDSP500_AN',
+        'RENDEAFE_AN',
+    ]:
+        src = _find_col(target)
+        if src is not None and src != target:
+            mapping[src] = target
+
+    if internal:
+        for target in ['AN_EVAL_INT', 'SCN_EVAL_INT', 'MOIS_EVAL']:
+            src = _find_col(target)
+            if src is not None and src != target:
+                mapping[src] = target
+    else:
+        for target in ['AN_EVAL', 'SCN_EVAL', 'MOIS_EVAL']:
+            src = _find_col(target)
+            if src is not None and src != target:
+                mapping[src] = target
+
+    if mapping:
+        df = df.rename(columns=mapping)
+
+    required_numeric = [
+        'FORWARD_RATE',
+        'AJUST_FORWARD_RATE_VM_0',
+        'RENDDEX_AN',
+        'RENDMM_AN',
+        'RENDTSX_AN',
+        'RENDSP500_AN',
+        'RENDEAFE_AN',
+    ]
+    for col in required_numeric:
+        if col not in df.columns:
+            df[col] = 0.0
+
+    if internal:
+        for col in ['AN_EVAL_INT', 'SCN_EVAL_INT', 'MOIS_EVAL']:
+            if col not in df.columns:
+                df[col] = 0
+    else:
+        for col in ['AN_EVAL', 'SCN_EVAL', 'MOIS_EVAL']:
+            if col not in df.columns:
+                df[col] = 0
+
+    return df
+
+
 def load_all_data(data_path: Path,
                   population_path: Optional[Path] = None,
                   mortalite_path: Optional[Path] = None,
@@ -193,7 +260,8 @@ def load_all_data(data_path: Path,
                   tx_lapse_part_path: Optional[Path] = None,
                   tx_lapse_tot_path: Optional[Path] = None,
                   acquisition_path: Optional[Path] = None,
-                  coussins_escap_path: Optional[Path] = None) -> Dict[str, pd.DataFrame]:
+                  coussins_escap_path: Optional[Path] = None,
+                  rendements_int_path: Optional[Path] = None) -> Dict[str, pd.DataFrame]:
     """Load all CSV files into memory with semicolon delimiter.
 
     Args:
@@ -218,8 +286,15 @@ def load_all_data(data_path: Path,
         population_path or data_path.joinpath("POPULATION.csv"), sep=';', encoding='utf-8')
     data['mortalite'] = pd.read_csv(
         mortalite_path or data_path.joinpath("MORTALITE.csv"), sep=';', encoding='utf-8')
-    data['rendements'] = pd.read_csv(
-        rendements_path or data_path.joinpath("RENDEMENTS.csv"), sep=';', encoding='utf-8')
+    rendements_file = rendements_path or data_path.joinpath("RENDEMENTS.csv")
+    data['rendements'] = pd.read_csv(rendements_file, sep=';', encoding='utf-8')
+    if len(data['rendements'].columns) == 1 and ',' in str(data['rendements'].columns[0]):
+        data['rendements'] = pd.read_csv(rendements_file, sep=',', encoding='utf-8')
+    try:
+        data['rendements_int'] = pd.read_csv(
+            rendements_int_path or data_path.joinpath("RENDEMENTS_INT.csv"), sep=',', encoding='utf-8')
+    except FileNotFoundError:
+        data['rendements_int'] = pd.DataFrame()
     data['depots_futurs'] = pd.read_csv(
         depots_futurs_path or data_path.joinpath("DEPOTS_FUTURS.csv"), sep=';', encoding='utf-8')
     data['frais_admin'] = pd.read_csv(
@@ -240,6 +315,9 @@ def load_all_data(data_path: Path,
     for key in data:
         data[key] = normalize_column_names(data[key])
 
+    data['rendements'] = _standardize_rendements_columns(data['rendements'], internal=False)
+    data['rendements_int'] = _standardize_rendements_columns(data['rendements_int'], internal=True)
+
     # Clean numeric columns
     print("  Loading POPULATION...")
     pct_cols = [col for col in data['population'].columns if col.startswith('PC_') or col.startswith('TAUX_')]
@@ -252,6 +330,9 @@ def load_all_data(data_path: Path,
     rend_cols = ['FORWARD_RATE', 'AJUST_FORWARD_RATE_VM_0', 'RENDDEX_AN', 'RENDMM_AN',
                  'RENDTSX_AN', 'RENDSP500_AN', 'RENDEAFE_AN']
     data['rendements'] = clean_numeric(data['rendements'], rend_cols)
+
+    print("  Loading RENDEMENTS_INT...")
+    data['rendements_int'] = clean_numeric(data['rendements_int'], rend_cols)
 
     print("  Loading DEPOTS_FUTURS...")
     data['depots_futurs'] = clean_numeric(data['depots_futurs'], ['PC_DEPOT_ANNUEL'])
@@ -286,10 +367,11 @@ def load_all_data(data_path: Path,
         data['coussins_escap'][col] = data['coussins_escap'][col].astype(int)
 
     # Filter data
-    data['rendements'] = data['rendements'][
-        (data['rendements']['SCN_EVAL'] <= CONFIG['NB_SC']) &
-        (data['rendements']['AN_EVAL'] <= CONFIG['NB_AN_PROJECTION'])
-        ]
+    if 'SCN_EVAL' in data['rendements'].columns and 'AN_EVAL' in data['rendements'].columns:
+        data['rendements'] = data['rendements'][
+            (data['rendements']['SCN_EVAL'] <= CONFIG['NB_SC']) &
+            (data['rendements']['AN_EVAL'] <= CONFIG['NB_AN_PROJECTION'])
+            ]
 
     data['population'] = data['population'][
         data['population']['ID_COMPTE'] <= CONFIG['NBCPT']

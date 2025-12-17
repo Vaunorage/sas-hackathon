@@ -165,7 +165,7 @@ def handler(job):
         default_data_path = Path('/data_in')  # Default CSVs baked into Docker image
         
         required_files = [
-            'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv', 'DEPOTS_FUTURS.csv',
+            'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv', 'RENDEMENTS_INT.csv', 'DEPOTS_FUTURS.csv',
             'FRAIS_ADMIN.csv', 'MIN_FERR.csv', 'TX_LAPSE_PART.csv', 'TX_LAPSE_TOT.csv',
             'ACQUISITION.csv', 'COUSSINS_ESCAP.csv'
         ]
