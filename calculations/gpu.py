@@ -560,19 +560,16 @@ def process_batch(
 
     d_flux_agg = _to_device_contiguous(np.zeros((nb_an_projection + 1, 13, FLUX_COMP_IDX_SIZE), dtype=np.float32))
     
-    # Allocate tensors
+    # Allocate tensors using cupy to avoid numba-cuda device_pointer bug
     try:
-        d_states = cuda.device_array(
-            (current_batch_size, nb_ext_scenarios, nb_an_projection, STATE_SIZE),
-            dtype=np.float32
+        d_states = _device_array_cupy(
+            (current_batch_size, nb_ext_scenarios, nb_an_projection, STATE_SIZE)
         )
-        d_cashflows = cuda.device_array(
-            (current_batch_size, nb_ext_scenarios, nb_an_projection, 1),
-            dtype=np.float32
+        d_cashflows = _device_array_cupy(
+            (current_batch_size, nb_ext_scenarios, nb_an_projection, 1)
         )
-        d_metrics = cuda.device_array(
-            (current_batch_size, nb_ext_scenarios, nb_an_projection, NUM_CHOCS, METRICS_OUTPUT_SIZE),
-            dtype=np.float32
+        d_metrics = _device_array_cupy(
+            (current_batch_size, nb_ext_scenarios, nb_an_projection, NUM_CHOCS, METRICS_OUTPUT_SIZE)
         )
         
         # Allocate debug arrays (always allocate, use -1 flags to disable)
@@ -585,8 +582,8 @@ def process_batch(
             logger.info(f"  Internal debug: int_scenario={debug_int_scenario}, int_year={debug_int_year}")
         
         # Always allocate debug arrays (kernel uses -1 flags to skip writing)
-        d_ext_debug = cuda.device_array((EXT_DEBUG_SIZE,), dtype=np.float32)
-        d_int_debug = cuda.device_array((NUM_CHOCS, INT_DEBUG_SIZE), dtype=np.float32)
+        d_ext_debug = _device_array_cupy((EXT_DEBUG_SIZE,))
+        d_int_debug = _device_array_cupy((NUM_CHOCS, INT_DEBUG_SIZE))
         enable_int_debug_ts = enable_int_debug and debug_int_scenario >= 0
         if enable_int_debug_ts:
             d_int_debug_ts = _to_device_contiguous(
@@ -1083,6 +1080,24 @@ def _clear_cupy_refs():
     """Clear cupy array references to free GPU memory."""
     global _cupy_array_refs
     _cupy_array_refs.clear()
+
+
+def _device_array_cupy(shape, dtype=np.float32):
+    """Allocate an uninitialized device array using cupy.
+    
+    Uses cupy for allocation to work around numba-cuda bug
+    where device_pointer_value incorrectly parses bytes as int.
+    """
+    import cupy as cp
+    
+    # Allocate empty array on GPU using cupy
+    cp_arr = cp.empty(shape, dtype=dtype)
+    
+    # Keep reference to prevent garbage collection
+    _cupy_array_refs.append(cp_arr)
+    
+    # Convert cupy array to numba device array using __cuda_array_interface__
+    return cuda.as_cuda_array(cp_arr)
 
 
 def _to_device_contiguous(arr):
