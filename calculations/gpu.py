@@ -68,7 +68,7 @@ class KernelIncompatibilityError(RuntimeError):
     pass
 
 
-EXPECTED_EXTERNAL_GENERATOR_ARGCOUNT = 18
+EXPECTED_EXTERNAL_GENERATOR_ARGCOUNT = 19
 EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT = 14
 
 
@@ -584,6 +584,18 @@ def process_batch(
         # Always allocate debug arrays (kernel uses -1 flags to skip writing)
         d_ext_debug = _device_array_cupy((EXT_DEBUG_SIZE,))
         d_int_debug = _device_array_cupy((NUM_CHOCS, INT_DEBUG_SIZE))
+        
+        # Allocate debug flux array for single account/scenario flux capture
+        # Shape: (n_years+1, freq_eval, FLUX_COMP_IDX_SIZE)
+        freq_eval_int = int(CONFIG['FREQ_EVAL'])
+        if enable_ext_debug:
+            d_debug_flux = _to_device_contiguous(
+                np.zeros((nb_an_projection + 1, freq_eval_int + 1, FLUX_COMP_IDX_SIZE), dtype=np.float32)
+            )
+        else:
+            # Minimal array when debug is disabled
+            d_debug_flux = _to_device_contiguous(np.zeros((1, 1, FLUX_COMP_IDX_SIZE), dtype=np.float32))
+        
         enable_int_debug_ts = enable_int_debug and debug_int_scenario >= 0
         if enable_int_debug_ts:
             d_int_debug_ts = _to_device_contiguous(
@@ -625,6 +637,7 @@ def process_batch(
         d_cashflows,
         d_flux_agg,
         d_ext_debug,
+        d_debug_flux,
         debug_account,
         debug_scenario,
         debug_year,
@@ -672,9 +685,11 @@ def process_batch(
     h_int_debug = None
     h_int_debug_ts = None
     h_flux_agg = None
+    h_debug_flux = None
     if enable_ext_debug:
         logger.info("  Copying external debug output to CPU...")
         h_ext_debug = d_ext_debug.copy_to_host()
+        h_debug_flux = d_debug_flux.copy_to_host()
     if enable_int_debug:
         logger.info("  Copying internal debug output to CPU...")
         h_int_debug = d_int_debug.copy_to_host()
@@ -690,7 +705,7 @@ def process_batch(
     batch_capital = batch_capital_5chocs[:, 0]
     
     # Cleanup
-    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug, d_int_debug_ts, d_flux_agg
+    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug, d_int_debug_ts, d_flux_agg, d_debug_flux
     cuda.synchronize()
     del h_metrics
     gc.collect()
@@ -713,6 +728,7 @@ def process_batch(
         'int_debug': h_int_debug,
         'int_debug_ts': h_int_debug_ts,
         'flux_agg': h_flux_agg,
+        'debug_flux': h_debug_flux,
     }
 
 
@@ -793,6 +809,7 @@ def save_results(
     debug_params: Optional[dict] = None,
     flux_projetes_periods: Optional[pd.DataFrame] = None,
     population_ids: Optional[np.ndarray] = None,
+    debug_flux: Optional[np.ndarray] = None,
 ):
     """
     Save all results (final simulation results and debug output) to CSV files.
@@ -866,7 +883,61 @@ def save_results(
     print(f"  Total SCR:          ${vp_flux_total_df['VP_SCR'].iloc[0]:,.2f}")
     saved_files.append("VP_FLUX_TOTAL_GPU.csv (portfolio totals)")
 
-    if flux_projetes_periods is not None and len(flux_projetes_periods) > 0:
+    # Save debug flux for single account/scenario if available
+    if debug_flux is not None and debug_params is not None:
+        debug_account_idx = debug_params.get('account', -1)
+        debug_scenario_idx = debug_params.get('scenario', -1)
+        
+        # Get ID_COMPTE for the debug account
+        id_compte = -1
+        if population_ids is not None and debug_account_idx >= 0 and debug_account_idx < len(population_ids):
+            id_compte = int(population_ids[debug_account_idx])
+        
+        # Build flux DataFrame from debug_flux array (n_years+1, freq_eval+1, FLUX_COMP_IDX_SIZE)
+        rows = []
+        n_years = debug_flux.shape[0]
+        n_months = debug_flux.shape[1]
+        
+        for an_eval in range(n_years):
+            for mois_eval in range(n_months):
+                # Skip if all values are zero (no data for this period)
+                flux_row = debug_flux[an_eval, mois_eval, :]
+                if np.all(flux_row == 0):
+                    continue
+                rows.append({
+                    'ID_COMPTE': id_compte,
+                    'DEBUG_ACCOUNT_IDX': debug_account_idx,
+                    'DEBUG_SCENARIO': debug_scenario_idx,
+                    'AN_EVAL': an_eval,
+                    'MOIS_EVAL': mois_eval,
+                    'PRIMES_GARANTIES': float(flux_row[FLUX_COMP_IDX_PRIMES_GARANTIES]),
+                    'PREST_DECES': float(flux_row[FLUX_COMP_IDX_PREST_DECES]),
+                    'PREST_ECH': float(flux_row[FLUX_COMP_IDX_PREST_ECH]),
+                    'PREST_MRV': float(flux_row[FLUX_COMP_IDX_PREST_MRV]),
+                    'FRAIS_ACQUIS': float(flux_row[FLUX_COMP_IDX_FRAIS_ACQUIS]),
+                    'COMM_VENTE': float(flux_row[FLUX_COMP_IDX_COMM_VENTE]),
+                    'PRIMES_VARIABLES': float(flux_row[FLUX_COMP_IDX_PRIMES_VARIABLES]),
+                    'FRAIS_FIXES': float(flux_row[FLUX_COMP_IDX_FRAIS_FIXES]),
+                    'HON_GEST': float(flux_row[FLUX_COMP_IDX_HON_GEST]),
+                    'COMM_MAINTIEN': float(flux_row[FLUX_COMP_IDX_COMM_MAINTIEN]),
+                    'VALEUR_MARCHANDE': float(flux_row[FLUX_COMP_IDX_VALEUR_MARCHANDE]),
+                    'PASSIF_REDRESSE': float(flux_row[FLUX_COMP_IDX_PASSIF_REDRESSE]),
+                    'COUSSIN_CREDIT': float(flux_row[FLUX_COMP_IDX_COUSSIN_CREDIT]),
+                    'COUSSIN_MARCHE': float(flux_row[FLUX_COMP_IDX_COUSSIN_MARCHE]),
+                    'COUSSIN_DEPENSE': float(flux_row[FLUX_COMP_IDX_COUSSIN_DEPENSE]),
+                    'COUSSIN_DECHEANCE': float(flux_row[FLUX_COMP_IDX_COUSSIN_DECHEANCE]),
+                    'COUSSIN_MORTALITE': float(flux_row[FLUX_COMP_IDX_COUSSIN_MORTALITE]),
+                    'COUSSIN_DEPOT': float(flux_row[FLUX_COMP_IDX_COUSSIN_DEPOT]),
+                })
+        
+        if rows:
+            flux_projetes_df = pd.DataFrame(rows)
+            flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
+            flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
+            print(f"✓ Saved FLUX_PROJETES_GPU.csv (debug: account={debug_account_idx}, scenario={debug_scenario_idx}, ID_COMPTE={id_compte})")
+            saved_files.append("FLUX_PROJETES_GPU.csv (single account/scenario flux)")
+    elif flux_projetes_periods is not None and len(flux_projetes_periods) > 0:
+        # Fallback: aggregated flux (when debug is not enabled)
         flux_cols = [
             'AN_EVAL', 'MOIS_EVAL',
             'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
@@ -891,8 +962,8 @@ def save_results(
         flux_projetes_df = flux_projetes_df[flux_cols]
         flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
         flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
-        print(f"✓ Saved FLUX_PROJETES_GPU.csv")
-        saved_files.append("FLUX_PROJETES_GPU.csv (external loop logs)")
+        print(f"✓ Saved FLUX_PROJETES_GPU.csv (aggregated)")
+        saved_files.append("FLUX_PROJETES_GPU.csv (aggregated external loop logs)")
     
     # 1b. Five Chocs Results
     if results_5chocs_df is not None:
@@ -1371,6 +1442,7 @@ def run_projection_gpu_nested(
     ext_debug_result = None
     int_debug_result = None
     int_debug_ts_result = None
+    debug_flux_result = None
     
     for i in range(num_batches):
         start_idx = i * batch_size
@@ -1414,6 +1486,8 @@ def run_projection_gpu_nested(
             int_debug_result = batch_result['int_debug']
         if batch_result.get('int_debug_ts') is not None:
             int_debug_ts_result = batch_result['int_debug_ts']
+        if batch_result.get('debug_flux') is not None:
+            debug_flux_result = batch_result['debug_flux']
 
         if batch_result.get('flux_agg') is not None:
             total_flux_agg += batch_result['flux_agg']
@@ -1541,6 +1615,7 @@ def run_projection_gpu_nested(
         debug_params=debug_params,
         flux_projetes_periods=flux_projetes_periods,
         population_ids=population_ids,
+        debug_flux=debug_flux_result,
     )
     
     return ProjectionResult(

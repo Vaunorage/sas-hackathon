@@ -264,3 +264,6 @@ FLUX_COMP_IDX_COUSSIN_DECHEANCE = 15
 FLUX_COMP_IDX_COUSSIN_MORTALITE = 16
 FLUX_COMP_IDX_COUSSIN_DEPOT = 17
 FLUX_COMP_IDX_SIZE = 18
+
+# Debug flux output dimensions: (n_years+1, freq_eval, FLUX_COMP_IDX_SIZE)
+# This captures flux for a single account/scenario for debugging
