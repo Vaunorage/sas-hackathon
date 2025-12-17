@@ -923,6 +923,12 @@ def nested_valuation_kernel_five_chocs(
         debug_fwd_rate = 0.0
 
         for i_int in range(n_internal_scenarios):
+            # Track individual asset values through internal projection
+            curr_mt_dex = mt_dex_choc
+            curr_mt_mm = mt_mm_choc
+            curr_mt_tsx = mt_tsx_choc
+            curr_mt_sp500 = mt_sp500_choc
+            curr_mt_eafe = mt_eafe_choc
             curr_vm = vm_choc_start
             pv_path = 0.0
 
@@ -930,16 +936,48 @@ def nested_valuation_kernel_five_chocs(
                 if curr_vm <= 0:
                     break
 
-                # Apply returns
-                r_portfolio = rn_rend_dex[i_int % rn_rend_dex.shape[0], t_int % rn_rend_dex.shape[1]] if rn_rend_dex.size > 0 else DEFAULT_RETURN_RATE
-                curr_vm *= math.exp(r_portfolio)
+                # Get scenario/year indices with bounds checking
+                scn_idx_int = i_int % rn_rend_dex.shape[0] if rn_rend_dex.size > 0 else 0
+                t_idx_int = t_int % rn_rend_dex.shape[1] if rn_rend_dex.size > 0 else 0
+
+                # Get risk-neutral returns for each asset class from RENDEMENTS_INT
+                r_dex = rn_rend_dex[scn_idx_int, t_idx_int] if rn_rend_dex.size > 0 else DEFAULT_RETURN_RATE
+                r_mm = rn_rend_mm[scn_idx_int, t_idx_int] if rn_rend_mm.size > 0 else DEFAULT_RETURN_RATE
+                r_tsx = rn_rend_tsx[scn_idx_int, t_idx_int] if rn_rend_tsx.size > 0 else DEFAULT_RETURN_RATE
+                r_sp500 = rn_rend_sp500[scn_idx_int, t_idx_int] if rn_rend_sp500.size > 0 else DEFAULT_RETURN_RATE
+                r_eafe = rn_rend_eafe[scn_idx_int, t_idx_int] if rn_rend_eafe.size > 0 else DEFAULT_RETURN_RATE
+
+                # Apply returns to each asset class separately
+                curr_mt_dex *= math.exp(r_dex)
+                curr_mt_mm *= math.exp(r_mm)
+                curr_mt_tsx *= math.exp(r_tsx)
+                curr_mt_sp500 *= math.exp(r_sp500)
+                curr_mt_eafe *= math.exp(r_eafe)
+
+                # Recalculate total VM from individual assets
+                curr_vm = curr_mt_dex + curr_mt_mm + curr_mt_tsx + curr_mt_sp500 + curr_mt_eafe
+
+                # Calculate weighted portfolio return for debug output
+                if vm_choc_start > 0:
+                    r_portfolio = (r_dex * mt_dex_choc + r_mm * mt_mm_choc + r_tsx * mt_tsx_choc + 
+                                   r_sp500 * mt_sp500_choc + r_eafe * mt_eafe_choc) / vm_choc_start
+                else:
+                    r_portfolio = 0.0
 
                 # Apply fees
                 fees = curr_vm * PC_RFG / FREQ_EVAL
                 curr_vm -= fees
+                # Proportionally reduce each asset by fees
+                if curr_vm > 0:
+                    fee_factor = 1.0 - (PC_RFG / FREQ_EVAL)
+                    curr_mt_dex *= fee_factor
+                    curr_mt_mm *= fee_factor
+                    curr_mt_tsx *= fee_factor
+                    curr_mt_sp500 *= fee_factor
+                    curr_mt_eafe *= fee_factor
 
                 # Discount cashflow
-                fwd = rn_forward_rate[i_int % rn_forward_rate.shape[0], t_int % rn_forward_rate.shape[1]] if rn_forward_rate.size > 0 else DEFAULT_FORWARD_RATE
+                fwd = rn_forward_rate[scn_idx_int, t_idx_int] if rn_forward_rate.size > 0 else DEFAULT_FORWARD_RATE
                 df = math.exp(-fwd * (t_int + 1))
                 pv_path += fees * df
 

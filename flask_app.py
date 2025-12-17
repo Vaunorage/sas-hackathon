@@ -1316,7 +1316,7 @@ def trigger_runpod_job(job_id: str):
 
         # --- Prepare data files ---
         required_files = [
-            'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv', 'DEPOTS_FUTURS.csv',
+            'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv', 'RENDEMENTS_INT.csv', 'DEPOTS_FUTURS.csv',
             'FRAIS_ADMIN.csv', 'MIN_FERR.csv', 'TX_LAPSE_PART.csv', 'TX_LAPSE_TOT.csv',
             'ACQUISITION.csv', 'COUSSINS_ESCAP.csv'
         ]
@@ -1605,6 +1605,7 @@ def process_job(job_id: str):
                 'population_path': 'POPULATION.csv',
                 'mortalite_path': 'MORTALITE.csv',
                 'rendements_path': 'RENDEMENTS.csv',
+                'rendements_int_path': 'RENDEMENTS_INT.csv',
                 'depots_futurs_path': 'DEPOTS_FUTURS.csv',
                 'frais_admin_path': 'FRAIS_ADMIN.csv',
                 'min_ferr_path': 'MIN_FERR.csv',
@@ -1818,6 +1819,7 @@ def welcome():
                 'population_path': 'Custom path for POPULATION.csv',
                 'mortalite_path': 'Custom path for MORTALITE.csv',
                 'rendements_path': 'Custom path for RENDEMENTS.csv',
+                'rendements_int_path': 'Custom path for RENDEMENTS_INT.csv (internal/risk-neutral scenarios)',
                 'depots_futurs_path': 'Custom path for DEPOTS_FUTURS.csv',
                 'frais_admin_path': 'Custom path for FRAIS_ADMIN.csv',
                 'min_ferr_path': 'Custom path for MIN_FERR.csv',
@@ -1893,6 +1895,7 @@ def create_job_endpoint():
     - population_path: Custom path for POPULATION.csv
     - mortalite_path: Custom path for MORTALITE.csv
     - rendements_path: Custom path for RENDEMENTS.csv
+    - rendements_int_path: Custom path for RENDEMENTS_INT.csv (internal/risk-neutral scenarios)
     - depots_futurs_path: Custom path for DEPOTS_FUTURS.csv
     - frais_admin_path: Custom path for FRAIS_ADMIN.csv
     - min_ferr_path: Custom path for MIN_FERR.csv
@@ -1950,7 +1953,7 @@ def create_job_endpoint():
         
         # Check for individual file uploads with specific names
         expected_files = [
-            'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv',
+            'POPULATION.csv', 'MORTALITE.csv', 'RENDEMENTS.csv', 'RENDEMENTS_INT.csv',
             'DEPOTS_FUTURS.csv', 'FRAIS_ADMIN.csv', 'MIN_FERR.csv',
             'TX_LAPSE_PART.csv', 'TX_LAPSE_TOT.csv', 'ACQUISITION.csv',
             'COUSSINS_ESCAP.csv'

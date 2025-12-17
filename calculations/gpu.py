@@ -156,6 +156,67 @@ def create_gpu_returns_lookup(df: pd.DataFrame):
     return (forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe)
 
 
+def create_gpu_rn_returns_lookup(df: pd.DataFrame, nb_int_scenarios: int, nb_an_projection: int):
+    """Create 2D arrays for risk-neutral/internal returns lookup on GPU.
+
+    Expected columns after normalization:
+    - FORWARD_RATE, AJUST_FORWARD_RATE_VM_0, RENDDEX_AN, RENDMM_AN, RENDTSX_AN, RENDSP500_AN, RENDEAFE_AN
+    - AN_EVAL_INT (or AN_EVAL)
+    - SCN_EVAL_INT (or SCN_EVAL)
+    - MOIS_EVAL (optional; if present we keep only month=12)
+
+    Returns arrays shaped (nb_int_scenarios, nb_an_projection) with scenario indices 1..N mapped to 0..N-1.
+    """
+    rn_forward_rate = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_FORWARD_RATE, dtype=np.float32)
+    rn_rend_dex = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_DEX, dtype=np.float32)
+    rn_rend_mm = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_MM, dtype=np.float32)
+    rn_rend_tsx = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_TSX, dtype=np.float32)
+    rn_rend_sp500 = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_SP500, dtype=np.float32)
+    rn_rend_eafe = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_EAFE, dtype=np.float32)
+
+    if df is None or len(df) == 0 or nb_int_scenarios <= 0 or nb_an_projection <= 0:
+        return (rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
+
+    scn_col = 'SCN_EVAL_INT' if 'SCN_EVAL_INT' in df.columns else ('SCN_EVAL' if 'SCN_EVAL' in df.columns else None)
+    an_col = 'AN_EVAL_INT' if 'AN_EVAL_INT' in df.columns else ('AN_EVAL' if 'AN_EVAL' in df.columns else None)
+    mois_col = 'MOIS_EVAL' if 'MOIS_EVAL' in df.columns else None
+    if scn_col is None or an_col is None:
+        return (rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
+
+    df_iter = df
+    if mois_col is not None:
+        try:
+            df_iter = df_iter[df_iter[mois_col] == 12]
+        except Exception:
+            df_iter = df
+
+    for _, row in df_iter.iterrows():
+        try:
+            scn_raw = int(row[scn_col])
+            an = int(row[an_col])
+        except Exception:
+            continue
+
+        scn = scn_raw - 1
+        if scn < 0 or scn >= nb_int_scenarios or an < 0 or an >= nb_an_projection:
+            continue
+
+        if 'FORWARD_RATE' in row:
+            rn_forward_rate[scn, an] = float(row['FORWARD_RATE'])
+        if 'RENDDEX_AN' in row:
+            rn_rend_dex[scn, an] = float(row['RENDDEX_AN'])
+        if 'RENDMM_AN' in row:
+            rn_rend_mm[scn, an] = float(row['RENDMM_AN'])
+        if 'RENDTSX_AN' in row:
+            rn_rend_tsx[scn, an] = float(row['RENDTSX_AN'])
+        if 'RENDSP500_AN' in row:
+            rn_rend_sp500[scn, an] = float(row['RENDSP500_AN'])
+        if 'RENDEAFE_AN' in row:
+            rn_rend_eafe[scn, an] = float(row['RENDEAFE_AN'])
+
+    return (rn_forward_rate, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe)
+
+
 def create_gpu_min_ferr_lookup(df: pd.DataFrame):
     """Create array for minimum FERR lookup."""
     lookup = np.zeros(MAX_AGE, dtype=np.float32)
@@ -982,12 +1043,18 @@ def create_all_lookup_tables(data: dict, nb_int_scenarios: int, nb_an_projection
     
     # Create risk-neutral scenario tables
     print("\nCreating risk-neutral scenario tables...")
-    lookups['rn_forward_rate'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_FORWARD_RATE, dtype=np.float32)
-    lookups['rn_rend_dex'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_DEX, dtype=np.float32)
-    lookups['rn_rend_mm'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_MM, dtype=np.float32)
-    lookups['rn_rend_tsx'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_TSX, dtype=np.float32)
-    lookups['rn_rend_sp500'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_SP500, dtype=np.float32)
-    lookups['rn_rend_eafe'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_EAFE, dtype=np.float32)
+    if 'rendements_int' in data and data['rendements_int'] is not None and len(data['rendements_int']) > 0:
+        (lookups['rn_forward_rate'], lookups['rn_rend_dex'], lookups['rn_rend_mm'],
+         lookups['rn_rend_tsx'], lookups['rn_rend_sp500'], lookups['rn_rend_eafe']) = create_gpu_rn_returns_lookup(
+            data['rendements_int'], nb_int_scenarios, nb_an_projection
+        )
+    else:
+        lookups['rn_forward_rate'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_FORWARD_RATE, dtype=np.float32)
+        lookups['rn_rend_dex'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_DEX, dtype=np.float32)
+        lookups['rn_rend_mm'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_MM, dtype=np.float32)
+        lookups['rn_rend_tsx'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_TSX, dtype=np.float32)
+        lookups['rn_rend_sp500'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_SP500, dtype=np.float32)
+        lookups['rn_rend_eafe'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_EAFE, dtype=np.float32)
     
     print("✓ Risk-neutral tables created")
     
@@ -1086,6 +1153,7 @@ def run_projection_gpu_nested(
         population_path: Optional[Path] = None,
         mortalite_path: Optional[Path] = None,
         rendements_path: Optional[Path] = None,
+        rendements_int_path: Optional[Path] = None,
         depots_futurs_path: Optional[Path] = None,
         frais_admin_path: Optional[Path] = None,
         min_ferr_path: Optional[Path] = None,
@@ -1153,7 +1221,8 @@ def run_projection_gpu_nested(
                          tx_lapse_part_path=tx_lapse_part_path,
                          tx_lapse_tot_path=tx_lapse_tot_path,
                          acquisition_path=acquisition_path,
-                         coussins_escap_path=coussins_escap_path)
+                         coussins_escap_path=coussins_escap_path,
+                         rendements_int_path=rendements_int_path)
     print("✓ Data loaded successfully")
 
     flux_projetes_periods = None
