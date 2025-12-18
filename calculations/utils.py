@@ -413,7 +413,7 @@ def load_all_data(data_path: Path,
     return data
 
 
-def prepare_account_data(population_df):
+def prepare_account_data(population_df: pd.DataFrame):
     """Convert account DataFrame to numpy array for GPU using AccountIdx constants."""
     
     # Define the columns to extract in order - MUST match AccountIdx order exactly
@@ -542,6 +542,46 @@ def prepare_account_data(population_df):
 
     # Validate the final column structure
     validate_account_data_structure(columns)
+
+    def _coerce_numeric_series(s: pd.Series) -> pd.Series:
+        if s.dtype == object:
+            s2 = s.astype(str)
+            s2 = s2.str.replace('\u00a0', '', regex=False)
+            s2 = s2.str.replace(' ', '', regex=False)
+            s2 = s2.str.replace("'", '', regex=False)
+            has_dot = s2.str.contains('\.', regex=True)
+            comma_count = s2.str.count(',', regex=False)
+
+            both = has_dot & (comma_count > 0)
+            if both.any():
+                s2.loc[both] = s2.loc[both].str.replace(',', '', regex=False)
+
+            multi_comma = comma_count > 1
+            if multi_comma.any():
+                s2.loc[multi_comma] = s2.loc[multi_comma].str.replace(',', '', regex=False)
+
+            single_comma = comma_count == 1
+            if single_comma.any():
+                left = s2.loc[single_comma].str.split(',', n=1).str[0]
+                right = s2.loc[single_comma].str.split(',', n=1).str[1]
+                is_thousands = (right.str.len() == 3) & (left.str.len() > 3)
+                if is_thousands.any():
+                    idx = s2.loc[single_comma].index[is_thousands]
+                    s2.loc[idx] = s2.loc[idx].str.replace(',', '', regex=False)
+                is_decimal = ~is_thousands
+                if is_decimal.any():
+                    idx = s2.loc[single_comma].index[is_decimal]
+                    s2.loc[idx] = s2.loc[idx].str.replace(',', '.', regex=False)
+
+            return pd.to_numeric(s2, errors='coerce')
+        return pd.to_numeric(s, errors='coerce')
+
+    for col in columns:
+        population_df[col] = _coerce_numeric_series(population_df[col])
+    population_df['ID_COMPTE'] = _coerce_numeric_series(population_df['ID_COMPTE'])
+
+    population_df[columns] = population_df[columns].fillna(0.0)
+    population_df['ID_COMPTE'] = population_df['ID_COMPTE'].fillna(0.0)
 
     account_data = population_df[columns].values.astype(np.float32)
     account_ids = population_df['ID_COMPTE'].values.astype(np.int32)
