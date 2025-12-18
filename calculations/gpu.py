@@ -1,3 +1,4 @@
+import csv
 import os
 
 from calculations.kernels import (
@@ -829,6 +830,7 @@ def save_results(
     debug_params: Optional[dict] = None,
     population_ids: Optional[np.ndarray] = None,
     debug_flux: Optional[np.ndarray] = None,
+    population_df: Optional[pd.DataFrame] = None,
 ):
     """
     Save all results (final simulation results and debug output) to CSV files.
@@ -980,6 +982,89 @@ def save_results(
             flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
             print(f"✓ Saved FLUX_PROJETES_GPU.csv (debug: account={debug_account_idx}, scenario={debug_scenario_idx}, ID_COMPTE={id_compte})")
             saved_files.append("FLUX_PROJETES_GPU.csv (single account/scenario flux)")
+
+            example_header = None
+            example_path = Path(__file__).resolve().parents[1] / "output_example.csv"
+            try:
+                with example_path.open('r', newline='') as f:
+                    reader = csv.reader(f)
+                    example_header = next(reader)
+            except Exception:
+                example_header = None
+
+            if example_header:
+                acc_row = None
+                if population_df is not None and 0 <= debug_account_idx < len(population_df):
+                    acc_row = population_df.iloc[debug_account_idx]
+
+                wide_rows = []
+                for r in rows:
+                    w = {c: np.nan for c in example_header}
+
+                    w['ID_COMPTE'] = r.get('ID_COMPTE', -1)
+                    w['scn_eval'] = int(debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
+                    w['an_eval'] = r.get('AN_EVAL', np.nan)
+                    w['mois_eval'] = r.get('MOIS_EVAL', np.nan)
+                    w['mois_eval_ext'] = r.get('MOIS_EVAL', np.nan)
+
+                    w['Qx'] = r.get('QX', np.nan)
+                    w['TX_SURVIE'] = r.get('TX_SURVIE', np.nan)
+                    w['TX_SURVIE_DEB'] = r.get('TX_SURVIE', np.nan)
+                    w['LAPSE_TOT'] = r.get('LAPSE_TOT', np.nan)
+                    w['LAPSE_PART'] = r.get('LAPSE_PART', np.nan)
+                    w['RETRAIT'] = r.get('RETRAIT', np.nan)
+                    w['DEPOT_FUTUR'] = r.get('DEPOT_FUTUR', np.nan)
+
+                    w['rendSP500_an'] = r.get('REND_SP500', np.nan)
+                    w['rendTSX_an'] = r.get('REND_TSX', np.nan)
+                    w['rendEAFE_an'] = r.get('REND_EAFE', np.nan)
+                    w['rendDEX_an'] = r.get('REND_DEX', np.nan)
+                    w['rendMM_an'] = r.get('REND_MM', np.nan)
+
+                    w['MT_VM_PROJ'] = r.get('MT_VM', np.nan)
+                    w['MT_VM'] = r.get('MT_VM', np.nan)
+                    w['MT_VM_AV_RETRAIT'] = r.get('MT_VM_AV_RETRAIT', np.nan)
+                    w['MT_VM_AP_RETRAIT'] = r.get('MT_VM_AP_RETRAIT', np.nan)
+                    w['MT_SP500_PROJ'] = r.get('MT_SP500', np.nan)
+                    w['MT_TSX_PROJ'] = r.get('MT_TSX', np.nan)
+                    w['MT_EAFE_PROJ'] = r.get('MT_EAFE', np.nan)
+                    w['MT_DEX_PROJ'] = r.get('MT_DEX', np.nan)
+                    w['MT_MM_PROJ'] = r.get('MT_MM', np.nan)
+                    w['MT_SP500'] = r.get('MT_SP500', np.nan)
+                    w['MT_TSX'] = r.get('MT_TSX', np.nan)
+                    w['MT_EAFE'] = r.get('MT_EAFE', np.nan)
+                    w['MT_DEX'] = r.get('MT_DEX', np.nan)
+                    w['MT_MM'] = r.get('MT_MM', np.nan)
+                    w['MT_GAR_DECES_PROJ'] = r.get('MT_GAR_DECES', np.nan)
+                    w['MT_GAR_ECH_PROJ'] = r.get('MT_GAR_ECH', np.nan)
+                    w['MT_GAR_DECES'] = r.get('MT_GAR_DECES', np.nan)
+                    w['MT_GAR_ECH'] = r.get('MT_GAR_ECH', np.nan)
+                    w['MT_SRG_PROJ'] = r.get('MT_SRG', np.nan)
+                    w['MT_SRG'] = r.get('MT_SRG', np.nan)
+                    w['AGE'] = r.get('AGE', np.nan)
+
+                    w['PRIMES_GARANTIES'] = r.get('PRIMES_GARANTIES', np.nan)
+                    w['PREST_DECES'] = r.get('PREST_DECES', np.nan)
+                    w['PREST_ECH'] = r.get('PREST_ECH', np.nan)
+                    w['PREST_MRV'] = r.get('PREST_MRV', np.nan)
+                    w['FRAIS_ACQUIS'] = r.get('FRAIS_ACQUIS', np.nan)
+                    w['COMM_VENTE'] = r.get('COMM_VENTE', np.nan)
+                    w['PRIMES_VARIABLES'] = r.get('PRIMES_VARIABLES', np.nan)
+                    w['FRAIS_FIXES'] = r.get('FRAIS_FIXES', np.nan)
+                    w['HON_GEST'] = r.get('HON_GEST', np.nan)
+                    w['COMM_MAINTIEN'] = r.get('COMM_MAINTIEN', np.nan)
+
+                    if acc_row is not None:
+                        for c in example_header:
+                            if pd.isna(w.get(c, np.nan)) and c in acc_row.index:
+                                w[c] = acc_row[c]
+
+                    wide_rows.append(w)
+
+                output_example_gpu_path = output_path / "OUTPUT_EXAMPLE_GPU.csv"
+                pd.DataFrame(wide_rows, columns=example_header).to_csv(output_example_gpu_path, index=False)
+                print(f"✓ Saved OUTPUT_EXAMPLE_GPU.csv (matches output_example.csv schema; debug: account={debug_account_idx}, scenario={debug_scenario_idx})")
+                saved_files.append("OUTPUT_EXAMPLE_GPU.csv (output_example.csv schema; partial fill)")
     
     # 1b. Five Chocs Results
     if results_5chocs_df is not None:
@@ -1581,6 +1666,7 @@ def run_projection_gpu_nested(
         debug_params=debug_params,
         population_ids=population_ids,
         debug_flux=debug_flux_result,
+        population_df=data.get('population'),
     )
     
     return ProjectionResult(
