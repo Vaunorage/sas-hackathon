@@ -1408,6 +1408,7 @@ def run_projection_gpu_nested(
         acquisition_path: Optional[Path] = None,
         coussins_escap_path: Optional[Path] = None,
         progress_callback: Optional[callable] = None,
+        debug_account_id: Optional[int] = None,
         debug_account: int = -1,
         debug_scenario: int = -1,
         debug_year: int = -1,
@@ -1475,7 +1476,9 @@ def run_projection_gpu_nested(
     if debug_only and debug_account >= 0:
         # Find the account by ID (assuming there's an ID column like 'NO_COMPTE' or index)
         pop_df = data['population']
-        if 'NO_COMPTE' in pop_df.columns:
+        if 'ID_COMPTE' in pop_df.columns:
+            filtered = pop_df[pop_df['ID_COMPTE'] == debug_account]
+        elif 'NO_COMPTE' in pop_df.columns:
             filtered = pop_df[pop_df['NO_COMPTE'] == debug_account]
         else:
             # Fall back to using index/row position
@@ -1493,6 +1496,19 @@ def run_projection_gpu_nested(
         max_accounts = None
     elif max_accounts:
         data['population'] = data['population'].head(max_accounts)
+
+    if debug_account_id is not None:
+        if 'ID_COMPTE' not in data['population'].columns:
+            raise ValueError("Population data does not contain ID_COMPTE; cannot use debug_account_id")
+        matches = np.where(data['population']['ID_COMPTE'].values == debug_account_id)[0]
+        if len(matches) == 0:
+            raise ValueError(
+                f"debug_account_id={debug_account_id} not found in loaded population (after max_accounts/debug_only filtering). "
+                f"Available ID_COMPTE examples: {data['population']['ID_COMPTE'].head(10).tolist()}"
+            )
+        debug_account = int(matches[0])
+        enable_debug = True
+        print(f"Debug account resolved: debug_account_id={debug_account_id} -> debug_account_index={debug_account} (0-based)")
 
     n_accounts = len(data['population'])
     print(f"\nPreparing {n_accounts} accounts for GPU processing...")
@@ -1720,9 +1736,11 @@ Examples:
                         help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
     
     # Debug filter parameters
-    parser.add_argument('--debug-account', type=int, default=1,
-                        help='Account index to debug (-1 = disabled)')
-    parser.add_argument('--debug-scenario', type=int, default=1,
+    parser.add_argument('--debug-account', type=int, default=0,
+                        help='Account index (0-based row index) to debug (-1 = disabled)')
+    parser.add_argument('--debug-account-id', type=int, default=None,
+                        help='Account ID_COMPTE to debug (overrides --debug-account when provided)')
+    parser.add_argument('--debug-scenario', type=int, default=0,
                         help='External scenario index to debug (-1 = disabled)')
     parser.add_argument('--debug-year', type=int, default=-1,
                         help='Year (an_eval) to debug (-1 = disabled)')
@@ -1758,6 +1776,7 @@ Examples:
             shock_capital_pct=args.shock,
             max_accounts=args.max_accounts,
             threads_per_block=(16, 16),
+            debug_account_id=args.debug_account_id,
             debug_account=args.debug_account,
             debug_scenario=args.debug_scenario,
             debug_year=args.debug_year,
