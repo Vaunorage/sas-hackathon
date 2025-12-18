@@ -27,6 +27,29 @@ from calculations.constants import (
     FLUX_COMP_IDX_COUSSIN_DECHEANCE,
     FLUX_COMP_IDX_COUSSIN_MORTALITE,
     FLUX_COMP_IDX_COUSSIN_DEPOT,
+    FLUX_COMP_IDX_MT_VM,
+    FLUX_COMP_IDX_MT_VM_AV_RETRAIT,
+    FLUX_COMP_IDX_MT_VM_AP_RETRAIT,
+    FLUX_COMP_IDX_AGE,
+    FLUX_COMP_IDX_QX,
+    FLUX_COMP_IDX_LAPSE_TOT,
+    FLUX_COMP_IDX_LAPSE_PART,
+    FLUX_COMP_IDX_TX_SURVIE,
+    FLUX_COMP_IDX_RETRAIT,
+    FLUX_COMP_IDX_DEPOT_FUTUR,
+    FLUX_COMP_IDX_MT_GAR_DECES,
+    FLUX_COMP_IDX_MT_GAR_ECH,
+    FLUX_COMP_IDX_MT_SRG,
+    FLUX_COMP_IDX_REND_SP500,
+    FLUX_COMP_IDX_REND_TSX,
+    FLUX_COMP_IDX_REND_EAFE,
+    FLUX_COMP_IDX_REND_DEX,
+    FLUX_COMP_IDX_REND_MM,
+    FLUX_COMP_IDX_MT_SP500,
+    FLUX_COMP_IDX_MT_TSX,
+    FLUX_COMP_IDX_MT_EAFE,
+    FLUX_COMP_IDX_MT_DEX,
+    FLUX_COMP_IDX_MT_MM,
     FLUX_COMP_IDX_SIZE,
     INT_TS_DEBUG_IDX_CURR_VM,
     INT_TS_DEBUG_IDX_FEES,
@@ -68,7 +91,7 @@ class KernelIncompatibilityError(RuntimeError):
     pass
 
 
-EXPECTED_EXTERNAL_GENERATOR_ARGCOUNT = 19
+EXPECTED_EXTERNAL_GENERATOR_ARGCOUNT = 18
 EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT = 14
 
 
@@ -486,7 +509,6 @@ class ProcessBatchResult(TypedDict):
     ext_debug: Optional[np.ndarray]  # Debug output from external kernel
     int_debug: Optional[np.ndarray]  # Debug output from internal kernel
     int_debug_ts: Optional[np.ndarray]  # Debug time series output from internal kernel
-    flux_agg: Optional[np.ndarray]   # Aggregated external cashflow components (years+1, 13, FLUX_COMP_IDX_SIZE)
 
 
 def check_gpu_memory(batch_size: int, mem_per_account: float, batch_idx: int = 0):
@@ -558,8 +580,6 @@ def process_batch(
     batch_account_data_contiguous = np.ascontiguousarray(batch_account_data)
     d_batch_accounts = _to_device_contiguous(batch_account_data_contiguous)
 
-    d_flux_agg = _to_device_contiguous(np.zeros((nb_an_projection + 1, 13, FLUX_COMP_IDX_SIZE), dtype=np.float32))
-    
     # Allocate tensors using cupy to avoid numba-cuda device_pointer bug
     try:
         d_states = _device_array_cupy(
@@ -635,7 +655,6 @@ def process_batch(
         gpu_lookups['coussins'],
         d_states,
         d_cashflows,
-        d_flux_agg,
         d_ext_debug,
         d_debug_flux,
         debug_account,
@@ -684,7 +703,6 @@ def process_batch(
     h_ext_debug = None
     h_int_debug = None
     h_int_debug_ts = None
-    h_flux_agg = None
     h_debug_flux = None
     if enable_ext_debug:
         logger.info("  Copying external debug output to CPU...")
@@ -695,8 +713,6 @@ def process_batch(
         h_int_debug = d_int_debug.copy_to_host()
         if enable_int_debug_ts:
             h_int_debug_ts = d_int_debug_ts.copy_to_host()
-
-    h_flux_agg = d_flux_agg.copy_to_host()
     
     # Process metrics
     batch_reserves_5chocs = h_metrics[:, :, :, :, METRICS_RESERVE_IDX].mean(axis=(1, 2))
@@ -705,7 +721,7 @@ def process_batch(
     batch_capital = batch_capital_5chocs[:, 0]
     
     # Cleanup
-    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug, d_int_debug_ts, d_flux_agg, d_debug_flux
+    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug, d_int_debug_ts, d_debug_flux
     cuda.synchronize()
     del h_metrics
     gc.collect()
@@ -727,7 +743,6 @@ def process_batch(
         'ext_debug': h_ext_debug,
         'int_debug': h_int_debug,
         'int_debug_ts': h_int_debug_ts,
-        'flux_agg': h_flux_agg,
         'debug_flux': h_debug_flux,
     }
 
@@ -807,7 +822,6 @@ def save_results(
     int_debug: Optional[np.ndarray] = None,
     int_debug_ts_df: Optional[pd.DataFrame] = None,
     debug_params: Optional[dict] = None,
-    flux_projetes_periods: Optional[pd.DataFrame] = None,
     population_ids: Optional[np.ndarray] = None,
     debug_flux: Optional[np.ndarray] = None,
 ):
@@ -910,6 +924,7 @@ def save_results(
                     'DEBUG_SCENARIO': debug_scenario_idx,
                     'AN_EVAL': an_eval,
                     'MOIS_EVAL': mois_eval,
+                    # Cashflow components
                     'PRIMES_GARANTIES': float(flux_row[FLUX_COMP_IDX_PRIMES_GARANTIES]),
                     'PREST_DECES': float(flux_row[FLUX_COMP_IDX_PREST_DECES]),
                     'PREST_ECH': float(flux_row[FLUX_COMP_IDX_PREST_ECH]),
@@ -928,6 +943,30 @@ def save_results(
                     'COUSSIN_DECHEANCE': float(flux_row[FLUX_COMP_IDX_COUSSIN_DECHEANCE]),
                     'COUSSIN_MORTALITE': float(flux_row[FLUX_COMP_IDX_COUSSIN_MORTALITE]),
                     'COUSSIN_DEPOT': float(flux_row[FLUX_COMP_IDX_COUSSIN_DEPOT]),
+                    # Detailed calculation fields
+                    'MT_VM': float(flux_row[FLUX_COMP_IDX_MT_VM]),
+                    'MT_VM_AV_RETRAIT': float(flux_row[FLUX_COMP_IDX_MT_VM_AV_RETRAIT]),
+                    'MT_VM_AP_RETRAIT': float(flux_row[FLUX_COMP_IDX_MT_VM_AP_RETRAIT]),
+                    'AGE': float(flux_row[FLUX_COMP_IDX_AGE]),
+                    'QX': float(flux_row[FLUX_COMP_IDX_QX]),
+                    'LAPSE_TOT': float(flux_row[FLUX_COMP_IDX_LAPSE_TOT]),
+                    'LAPSE_PART': float(flux_row[FLUX_COMP_IDX_LAPSE_PART]),
+                    'TX_SURVIE': float(flux_row[FLUX_COMP_IDX_TX_SURVIE]),
+                    'RETRAIT': float(flux_row[FLUX_COMP_IDX_RETRAIT]),
+                    'DEPOT_FUTUR': float(flux_row[FLUX_COMP_IDX_DEPOT_FUTUR]),
+                    'MT_GAR_DECES': float(flux_row[FLUX_COMP_IDX_MT_GAR_DECES]),
+                    'MT_GAR_ECH': float(flux_row[FLUX_COMP_IDX_MT_GAR_ECH]),
+                    'MT_SRG': float(flux_row[FLUX_COMP_IDX_MT_SRG]),
+                    'REND_SP500': float(flux_row[FLUX_COMP_IDX_REND_SP500]),
+                    'REND_TSX': float(flux_row[FLUX_COMP_IDX_REND_TSX]),
+                    'REND_EAFE': float(flux_row[FLUX_COMP_IDX_REND_EAFE]),
+                    'REND_DEX': float(flux_row[FLUX_COMP_IDX_REND_DEX]),
+                    'REND_MM': float(flux_row[FLUX_COMP_IDX_REND_MM]),
+                    'MT_SP500': float(flux_row[FLUX_COMP_IDX_MT_SP500]),
+                    'MT_TSX': float(flux_row[FLUX_COMP_IDX_MT_TSX]),
+                    'MT_EAFE': float(flux_row[FLUX_COMP_IDX_MT_EAFE]),
+                    'MT_DEX': float(flux_row[FLUX_COMP_IDX_MT_DEX]),
+                    'MT_MM': float(flux_row[FLUX_COMP_IDX_MT_MM]),
                 })
         
         if rows:
@@ -936,34 +975,6 @@ def save_results(
             flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
             print(f"✓ Saved FLUX_PROJETES_GPU.csv (debug: account={debug_account_idx}, scenario={debug_scenario_idx}, ID_COMPTE={id_compte})")
             saved_files.append("FLUX_PROJETES_GPU.csv (single account/scenario flux)")
-    elif flux_projetes_periods is not None and len(flux_projetes_periods) > 0:
-        # Fallback: aggregated flux (when debug is not enabled)
-        flux_cols = [
-            'AN_EVAL', 'MOIS_EVAL',
-            'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
-            'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES',
-            'FRAIS_FIXES', 'HON_GEST', 'COMM_MAINTIEN',
-            'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
-            'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE',
-            'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT'
-        ]
-
-        flux_projetes_df = flux_projetes_periods.copy()
-        for key in ('AN_EVAL', 'MOIS_EVAL'):
-            if key not in flux_projetes_df.columns:
-                flux_projetes_df[key] = 0
-
-        for col in flux_cols:
-            if col not in flux_projetes_df.columns:
-                if col in ('AN_EVAL', 'MOIS_EVAL'):
-                    continue
-                flux_projetes_df[col] = 0.0
-
-        flux_projetes_df = flux_projetes_df[flux_cols]
-        flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
-        flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
-        print(f"✓ Saved FLUX_PROJETES_GPU.csv (aggregated)")
-        saved_files.append("FLUX_PROJETES_GPU.csv (aggregated external loop logs)")
     
     # 1b. Five Chocs Results
     if results_5chocs_df is not None:
@@ -1370,23 +1381,6 @@ def run_projection_gpu_nested(
                          rendements_int_path=rendements_int_path)
     print("✓ Data loaded successfully")
 
-    flux_projetes_periods = None
-    if 'rendements' in data and data['rendements'] is not None:
-        try:
-            flux_projetes_periods = (
-                data['rendements'][['AN_EVAL', 'MOIS_EVAL']]
-                .drop_duplicates()
-                .sort_values(['AN_EVAL', 'MOIS_EVAL'])
-                .reset_index(drop=True)
-            )
-            if not ((flux_projetes_periods['AN_EVAL'] == 0) & (flux_projetes_periods['MOIS_EVAL'] == 12)).any():
-                flux_projetes_periods = pd.concat(
-                    [pd.DataFrame([{'AN_EVAL': 0, 'MOIS_EVAL': 12}]), flux_projetes_periods],
-                    ignore_index=True,
-                ).sort_values(['AN_EVAL', 'MOIS_EVAL']).reset_index(drop=True)
-        except Exception:
-            flux_projetes_periods = None
-
     # Filter to single account if debug_only mode
     if debug_only and debug_account >= 0:
         # Find the account by ID (assuming there's an ID column like 'NO_COMPTE' or index)
@@ -1438,7 +1432,6 @@ def run_projection_gpu_nested(
     all_capital = []
     all_reserves_5chocs = []
     all_capital_5chocs = []
-    total_flux_agg = np.zeros((nb_an_projection + 1, 13, FLUX_COMP_IDX_SIZE), dtype=np.float64)
     ext_debug_result = None
     int_debug_result = None
     int_debug_ts_result = None
@@ -1488,9 +1481,6 @@ def run_projection_gpu_nested(
             int_debug_ts_result = batch_result['int_debug_ts']
         if batch_result.get('debug_flux') is not None:
             debug_flux_result = batch_result['debug_flux']
-
-        if batch_result.get('flux_agg') is not None:
-            total_flux_agg += batch_result['flux_agg']
         
         # Call progress callback if provided
         if progress_callback is not None:
@@ -1541,36 +1531,6 @@ def run_projection_gpu_nested(
             'int_year': debug_int_year,
         }
 
-    if flux_projetes_periods is not None and len(flux_projetes_periods) > 0:
-        denom = float(nb_ext_scenarios) if nb_ext_scenarios > 0 else 1.0
-        flux_projetes_periods = flux_projetes_periods.copy()
-        an_vals = flux_projetes_periods['AN_EVAL'].astype(np.int64).to_numpy()
-        mois_vals = flux_projetes_periods['MOIS_EVAL'].astype(np.int64).to_numpy()
-        an_vals = np.clip(an_vals, 0, total_flux_agg.shape[0] - 1)
-        mois_vals = np.clip(mois_vals, 0, total_flux_agg.shape[1] - 1)
-
-        def col(idx: int) -> np.ndarray:
-            return (total_flux_agg[an_vals, mois_vals, idx] / denom).astype(np.float64)
-
-        flux_projetes_periods['PRIMES_GARANTIES'] = col(FLUX_COMP_IDX_PRIMES_GARANTIES)
-        flux_projetes_periods['PREST_DECES'] = col(FLUX_COMP_IDX_PREST_DECES)
-        flux_projetes_periods['PREST_ECH'] = col(FLUX_COMP_IDX_PREST_ECH)
-        flux_projetes_periods['PREST_MRV'] = col(FLUX_COMP_IDX_PREST_MRV)
-        flux_projetes_periods['FRAIS_ACQUIS'] = col(FLUX_COMP_IDX_FRAIS_ACQUIS)
-        flux_projetes_periods['COMM_VENTE'] = col(FLUX_COMP_IDX_COMM_VENTE)
-        flux_projetes_periods['PRIMES_VARIABLES'] = col(FLUX_COMP_IDX_PRIMES_VARIABLES)
-        flux_projetes_periods['FRAIS_FIXES'] = col(FLUX_COMP_IDX_FRAIS_FIXES)
-        flux_projetes_periods['HON_GEST'] = col(FLUX_COMP_IDX_HON_GEST)
-        flux_projetes_periods['COMM_MAINTIEN'] = col(FLUX_COMP_IDX_COMM_MAINTIEN)
-        flux_projetes_periods['VALEUR_MARCHANDE'] = col(FLUX_COMP_IDX_VALEUR_MARCHANDE)
-        flux_projetes_periods['PASSIF_REDRESSE'] = col(FLUX_COMP_IDX_PASSIF_REDRESSE)
-        flux_projetes_periods['COUSSIN_CREDIT'] = col(FLUX_COMP_IDX_COUSSIN_CREDIT)
-        flux_projetes_periods['COUSSIN_MARCHE'] = col(FLUX_COMP_IDX_COUSSIN_MARCHE)
-        flux_projetes_periods['COUSSIN_DEPENSE'] = col(FLUX_COMP_IDX_COUSSIN_DEPENSE)
-        flux_projetes_periods['COUSSIN_DECHEANCE'] = col(FLUX_COMP_IDX_COUSSIN_DECHEANCE)
-        flux_projetes_periods['COUSSIN_MORTALITE'] = col(FLUX_COMP_IDX_COUSSIN_MORTALITE)
-        flux_projetes_periods['COUSSIN_DEPOT'] = col(FLUX_COMP_IDX_COUSSIN_DEPOT)
-
     int_debug_ts_df = None
     if enable_debug and int_debug_ts_result is not None:
         rows = []
@@ -1613,7 +1573,6 @@ def run_projection_gpu_nested(
         int_debug=int_debug_result,
         int_debug_ts_df=int_debug_ts_df,
         debug_params=debug_params,
-        flux_projetes_periods=flux_projetes_periods,
         population_ids=population_ids,
         debug_flux=debug_flux_result,
     )

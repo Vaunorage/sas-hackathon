@@ -69,6 +69,29 @@ from calculations.constants import (
     FLUX_COMP_IDX_COUSSIN_DECHEANCE,
     FLUX_COMP_IDX_COUSSIN_MORTALITE,
     FLUX_COMP_IDX_COUSSIN_DEPOT,
+    FLUX_COMP_IDX_MT_VM,
+    FLUX_COMP_IDX_MT_VM_AV_RETRAIT,
+    FLUX_COMP_IDX_MT_VM_AP_RETRAIT,
+    FLUX_COMP_IDX_AGE,
+    FLUX_COMP_IDX_QX,
+    FLUX_COMP_IDX_LAPSE_TOT,
+    FLUX_COMP_IDX_LAPSE_PART,
+    FLUX_COMP_IDX_TX_SURVIE,
+    FLUX_COMP_IDX_RETRAIT,
+    FLUX_COMP_IDX_DEPOT_FUTUR,
+    FLUX_COMP_IDX_MT_GAR_DECES,
+    FLUX_COMP_IDX_MT_GAR_ECH,
+    FLUX_COMP_IDX_MT_SRG,
+    FLUX_COMP_IDX_REND_SP500,
+    FLUX_COMP_IDX_REND_TSX,
+    FLUX_COMP_IDX_REND_EAFE,
+    FLUX_COMP_IDX_REND_DEX,
+    FLUX_COMP_IDX_REND_MM,
+    FLUX_COMP_IDX_MT_SP500,
+    FLUX_COMP_IDX_MT_TSX,
+    FLUX_COMP_IDX_MT_EAFE,
+    FLUX_COMP_IDX_MT_DEX,
+    FLUX_COMP_IDX_MT_MM,
 )
 
 @cuda.jit
@@ -85,7 +108,6 @@ def external_generator_kernel(
         coussins_lookups,    # CoussinsLookups: 16 arrays
         output_states,       # StatesTensor: (batch, scenarios, years, STATE_SIZE)
         output_cashflows,    # CashflowsTensor: (batch, scenarios, years, 1)
-        output_flux_agg,     # FluxAggTensor: (n_years+1, 13, FLUX_COMP_IDX_SIZE)
         debug_output=None,   # Optional: (EXT_DEBUG_SIZE,) - single row for filtered debug
         debug_flux_output=None,  # Optional: (n_years+1, freq_eval, FLUX_COMP_IDX_SIZE) - flux for debug account/scenario
         debug_account=-1,    # Account index to debug (-1 = disabled)
@@ -647,26 +669,6 @@ def external_generator_kernel(
             COUSSIN_MORTALITE = tx_mortalite_v * base_amt_mortalite * age_factor * TX_SURVIE
             COUSSIN_DEPOT = tx_depot_v * base_amt_depot * age_factor * TX_SURVIE
 
-            if output_flux_agg is not None and an_eval < output_flux_agg.shape[0] and mois_eval < output_flux_agg.shape[1]:
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PRIMES_GARANTIES), PRIMES_GARANTIES)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PREST_DECES), PREST_DECES)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PREST_ECH), PREST_ECH)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PREST_MRV), PREST_MRV)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_FRAIS_ACQUIS), frais_acquis)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COMM_VENTE), comm_vente)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PRIMES_VARIABLES), PRIMES_VARIABLES)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_FRAIS_FIXES), FRAIS_FIXES)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_HON_GEST), HON_GEST)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COMM_MAINTIEN), COMM_MAINTIEN)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_VALEUR_MARCHANDE), VALEUR_MARCHANDE)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_PASSIF_REDRESSE), PASSIF_REDRESSE)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_CREDIT), COUSSIN_CREDIT)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_MARCHE), COUSSIN_MARCHE)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_DEPENSE), COUSSIN_DEPENSE)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_DECHEANCE), COUSSIN_DECHEANCE)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_MORTALITE), COUSSIN_MORTALITE)
-                cuda.atomic.add(output_flux_agg, (an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_DEPOT), COUSSIN_DEPOT)
-
             # === SAVE DEBUG FLUX OUTPUT (for single account/scenario) ===
             if debug_flux_output is not None:
                 # Only capture flux for the debug account and scenario
@@ -675,6 +677,7 @@ def external_generator_kernel(
                     (debug_scenario < 0 or scenario_idx == debug_scenario)
                 )
                 if is_debug_acct_scn and an_eval < debug_flux_output.shape[0] and mois_eval < debug_flux_output.shape[1]:
+                    # Cashflow components
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_PRIMES_GARANTIES] = PRIMES_GARANTIES
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_PREST_DECES] = PREST_DECES
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_PREST_ECH] = PREST_ECH
@@ -693,6 +696,30 @@ def external_generator_kernel(
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_DECHEANCE] = COUSSIN_DECHEANCE
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_MORTALITE] = COUSSIN_MORTALITE
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_COUSSIN_DEPOT] = COUSSIN_DEPOT
+                    # Detailed calculation fields
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_VM] = MT_VM_PROJ
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_VM_AV_RETRAIT] = MT_VM_AV_RETRAIT
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_VM_AP_RETRAIT] = MT_VM_AP_RETRAIT
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_AGE] = float(age)
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_QX] = qx
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_LAPSE_TOT] = lapse
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_LAPSE_PART] = lapse_part
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_TX_SURVIE] = TX_SURVIE
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_RETRAIT] = RETRAIT
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_DEPOT_FUTUR] = depot_futur
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_GAR_DECES] = MT_GAR_DECES_PROJ
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_GAR_ECH] = MT_GAR_ECH_PROJ
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_SRG] = MT_SRG_PROJ
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_REND_SP500] = r_sp500
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_REND_TSX] = r_tsx
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_REND_EAFE] = r_eafe
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_REND_DEX] = r_dex
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_REND_MM] = r_mm
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_SP500] = MT_SP500_PROJ
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_TSX] = MT_TSX_PROJ
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_EAFE] = MT_EAFE_PROJ
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_DEX] = MT_DEX_PROJ
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_MM] = MT_MM_PROJ
 
             # === SAVE STATE TO GLOBAL MEMORY ===
             if an_eval < n_years and output_year_idx < output_states.shape[2]:
