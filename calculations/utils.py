@@ -580,7 +580,8 @@ def prepare_account_data(population_df: pd.DataFrame):
         population_df[col] = _coerce_numeric_series(population_df[col])
     population_df['ID_COMPTE'] = _coerce_numeric_series(population_df['ID_COMPTE'])
 
-    population_df[columns] = population_df[columns].fillna(0.0)
+    for col in columns:
+        population_df[col] = population_df[col].fillna(0.0)
     population_df['ID_COMPTE'] = population_df['ID_COMPTE'].fillna(0.0)
 
     account_data = population_df[columns].values.astype(np.float32)
