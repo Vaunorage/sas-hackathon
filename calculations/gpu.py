@@ -1706,7 +1706,7 @@ Examples:
         """
     )
 
-    parser.add_argument('--max-accounts', type=int, default=5,
+    parser.add_argument('--max-accounts', type=int, default=2,
                         help='Maximum number of accounts to process (for testing)')
     parser.add_argument('--years', type=int, default=100,
                         help='Number of years to project (default: 100)')
