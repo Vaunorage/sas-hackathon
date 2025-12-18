@@ -550,7 +550,7 @@ def prepare_account_data(population_df: pd.DataFrame):
             s2 = s2.str.replace(' ', '', regex=False)
             s2 = s2.str.replace("'", '', regex=False)
             has_dot = s2.str.contains('\.', regex=True)
-            comma_count = s2.str.count(',', regex=False)
+            comma_count = s2.str.count(',')
 
             both = has_dot & (comma_count > 0)
             if both.any():
