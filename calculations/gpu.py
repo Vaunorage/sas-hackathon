@@ -1620,7 +1620,7 @@ Examples:
         """
     )
 
-    parser.add_argument('--max-accounts', type=int, default=2000,
+    parser.add_argument('--max-accounts', type=int, default=5,
                         help='Maximum number of accounts to process (for testing)')
     parser.add_argument('--years', type=int, default=100,
                         help='Number of years to project (default: 100)')
@@ -1634,9 +1634,9 @@ Examples:
                         help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
     
     # Debug filter parameters
-    parser.add_argument('--debug-account', type=int, default=-1,
+    parser.add_argument('--debug-account', type=int, default=1,
                         help='Account index to debug (-1 = disabled)')
-    parser.add_argument('--debug-scenario', type=int, default=-1,
+    parser.add_argument('--debug-scenario', type=int, default=1,
                         help='External scenario index to debug (-1 = disabled)')
     parser.add_argument('--debug-year', type=int, default=-1,
                         help='Year (an_eval) to debug (-1 = disabled)')
