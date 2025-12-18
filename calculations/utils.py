@@ -78,8 +78,32 @@ class AccountIdx:
     MAX_BONI_DECES = 43
     I_FRAIS_SUR_SRG = 44
 
+    AJUSTEMENT_MENSUEL_GAR = 45
+    PC_GAR_DECES_2 = 46
+    AGE_CHANG_DECES = 47
+    FREQ_RESET_DECES = 48
+    MAX_RESET_DECES = 49
+    I_RESET_DECES_ECH = 50
+    NB_AN_ECH = 51
+    PC_RENOUV_ECH = 52
+    AGE_MAX_RENOUV_ECH = 53
+    MAX_RESET_FACUL_ECH = 54
+    RATIO_VM_VG_RESET_ECH = 55
+    AGE_MRV_PERMIS = 56
+    PC_BONI_SRG = 57
+    FREQ_RESET_SRG = 58
+    MAX_RESET_SRG = 59
+    TABLE_TAUX_MRV_MRG_MRA = 60
+    MT_TPA_RETRAIT = 61
+    M_MT_MRV_EXCEDENT = 62
+    MT_TPA_DEPOT = 63
+    VAR_RETRAIT_FCT = 64
+    PC_RETRAIT_AGE = 65
+    MT_RETRAIT_MAX = 66
+    I_RESET_FACUL_ECH = 67
+
     # Total number of fields
-    TOTAL_FIELDS = 45
+    TOTAL_FIELDS = 68
 
 
 def validate_account_data_structure(account_data_columns):
@@ -96,7 +120,15 @@ def validate_account_data_structure(account_data_columns):
         'PC_HONORAIRES_GEST', 'PC_FRAIS_GARANTIE', 'PC_GAR_DECES_1',
         'PC_BONI_DECES', 'PC_RFG', 'PC_REVENU_FDS', 'PC_GAR_ECH',
         'PC_GAR_ECH_DEP_FUT', 'AJUSTEMENT_COMMISSION', 'MT_RF', 'MT_VM',
-        'ANNEE_COTIS', 'MOIS_COTIS', 'MAX_BONI_DECES', 'I_FRAIS_SUR_SRG'
+        'ANNEE_COTIS', 'MOIS_COTIS', 'MAX_BONI_DECES', 'I_FRAIS_SUR_SRG',
+        'AJUSTEMENT_MENSUEL_GAR', 'PC_GAR_DECES_2', 'AGE_CHANG_DECES',
+        'FREQ_RESET_DECES', 'MAX_RESET_DECES', 'I_RESET_DECES_ECH',
+        'NB_AN_ECH', 'PC_RENOUV_ECH', 'AGE_MAX_RENOUV_ECH',
+        'MAX_RESET_FACUL_ECH', 'RATIO_VM_VG_RESET_ECH',
+        'AGE_MRV_PERMIS', 'PC_BONI_SRG', 'FREQ_RESET_SRG', 'MAX_RESET_SRG',
+        'TABLE_TAUX_MRV_MRG_MRA', 'MT_TPA_RETRAIT', 'M_MT_MRV_EXCEDENT',
+        'MT_TPA_DEPOT', 'VAR_RETRAIT_FCT', 'PC_RETRAIT_AGE', 'MT_RETRAIT_MAX',
+        'I_RESET_FACUL_ECH'
     ]
     
     if len(account_data_columns) != len(expected_columns):
@@ -430,7 +462,30 @@ def prepare_account_data(population_df):
         'ANNEE_COTIS',            # AccountIdx.ANNEE_COTIS = 41
         'MOIS_COTIS',             # AccountIdx.MOIS_COTIS = 42
         'MAX_BONI_DECES',         # AccountIdx.MAX_BONI_DECES = 43
-        'I_FRAIS_SUR_SRG'         # AccountIdx.I_FRAIS_SUR_SRG = 44
+        'I_FRAIS_SUR_SRG',        # AccountIdx.I_FRAIS_SUR_SRG = 44
+        'AJUSTEMENT_MENSUEL_GAR', # AccountIdx.AJUSTEMENT_MENSUEL_GAR = 45
+        'PC_GAR_DECES_2',         # AccountIdx.PC_GAR_DECES_2 = 46
+        'AGE_CHANG_DECES',        # AccountIdx.AGE_CHANG_DECES = 47
+        'FREQ_RESET_DECES',       # AccountIdx.FREQ_RESET_DECES = 48
+        'MAX_RESET_DECES',        # AccountIdx.MAX_RESET_DECES = 49
+        'I_RESET_DECES_ECH',      # AccountIdx.I_RESET_DECES_ECH = 50
+        'NB_AN_ECH',              # AccountIdx.NB_AN_ECH = 51
+        'PC_RENOUV_ECH',          # AccountIdx.PC_RENOUV_ECH = 52
+        'AGE_MAX_RENOUV_ECH',     # AccountIdx.AGE_MAX_RENOUV_ECH = 53
+        'MAX_RESET_FACUL_ECH',    # AccountIdx.MAX_RESET_FACUL_ECH = 54
+        'RATIO_VM_VG_RESET_ECH',  # AccountIdx.RATIO_VM_VG_RESET_ECH = 55
+        'AGE_MRV_PERMIS',         # AccountIdx.AGE_MRV_PERMIS = 56
+        'PC_BONI_SRG',            # AccountIdx.PC_BONI_SRG = 57
+        'FREQ_RESET_SRG',         # AccountIdx.FREQ_RESET_SRG = 58
+        'MAX_RESET_SRG',          # AccountIdx.MAX_RESET_SRG = 59
+        'TABLE_TAUX_MRV_MRG_MRA', # AccountIdx.TABLE_TAUX_MRV_MRG_MRA = 60
+        'MT_TPA_RETRAIT',         # AccountIdx.MT_TPA_RETRAIT = 61
+        'M_MT_MRV_EXCEDENT',      # AccountIdx.M_MT_MRV_EXCEDENT = 62
+        'MT_TPA_DEPOT',           # AccountIdx.MT_TPA_DEPOT = 63
+        'VAR_RETRAIT_FCT',        # AccountIdx.VAR_RETRAIT_FCT = 64
+        'PC_RETRAIT_AGE',         # AccountIdx.PC_RETRAIT_AGE = 65
+        'MT_RETRAIT_MAX',         # AccountIdx.MT_RETRAIT_MAX = 66
+        'I_RESET_FACUL_ECH',      # AccountIdx.I_RESET_FACUL_ECH = 67
     ]
 
     print(f"  Preparing account data with {len(columns)} fields...")
@@ -443,18 +498,47 @@ def prepare_account_data(population_df):
     for col in columns:
         if col not in population_df.columns:
             if col in ['MT_BCB', 'MT_BONI_DECES', 'MT_MRV_MRG_MRA', 'TAUX_MRV_MRG_MRA',
-                       'PC_BONI_DECES', 'PC_REVENU_FDS', 'MT_RF']:
+                       'PC_BONI_DECES', 'PC_REVENU_FDS', 'MT_RF', 'PC_BONI_SRG',
+                       'MT_TPA_RETRAIT', 'M_MT_MRV_EXCEDENT', 'MT_TPA_DEPOT']:
                 population_df[col] = 0.0
-            elif col in ['ANNEE_ECH', 'MAX_BONI_DECES']:
+            elif col in ['ANNEE_ECH', 'MAX_BONI_DECES', 'AGE_CHANG_DECES']:
                 population_df[col] = 9999
             elif col in ['MOIS_ECH']:
                 population_df[col] = 12
-            elif col in ['AJUSTEMENT_COMMISSION']:
+            elif col in ['AJUSTEMENT_COMMISSION', 'PC_RENOUV_ECH', 'PC_RETRAIT_AGE', 'RATIO_VM_VG_RESET_ECH']:
                 population_df[col] = 1.0
             elif col in ['ANNEE_COTIS']:
                 population_df[col] = population_df.get('ANNEE_EVALUATION_INI', 2020)
-            elif col in ['MOIS_COTIS', 'I_FRAIS_SUR_SRG']:
+            elif col in ['MOIS_COTIS', 'I_FRAIS_SUR_SRG', 'I_RESET_DECES_ECH', 'I_RESET_FACUL_ECH']:
                 population_df[col] = 0
+            elif col in ['AJUSTEMENT_MENSUEL_GAR']:
+                population_df[col] = 0.0
+            elif col in ['PC_GAR_DECES_2']:
+                population_df[col] = population_df.get('PC_GAR_DECES_1', 0.0)
+            elif col in ['FREQ_RESET_DECES']:
+                population_df[col] = 3
+            elif col in ['MAX_RESET_DECES']:
+                population_df[col] = 80
+            elif col in ['NB_AN_ECH']:
+                population_df[col] = 10
+            elif col in ['PC_RENOUV_ECH']:
+                population_df[col] = 1.0
+            elif col in ['AGE_MAX_RENOUV_ECH']:
+                population_df[col] = 999
+            elif col in ['MAX_RESET_FACUL_ECH']:
+                population_df[col] = 80
+            elif col in ['AGE_MRV_PERMIS']:
+                population_df[col] = 65
+            elif col in ['FREQ_RESET_SRG']:
+                population_df[col] = 3
+            elif col in ['MAX_RESET_SRG']:
+                population_df[col] = 80
+            elif col in ['TABLE_TAUX_MRV_MRG_MRA']:
+                population_df[col] = 1
+            elif col in ['VAR_RETRAIT_FCT']:
+                population_df[col] = 1
+            elif col in ['MT_RETRAIT_MAX']:
+                population_df[col] = 999999999.0
 
     # Validate the final column structure
     validate_account_data_structure(columns)

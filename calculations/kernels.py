@@ -29,11 +29,27 @@ from calculations.constants import (
     ACCOUNT_IDX_PC_GAR_ECH, ACCOUNT_IDX_PC_GAR_ECH_DEP_FUT,
     ACCOUNT_IDX_AJUSTEMENT_COMMISSION, ACCOUNT_IDX_MT_RF, ACCOUNT_IDX_I_FRAIS_SUR_SRG,
     ACCOUNT_IDX_MT_VM_ORIG, ACCOUNT_IDX_ANNEE_COTIS, ACCOUNT_IDX_MOIS_COTIS,
+    ACCOUNT_IDX_AJUSTEMENT_MENSUEL_GAR,
+    ACCOUNT_IDX_PC_GAR_DECES_2, ACCOUNT_IDX_AGE_CHANG_DECES,
+    ACCOUNT_IDX_FREQ_RESET_DECES, ACCOUNT_IDX_MAX_RESET_DECES,
+    ACCOUNT_IDX_I_RESET_DECES_ECH,
+    ACCOUNT_IDX_NB_AN_ECH, ACCOUNT_IDX_PC_RENOUV_ECH, ACCOUNT_IDX_AGE_MAX_RENOUV_ECH,
+    ACCOUNT_IDX_MAX_RESET_FACUL_ECH, ACCOUNT_IDX_RATIO_VM_VG_RESET_ECH,
+    ACCOUNT_IDX_AGE_MRV_PERMIS, ACCOUNT_IDX_PC_BONI_SRG,
+    ACCOUNT_IDX_FREQ_RESET_SRG, ACCOUNT_IDX_MAX_RESET_SRG,
+    ACCOUNT_IDX_TABLE_TAUX_MRV_MRG_MRA, ACCOUNT_IDX_MT_TPA_RETRAIT,
+    ACCOUNT_IDX_M_MT_MRV_EXCEDENT, ACCOUNT_IDX_MT_TPA_DEPOT,
+    ACCOUNT_IDX_VAR_RETRAIT_FCT, ACCOUNT_IDX_PC_RETRAIT_AGE,
+    ACCOUNT_IDX_MT_RETRAIT_MAX, ACCOUNT_IDX_I_RESET_FACUL_ECH,
     # State tensor indices (module-level constants for Numba)
     STATE_IDX_MT_VM, STATE_IDX_MT_GAR_DECES, STATE_IDX_MT_GAR_ECH,
     STATE_IDX_MT_SRG, STATE_IDX_AGE, STATE_IDX_TX_SURVIE,
     STATE_IDX_MT_DEX, STATE_IDX_MT_MM, STATE_IDX_MT_TSX,
     STATE_IDX_MT_SP500, STATE_IDX_MT_EAFE, STATE_IDX_MT_BONI_DECES,
+    STATE_IDX_MT_BCB, STATE_IDX_MT_MRV_MRG_MRA, STATE_IDX_TAUX_MRV_MRG_MRA,
+    STATE_IDX_ANNEE_ECH, STATE_IDX_MOIS_ECH,
+    STATE_IDX_TX_ACTUALISATION, STATE_IDX_ANNEE_REELLE, STATE_IDX_MOIS_EVAL,
+    STATE_IDX_PC_GAR_DECES_1,
     STATE_IDX_SIZE,
     # External debug indices (module-level constants for Numba)
     EXT_DEBUG_IDX_VM, EXT_DEBUG_IDX_AGE, EXT_DEBUG_IDX_QX,
@@ -207,13 +223,41 @@ def external_generator_kernel(
     MT_RF = acc[ACCOUNT_IDX_MT_RF]
     I_FRAIS_SUR_SRG = int(acc[ACCOUNT_IDX_I_FRAIS_SUR_SRG])
 
+    MAX_BONI_DECES = int(acc[ACCOUNT_IDX_MAX_BONI_DECES])
+
+    AJUSTEMENT_MENSUEL_GAR = acc[ACCOUNT_IDX_AJUSTEMENT_MENSUEL_GAR]
+    PC_GAR_DECES_2 = acc[ACCOUNT_IDX_PC_GAR_DECES_2]
+    AGE_CHANG_DECES = int(acc[ACCOUNT_IDX_AGE_CHANG_DECES])
+    FREQ_RESET_DECES = int(acc[ACCOUNT_IDX_FREQ_RESET_DECES])
+    MAX_RESET_DECES = int(acc[ACCOUNT_IDX_MAX_RESET_DECES])
+    I_RESET_DECES_ECH = int(acc[ACCOUNT_IDX_I_RESET_DECES_ECH])
+    NB_AN_ECH = int(acc[ACCOUNT_IDX_NB_AN_ECH])
+    PC_RENOUV_ECH = acc[ACCOUNT_IDX_PC_RENOUV_ECH]
+    AGE_MAX_RENOUV_ECH = int(acc[ACCOUNT_IDX_AGE_MAX_RENOUV_ECH])
+    MAX_RESET_FACUL_ECH = int(acc[ACCOUNT_IDX_MAX_RESET_FACUL_ECH])
+    RATIO_VM_VG_RESET_ECH = acc[ACCOUNT_IDX_RATIO_VM_VG_RESET_ECH]
+    AGE_MRV_PERMIS = int(acc[ACCOUNT_IDX_AGE_MRV_PERMIS])
+    PC_BONI_SRG = acc[ACCOUNT_IDX_PC_BONI_SRG]
+    FREQ_RESET_SRG = int(acc[ACCOUNT_IDX_FREQ_RESET_SRG])
+    MAX_RESET_SRG = int(acc[ACCOUNT_IDX_MAX_RESET_SRG])
+    TABLE_TAUX_MRV_MRG_MRA = int(acc[ACCOUNT_IDX_TABLE_TAUX_MRV_MRG_MRA])
+    MT_TPA_RETRAIT = acc[ACCOUNT_IDX_MT_TPA_RETRAIT]
+    M_MT_MRV_EXCEDENT = acc[ACCOUNT_IDX_M_MT_MRV_EXCEDENT]
+    MT_TPA_DEPOT = acc[ACCOUNT_IDX_MT_TPA_DEPOT]
+    VAR_RETRAIT_FCT = int(acc[ACCOUNT_IDX_VAR_RETRAIT_FCT])
+    PC_RETRAIT_AGE = acc[ACCOUNT_IDX_PC_RETRAIT_AGE]
+    MT_RETRAIT_MAX = acc[ACCOUNT_IDX_MT_RETRAIT_MAX]
+    I_RESET_FACUL_ECH = int(acc[ACCOUNT_IDX_I_RESET_FACUL_ECH])
+
     ANNEE_COTIS = int(acc[ACCOUNT_IDX_ANNEE_COTIS]) if acc[ACCOUNT_IDX_ANNEE_COTIS] > 0 else ANNEE_EVALUATION_INI
     MOIS_COTIS = int(acc[ACCOUNT_IDX_MOIS_COTIS]) if acc[ACCOUNT_IDX_MOIS_COTIS] > 0 else 1
+
+    ANNEE_ECH_PROJ = int(acc[ACCOUNT_IDX_ANNEE_ECH])
+    MOIS_ECH_PROJ = int(acc[ACCOUNT_IDX_MOIS_ECH])
 
     # Scenario-specific processing
     scn_eval = scenario_idx + 1
 
-    output_year_idx = 0
     AJUST_NOUV_AFFAIRES = 1.0
 
     # TIME LOOP - External Projection
@@ -417,18 +461,82 @@ def external_generator_kernel(
             if (an_eval == 1 and mois_eval == MOIS_EVALUATION_INI) or mois_eval == 12 // freq_eval:
                 MT_MIN_FERR_PROJ = MT_VM_PROJ * min_ferr_rate
 
+            if PC_BONI_DECES > 0.0 and age < MAX_BONI_DECES:
+                MT_BONI_DECES_PROJ = MT_BONI_DECES_PROJ + (MT_GAR_DECES_PROJ * PC_BONI_DECES / freq_eval * AJUST_NOUV_AFFAIRES)
+            else:
+                MT_BONI_DECES_PROJ = 0.0
+
             # Calculate retirement age (SAS line 442)
             AGE_RETRAIT = age + 1
 
+            if I_PRODUIT_REGR == 1:
+                base_amount = MT_SRG_PROJ if TABLE_TAUX_MRV_MRG_MRA == 1 else MT_VM_PROJ
+                if AGE_RETRAIT < AGE_MRV_PERMIS and base_amount == 0.0:
+                    MT_MRV_MRG_MRA_PROJ = 0.0
+
+                if mois_eval == 12 // freq_eval:
+                    if TABLE_TAUX_MRV_MRG_MRA == 2:
+                        max_age_start = AGE_MRV_PERMIS if AGE_MRV_PERMIS > AGE_DECAISSEMENT else AGE_DECAISSEMENT
+                        should_reinit = (AGE_RETRAIT == max_age_start or (MT_SRG_PROJ == MT_VM_PROJ and MT_VM_PROJ != 0.0))
+                        if should_reinit:
+                            if AGE_RETRAIT < 60:
+                                TAUX_MRV_MRG_MRA_PROJ = 0.03
+                            elif AGE_RETRAIT < 65:
+                                TAUX_MRV_MRG_MRA_PROJ = 0.035
+                            elif AGE_RETRAIT < 70:
+                                TAUX_MRV_MRG_MRA_PROJ = 0.04
+                            elif AGE_RETRAIT < 75:
+                                TAUX_MRV_MRG_MRA_PROJ = 0.0425
+                            else:
+                                TAUX_MRV_MRG_MRA_PROJ = 0.05
+                            MT_MRV_MRG_MRA_PROJ = TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ
+                        else:
+                            tmp_mrv = TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ
+                            if tmp_mrv > MT_MRV_MRG_MRA_PROJ:
+                                MT_MRV_MRG_MRA_PROJ = tmp_mrv
+                    else:
+                        if AGE_RETRAIT == AGE_MRV_PERMIS:
+                            MT_MRV_MRG_MRA_PROJ = TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ
+                        else:
+                            tmp_mrv = TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ
+                            if tmp_mrv > MT_MRV_MRG_MRA_PROJ:
+                                MT_MRV_MRG_MRA_PROJ = tmp_mrv
+
+                    if (M_MT_MRV_EXCEDENT > 1.0 and
+                            MOIS_EVALUATION_INI != 12 // freq_eval and
+                            an_eval == 2 and
+                            mois_eval == 12 // freq_eval):
+                        base_excedent = MT_SRG_PROJ if MT_SRG_PROJ > MT_VM_PROJ else MT_VM_PROJ
+                        tmp_mrv = TAUX_MRV_MRG_MRA_PROJ * base_excedent
+                        if tmp_mrv < MT_MRV_MRG_MRA_PROJ:
+                            MT_MRV_MRG_MRA_PROJ = tmp_mrv
+
             # Withdrawals calculation (SAS lines 498-507)
             RETRAIT = 0.0
-            if (AGE_RETRAIT >= AGE_DECAISSEMENT and
-                not (AGE_RETRAIT == AGE_DECAISSEMENT and mois_eval >= MOIS_NAIS) and
-                not (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)):
+            if not (
+                AGE_RETRAIT < AGE_DECAISSEMENT or
+                (AGE_RETRAIT == AGE_DECAISSEMENT and mois_eval >= MOIS_NAIS) or
+                (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)
+            ):
+                if VAR_RETRAIT_FCT == 1:
+                    RETRAIT = MT_TPA_RETRAIT if MT_TPA_RETRAIT > 0.0 else MT_VM_PROJ * PC_RETRAIT_AGE
+                elif VAR_RETRAIT_FCT == 2:
+                    if MT_TPA_RETRAIT > MT_MIN_FERR_PROJ:
+                        RETRAIT = MT_TPA_RETRAIT
+                    else:
+                        pc_ra = PC_RETRAIT_AGE
+                        if pc_ra < 1.0:
+                            pc_ra = 1.0
+                        RETRAIT = MT_MIN_FERR_PROJ * pc_ra
+                elif VAR_RETRAIT_FCT == 3:
+                    base_mrv = MT_MRV_MRG_MRA_PROJ if MT_MRV_MRG_MRA_PROJ > MT_MIN_FERR_PROJ else MT_MIN_FERR_PROJ
+                    RETRAIT = base_mrv * PC_RETRAIT_AGE
+                else:
+                    RETRAIT = 0.0
 
-                # Simplified withdrawal calculation - use FERR minimum
-                RETRAIT = MT_MIN_FERR_PROJ
-                RETRAIT = min(RETRAIT, MAX_WITHDRAWAL) / freq_eval  # Monthly basis
+                if RETRAIT > MT_RETRAIT_MAX and MT_RETRAIT_MAX > 0.0:
+                    RETRAIT = MT_RETRAIT_MAX
+                RETRAIT = RETRAIT / freq_eval
 
             # Apply withdrawals to guarantees and VM (SAS lines 564-577)
             if MT_VM_AV_RETRAIT <= RETRAIT:
@@ -472,8 +580,12 @@ def external_generator_kernel(
                 (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)):
                 depot_futur = 0.0
             else:
-                base_depot_calc = MT_VM_PROJ if var_depot_fct == 1 else (acc[ACCOUNT_IDX_MT_GAR_DECES] / max(PC_GAR_DECES_1, MIN_GUARANTEE_VALUE))
-                depot_futur = base_depot_calc * pc_depot_annuel / freq_eval
+                if MT_TPA_DEPOT > 0.0:
+                    depot_futur = MT_TPA_DEPOT
+                else:
+                    base_depot_calc = MT_VM_PROJ if var_depot_fct == 1 else (acc[ACCOUNT_IDX_MT_GAR_DECES] / max(PC_GAR_DECES_1, MIN_GUARANTEE_VALUE))
+                    depot_futur = base_depot_calc * pc_depot_annuel
+                depot_futur = depot_futur / freq_eval
 
             if depot_futur > 0.0 and MT_VM_PROJ > 0.0:
                 MT_DEX_PROJ += depot_futur * (MT_DEX_PROJ / MT_VM_PROJ)
@@ -497,7 +609,7 @@ def external_generator_kernel(
 
             PREST_ECH = 0.0
             maturity_occurs = False
-            if annee_reelle == int(acc[ACCOUNT_IDX_ANNEE_ECH]) and mois_eval == int(acc[ACCOUNT_IDX_MOIS_ECH]):
+            if annee_reelle == ANNEE_ECH_PROJ and mois_eval == MOIS_ECH_PROJ:
                 maturity_occurs = True
             else:
                 target_month = 12 if MOIS_NAIS == int(12 // freq_eval) else (MOIS_NAIS - int(12 // freq_eval))
@@ -505,13 +617,79 @@ def external_generator_kernel(
                     maturity_occurs = True
 
             if maturity_occurs:
-                diff_ech = MT_GAR_ECH_PROJ - MT_VM_PROJ
+                diff_ech = MT_GAR_ECH_PROJ - MT_VM_AP_RETRAIT
                 PREST_ECH = -diff_ech * TX_SURVIE if diff_ech > 0 else 0.0
+                ANNEE_ECH_PROJ = ANNEE_ECH_PROJ + NB_AN_ECH
+                MOIS_ECH_PROJ = mois_eval
                 if diff_ech > 0:
-                    MT_VM_PROJ = MT_VM_PROJ + diff_ech
-                    MT_GAR_ECH_PROJ = MT_VM_PROJ * PC_GAR_ECH
+                    MT_VM_PROJ = MT_VM_AP_RETRAIT + diff_ech
+                else:
+                    MT_VM_PROJ = MT_VM_AP_RETRAIT
+                MT_GAR_ECH_PROJ = MT_VM_PROJ * PC_GAR_ECH
+                if I_RESET_DECES_ECH == 1:
+                    MT_GAR_DECES_PROJ = MT_VM_PROJ * PC_GAR_DECES_1
+                pc_renouv = PC_RENOUV_ECH
+                if age > AGE_MAX_RENOUV_ECH:
+                    pc_renouv = 0.0
+                TX_SURVIE = TX_SURVIE * pc_renouv
 
             # Portfolio rebalance (SAS lines 678-682)
+            MT_GAR_DECES_PROJ = MT_GAR_DECES_PROJ - AJUSTEMENT_MENSUEL_GAR * 12.0 / freq_eval
+
+            if I_PRODUIT_REGR == 1:
+                if (age < MAX_RESET_SRG and
+                        MT_SRG_PROJ < MT_VM_PROJ and
+                        annee_reelle > ANNEE_COTIS and
+                        FREQ_RESET_SRG > 0):
+                    years_since_issue = annee_reelle - ANNEE_COTIS
+                    if int(years_since_issue / FREQ_RESET_SRG) == years_since_issue / FREQ_RESET_SRG and mois_eval == MOIS_COTIS:
+                        MT_SRG_PROJ = MT_VM_PROJ
+                        if MT_VM_PROJ > MT_BCB_PROJ:
+                            MT_BCB_PROJ = MT_VM_PROJ
+
+                if age < AGE_DECAISSEMENT and mois_eval == 12:
+                    MT_SRG_PROJ = MT_SRG_PROJ + PC_BONI_SRG * MT_BCB_PROJ
+
+            if (age < MAX_RESET_DECES and
+                    (MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ) < (MT_VM_PROJ * PC_GAR_DECES_1) and
+                    annee_reelle > ANNEE_COTIS):
+                should_reset = False
+                if FREQ_RESET_DECES > 0:
+                    years_since_issue = annee_reelle - ANNEE_COTIS
+                    if int(years_since_issue / FREQ_RESET_DECES) == years_since_issue / FREQ_RESET_DECES and mois_eval == MOIS_COTIS:
+                        should_reset = True
+
+                target_month = 12 if MOIS_NAIS == int(12 // freq_eval) else (MOIS_NAIS - int(12 // freq_eval))
+                if age == MAX_RESET_DECES - 1 and mois_eval == target_month:
+                    should_reset = True
+
+                if should_reset:
+                    MT_GAR_DECES_PROJ = MT_VM_PROJ * PC_GAR_DECES_1
+                    MT_BONI_DECES_PROJ = 0.0
+
+            if mois_eval == 6 or mois_eval == 12:
+                if (I_RESET_FACUL_ECH == 1 and
+                        age <= MAX_RESET_FACUL_ECH and
+                        MT_GAR_ECH_PROJ > 0.0 and
+                        (MT_VM_PROJ * PC_GAR_ECH) >= RATIO_VM_VG_RESET_ECH * MT_GAR_ECH_PROJ):
+                    tmp_gar = MT_VM_PROJ * PC_GAR_ECH
+                    if tmp_gar > MT_GAR_ECH_PROJ:
+                        MT_GAR_ECH_PROJ = tmp_gar
+
+                    tmp_annee = annee_reelle + NB_AN_ECH
+                    min_annee = ANNEE_NAIS + AGE_ECH_MIN
+                    ANNEE_ECH_PROJ = tmp_annee if tmp_annee > min_annee else min_annee
+                    if ANNEE_ECH_PROJ == min_annee:
+                        MOIS_ECH_PROJ = MOIS_NAIS
+                    else:
+                        MOIS_ECH_PROJ = mois_eval
+
+            target_month = 12 if MOIS_NAIS == int(12 // freq_eval) else (MOIS_NAIS - int(12 // freq_eval))
+            if age == AGE_CHANG_DECES - 1 and mois_eval == target_month:
+                if PC_GAR_DECES_1 != 0.0:
+                    MT_GAR_DECES_PROJ = MT_GAR_DECES_PROJ * PC_GAR_DECES_2 / PC_GAR_DECES_1
+                PC_GAR_DECES_1 = PC_GAR_DECES_2
+
             if MT_VM_ORIG > 0 and MT_VM_PROJ > 0:
                 orig_total = (acc[ACCOUNT_IDX_MT_SP500] + acc[ACCOUNT_IDX_MT_TSX] +
                              acc[ACCOUNT_IDX_MT_EAFE] + acc[ACCOUNT_IDX_MT_DEX] +
@@ -702,8 +880,8 @@ def external_generator_kernel(
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_VM_AP_RETRAIT] = MT_VM_AP_RETRAIT
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_AGE] = float(age)
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_QX] = qx
-                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_LAPSE_TOT] = lapse
-                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_LAPSE_PART] = lapse_part
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_LAPSE_TOT] = LAPSE_TOT
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_LAPSE_PART] = LAPSE_PART
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_TX_SURVIE] = TX_SURVIE
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_RETRAIT] = RETRAIT
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_DEPOT_FUTUR] = depot_futur
@@ -722,19 +900,30 @@ def external_generator_kernel(
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_MM] = MT_MM_PROJ
 
             # === SAVE STATE TO GLOBAL MEMORY ===
-            if an_eval < n_years and output_year_idx < output_states.shape[2]:
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_VM] = MT_VM_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_GAR_DECES] = MT_GAR_DECES_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_GAR_ECH] = MT_GAR_ECH_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_SRG] = MT_SRG_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_AGE] = float(age)
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_TX_SURVIE] = TX_SURVIE
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_DEX] = MT_DEX_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_MM] = MT_MM_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_TSX] = MT_TSX_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_SP500] = MT_SP500_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_EAFE] = MT_EAFE_PROJ
-                output_states[account_idx, scenario_idx, output_year_idx, STATE_IDX_MT_BONI_DECES] = MT_BONI_DECES_PROJ
+            if mois_eval == 12 and an_eval >= 1 and an_eval <= n_years:
+                out_idx = an_eval - 1
+                if out_idx < output_states.shape[2]:
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_VM] = MT_VM_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_GAR_DECES] = MT_GAR_DECES_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_GAR_ECH] = MT_GAR_ECH_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_SRG] = MT_SRG_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_AGE] = float(age)
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_TX_SURVIE] = TX_SURVIE
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_DEX] = MT_DEX_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_MM] = MT_MM_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_TSX] = MT_TSX_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_SP500] = MT_SP500_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_EAFE] = MT_EAFE_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_BONI_DECES] = MT_BONI_DECES_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_BCB] = MT_BCB_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_MRV_MRG_MRA] = MT_MRV_MRG_MRA_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_TAUX_MRV_MRG_MRA] = TAUX_MRV_MRG_MRA_PROJ
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_ANNEE_ECH] = float(ANNEE_ECH_PROJ)
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MOIS_ECH] = float(MOIS_ECH_PROJ)
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_TX_ACTUALISATION] = TX_ACTUALISATION
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_ANNEE_REELLE] = float(annee_reelle)
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MOIS_EVAL] = float(mois_eval)
+                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_PC_GAR_DECES_1] = PC_GAR_DECES_1
 
                 # Calculate external scenario cashflows for reporting
                 # Management fee revenue
@@ -748,7 +937,7 @@ def external_generator_kernel(
 
                 # Net cashflow for external scenario
                 flux_net = hon_gest_ext + vp_primes_garanties + vp_prest_deces
-                output_cashflows[account_idx, scenario_idx, output_year_idx, 0] = flux_net
+                output_cashflows[account_idx, scenario_idx, out_idx, 0] = flux_net
 
                 # === SAVE DEBUG OUTPUT (only if filter matches) ===
                 if debug_output is not None:
@@ -776,7 +965,6 @@ def external_generator_kernel(
                         debug_output[EXT_DEBUG_IDX_PRIMES_GARANTIES] = PRIMES_GARANTIES
                         debug_output[EXT_DEBUG_IDX_VM_VG_RATIO] = VM_VG_RATIO
 
-                output_year_idx += 1
 
 
 @cuda.jit
@@ -787,6 +975,9 @@ def nested_valuation_kernel_five_chocs(
         n_internal_years,    # int
         rn_returns_lookups,  # RNReturnsLookups: 6 arrays
         mortality_lookup,    # MortalityLookup: (sex, age, year, product)
+        lapse_lookups,       # LapseLookups: 6 arrays
+        policy_lookups,      # PolicyLookups: 5 arrays
+        commission_lookups,  # CommissionLookups: 6 arrays
         output_metrics,      # MetricsTensor: (batch, ext_scenarios, years, NUM_CHOCS, 2)
         debug_output=None,   # Optional: (NUM_CHOCS, INT_DEBUG_SIZE) - one row per choc for filtered debug
         debug_ts_output=None,  # Optional: (NUM_CHOCS, n_internal_years, INT_TS_DEBUG_IDX_SIZE) - time series for filtered debug
@@ -795,6 +986,7 @@ def nested_valuation_kernel_five_chocs(
         debug_account=-1,       # Account index to debug (-1 = disabled)
         debug_ext_scenario=-1,  # External scenario to debug (-1 = disabled)
         debug_ext_year=-1,      # External year to debug (-1 = disabled)
+        shock_capital_pct=0.35,
 ):
     """
     KERNEL B: NESTED VALUATOR WITH 5 CHOCS
@@ -819,6 +1011,11 @@ def nested_valuation_kernel_five_chocs(
     """
     # Unpack risk-neutral returns tuple (7 arrays)
     rn_forward_rate, rn_ajust_forward, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe = rn_returns_lookups
+
+    # Unpack lookups
+    min_ferr_lookup, lapse_part_min, lapse_part_max, lapse_tot_min, lapse_tot_max, lapse_tot_fact = lapse_lookups
+    deposits_pc, deposits_var, deposits_age_max, deposits_i_even, fees_lookup = policy_lookups
+    acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf = commission_lookups
 
     # Thread setup - one thread per external node
     global_idx = cuda.grid(1)
@@ -850,6 +1047,15 @@ def nested_valuation_kernel_five_chocs(
     start_mt_sp500 = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_SP500]
     start_mt_eafe = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_EAFE]
     start_boni_deces = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_BONI_DECES]
+    start_bcb = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_BCB]
+    start_mrv = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MT_MRV_MRG_MRA]
+    start_taux_mrv = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_TAUX_MRV_MRG_MRA]
+    start_annee_ech = int(input_states[acc_idx, scn_idx, year_idx, STATE_IDX_ANNEE_ECH])
+    start_mois_ech = int(input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MOIS_ECH])
+    start_tx_actualisation = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_TX_ACTUALISATION]
+    start_annee_reelle = int(input_states[acc_idx, scn_idx, year_idx, STATE_IDX_ANNEE_REELLE])
+    start_mois_eval = int(input_states[acc_idx, scn_idx, year_idx, STATE_IDX_MOIS_EVAL])
+    start_pc_gar_deces_1 = input_states[acc_idx, scn_idx, year_idx, STATE_IDX_PC_GAR_DECES_1]
 
     # Check if policy is active
     if start_vm <= 0 or start_tx_survie <= 0:
@@ -861,8 +1067,54 @@ def nested_valuation_kernel_five_chocs(
 
     # Load account parameters using module-level constants
     acc = account_data[acc_idx]
+    ANNEE_NAIS = int(acc[ACCOUNT_IDX_ANNEE_NAIS])
+    MOIS_NAIS = int(acc[ACCOUNT_IDX_MOIS_NAIS])
+    I_SEXE = int(acc[ACCOUNT_IDX_I_SEXE])
+    I_PRODUIT_REGR = int(acc[ACCOUNT_IDX_I_PRODUIT_REGR])
+    ID_PRODUIT = int(acc[ACCOUNT_IDX_ID_PRODUIT])
+    ID_LAPSE = int(acc[ACCOUNT_IDX_ID_LAPSE])
+    I_REGIME_2 = int(acc[ACCOUNT_IDX_I_REGIME_2])
+    ID_DEPOT = int(acc[ACCOUNT_IDX_ID_DEPOT])
+    ID_ACQUI = int(acc[ACCOUNT_IDX_ID_ACQUI])
+    AGE_ECH_MIN = int(acc[ACCOUNT_IDX_AGE_ECH_MIN])
+    AGE_FIN_CONTRAT = int(acc[ACCOUNT_IDX_AGE_FIN_CONTRAT])
+    AGE_DECAISSEMENT = int(acc[ACCOUNT_IDX_AGE_DECAISSEMENT])
+    PC_HONORAIRES_GEST = acc[ACCOUNT_IDX_PC_HONORAIRES_GEST]
+    PC_FRAIS_GARANTIE = acc[ACCOUNT_IDX_PC_FRAIS_GARANTIE]
     PC_RFG = acc[ACCOUNT_IDX_PC_RFG]
-    FREQ_EVAL = DEFAULT_FREQ_EVAL
+    PC_REVENU_FDS = acc[ACCOUNT_IDX_PC_REVENU_FDS]
+    PC_GAR_ECH = acc[ACCOUNT_IDX_PC_GAR_ECH]
+    PC_GAR_ECH_DEP_FUT = acc[ACCOUNT_IDX_PC_GAR_ECH_DEP_FUT]
+    AJUSTEMENT_COMMISSION = acc[ACCOUNT_IDX_AJUSTEMENT_COMMISSION]
+    MT_RF = acc[ACCOUNT_IDX_MT_RF]
+    I_FRAIS_SUR_SRG = int(acc[ACCOUNT_IDX_I_FRAIS_SUR_SRG])
+    ANNEE_COTIS = int(acc[ACCOUNT_IDX_ANNEE_COTIS]) if acc[ACCOUNT_IDX_ANNEE_COTIS] > 0 else start_annee_reelle
+    MOIS_COTIS = int(acc[ACCOUNT_IDX_MOIS_COTIS]) if acc[ACCOUNT_IDX_MOIS_COTIS] > 0 else 1
+    AJUSTEMENT_MENSUEL_GAR = acc[ACCOUNT_IDX_AJUSTEMENT_MENSUEL_GAR]
+    PC_GAR_DECES_2 = acc[ACCOUNT_IDX_PC_GAR_DECES_2]
+    AGE_CHANG_DECES = int(acc[ACCOUNT_IDX_AGE_CHANG_DECES])
+    FREQ_RESET_DECES = int(acc[ACCOUNT_IDX_FREQ_RESET_DECES])
+    MAX_RESET_DECES = int(acc[ACCOUNT_IDX_MAX_RESET_DECES])
+    I_RESET_DECES_ECH = int(acc[ACCOUNT_IDX_I_RESET_DECES_ECH])
+    NB_AN_ECH = int(acc[ACCOUNT_IDX_NB_AN_ECH])
+    PC_RENOUV_ECH = acc[ACCOUNT_IDX_PC_RENOUV_ECH]
+    AGE_MAX_RENOUV_ECH = int(acc[ACCOUNT_IDX_AGE_MAX_RENOUV_ECH])
+    MAX_RESET_FACUL_ECH = int(acc[ACCOUNT_IDX_MAX_RESET_FACUL_ECH])
+    RATIO_VM_VG_RESET_ECH = acc[ACCOUNT_IDX_RATIO_VM_VG_RESET_ECH]
+    AGE_MRV_PERMIS = int(acc[ACCOUNT_IDX_AGE_MRV_PERMIS])
+    PC_BONI_SRG = acc[ACCOUNT_IDX_PC_BONI_SRG]
+    FREQ_RESET_SRG = int(acc[ACCOUNT_IDX_FREQ_RESET_SRG])
+    MAX_RESET_SRG = int(acc[ACCOUNT_IDX_MAX_RESET_SRG])
+    TABLE_TAUX_MRV_MRG_MRA = int(acc[ACCOUNT_IDX_TABLE_TAUX_MRV_MRG_MRA])
+    MT_TPA_RETRAIT = acc[ACCOUNT_IDX_MT_TPA_RETRAIT]
+    M_MT_MRV_EXCEDENT = acc[ACCOUNT_IDX_M_MT_MRV_EXCEDENT]
+    MT_TPA_DEPOT = acc[ACCOUNT_IDX_MT_TPA_DEPOT]
+    VAR_RETRAIT_FCT = int(acc[ACCOUNT_IDX_VAR_RETRAIT_FCT])
+    PC_RETRAIT_AGE = acc[ACCOUNT_IDX_PC_RETRAIT_AGE]
+    MT_RETRAIT_MAX = acc[ACCOUNT_IDX_MT_RETRAIT_MAX]
+    I_RESET_FACUL_ECH = int(acc[ACCOUNT_IDX_I_RESET_FACUL_ECH])
+
+    FREQ_EVAL_INT = 1.0
 
     # ===========================================
     # LOOP THROUGH ALL 5 CHOCS
@@ -926,7 +1178,8 @@ def nested_valuation_kernel_five_chocs(
         # INTERNAL SCENARIOS FOR THIS CHOC
         # =====================================
 
-        sum_pv_flux_choc = 0.0
+        sum_pv_reserve_choc = 0.0
+        sum_pv_capital_choc = 0.0
         
         # Variables to capture debug values at specific internal iteration
         debug_curr_vm = 0.0
@@ -936,105 +1189,537 @@ def nested_valuation_kernel_five_chocs(
         debug_fwd_rate = 0.0
 
         # Pre-compute fee factor (constant across iterations)
-        fee_factor = 1.0 - (PC_RFG / FREQ_EVAL)
-        fee_rate = PC_RFG / FREQ_EVAL
+        fee_factor = 1.0 - (PC_RFG / FREQ_EVAL_INT)
+        fee_rate = PC_RFG / FREQ_EVAL_INT
 
         for i_int in range(n_internal_scenarios):
-            # Track individual asset values through internal projection
-            curr_mt_dex = mt_dex_choc
-            curr_mt_mm = mt_mm_choc
-            curr_mt_tsx = mt_tsx_choc
-            curr_mt_sp500 = mt_sp500_choc
-            curr_mt_eafe = mt_eafe_choc
-            curr_vm = vm_choc_start
-            pv_path = 0.0
-
-            # Map internal scenario to available scenarios (wrap if needed)
             scn_idx_int = i_int % n_scn_avail if n_scn_avail > 0 else 0
 
-            for t_int in range(n_internal_years):
-                if curr_vm <= 0:
-                    break
+            pv_reserve = 0.0
+            pv_capital = 0.0
 
-                # Map internal year to available years (wrap if needed)
-                t_idx_int = t_int % n_yr_avail if n_yr_avail > 0 else 0
+            for do_capital in range(2):
+                curr_mt_dex = mt_dex_choc
+                curr_mt_mm = mt_mm_choc
+                curr_mt_tsx = mt_tsx_choc
+                curr_mt_sp500 = mt_sp500_choc
+                curr_mt_eafe = mt_eafe_choc
 
-                # Get risk-neutral returns for each asset class from RENDEMENTS_INT
-                if n_scn_avail > 0 and n_yr_avail > 0:
-                    r_dex = rn_rend_dex[scn_idx_int, t_idx_int]
-                    r_mm = rn_rend_mm[scn_idx_int, t_idx_int]
-                    r_tsx = rn_rend_tsx[scn_idx_int, t_idx_int]
-                    r_sp500 = rn_rend_sp500[scn_idx_int, t_idx_int]
-                    r_eafe = rn_rend_eafe[scn_idx_int, t_idx_int]
-                    fwd = rn_forward_rate[scn_idx_int, t_idx_int]
-                else:
-                    r_dex = DEFAULT_RETURN_RATE
-                    r_mm = DEFAULT_RETURN_RATE
-                    r_tsx = DEFAULT_RETURN_RATE
-                    r_sp500 = DEFAULT_RETURN_RATE
-                    r_eafe = DEFAULT_RETURN_RATE
-                    fwd = DEFAULT_FORWARD_RATE
+                if do_capital == 1 and shock_capital_pct > 0.0:
+                    shock_factor = 1.0 - shock_capital_pct
+                    curr_mt_dex = curr_mt_dex * shock_factor
+                    curr_mt_mm = curr_mt_mm * shock_factor
+                    curr_mt_tsx = curr_mt_tsx * shock_factor
+                    curr_mt_sp500 = curr_mt_sp500 * shock_factor
+                    curr_mt_eafe = curr_mt_eafe * shock_factor
 
-                # Apply returns to each asset class separately
-                curr_mt_dex *= math.exp(r_dex)
-                curr_mt_mm *= math.exp(r_mm)
-                curr_mt_tsx *= math.exp(r_tsx)
-                curr_mt_sp500 *= math.exp(r_sp500)
-                curr_mt_eafe *= math.exp(r_eafe)
-
-                # Recalculate total VM from individual assets
                 curr_vm = curr_mt_dex + curr_mt_mm + curr_mt_tsx + curr_mt_sp500 + curr_mt_eafe
+                pv_path = 0.0
+                tx_actu = start_tx_actualisation
+                TX_SURVIE = start_tx_survie
 
-                # Apply fees
-                fees = curr_vm * fee_rate
-                curr_vm -= fees
-                # Proportionally reduce each asset by fees
-                if curr_vm > 0:
-                    curr_mt_dex *= fee_factor
-                    curr_mt_mm *= fee_factor
-                    curr_mt_tsx *= fee_factor
-                    curr_mt_sp500 *= fee_factor
-                    curr_mt_eafe *= fee_factor
+                MT_GAR_DECES_PROJ = start_gar_deces
+                MT_GAR_ECH_PROJ = start_gar_ech
+                MT_BONI_DECES_PROJ = start_boni_deces
+                MT_SRG_PROJ = start_srg
+                MT_BCB_PROJ = start_bcb
+                MT_MRV_MRG_MRA_PROJ = start_mrv
+                TAUX_MRV_MRG_MRA_PROJ = start_taux_mrv
+                ANNEE_ECH_PROJ = start_annee_ech
+                MOIS_ECH_PROJ = start_mois_ech
+                pc_gar_deces_1 = start_pc_gar_deces_1
 
-                # Discount cashflow
-                df = math.exp(-fwd * (t_int + 1))
-                pv_path += fees * df
+                orig_total = (acc[ACCOUNT_IDX_MT_SP500] + acc[ACCOUNT_IDX_MT_TSX] + acc[ACCOUNT_IDX_MT_EAFE] +
+                              acc[ACCOUNT_IDX_MT_DEX] + acc[ACCOUNT_IDX_MT_MM])
+                if orig_total > 0.0:
+                    w_sp500 = acc[ACCOUNT_IDX_MT_SP500] / orig_total
+                    w_tsx = acc[ACCOUNT_IDX_MT_TSX] / orig_total
+                    w_eafe = acc[ACCOUNT_IDX_MT_EAFE] / orig_total
+                    w_dex = acc[ACCOUNT_IDX_MT_DEX] / orig_total
+                    w_mm = acc[ACCOUNT_IDX_MT_MM] / orig_total
+                else:
+                    w_sp500 = curr_mt_sp500 / curr_vm
+                    w_tsx = curr_mt_tsx / curr_vm
+                    w_eafe = curr_mt_eafe / curr_vm
+                    w_dex = curr_mt_dex / curr_vm
+                    w_mm = curr_mt_mm / curr_vm
 
-                # Debug capture - only for the specific debug node (pre-filtered)
-                if is_debug_node and debug_int_scenario >= 0 and i_int == debug_int_scenario:
-                    # Calculate weighted portfolio return only when needed for debug
-                    if vm_choc_start > 0:
-                        r_portfolio = (r_dex * mt_dex_choc + r_mm * mt_mm_choc + r_tsx * mt_tsx_choc + 
-                                       r_sp500 * mt_sp500_choc + r_eafe * mt_eafe_choc) / vm_choc_start
+                for t_int in range(n_internal_years):
+                    if curr_vm <= 0.0 or TX_SURVIE <= 0.0:
+                        break
+
+                    annee_reelle = start_annee_reelle + t_int + 1
+                    mois_eval = 12
+                    age = int(start_age) + t_int + 1
+                    if age < 1:
+                        age = 1
+                    if age > AGE_FIN_CONTRAT:
+                        break
+
+                    MT_VM_PROJ = curr_vm
+
+                    t_idx_int = t_int % n_yr_avail if n_yr_avail > 0 else 0
+
+                    if n_scn_avail > 0 and n_yr_avail > 0:
+                        r_dex = rn_rend_dex[scn_idx_int, t_idx_int]
+                        r_mm = rn_rend_mm[scn_idx_int, t_idx_int]
+                        r_tsx = rn_rend_tsx[scn_idx_int, t_idx_int]
+                        r_sp500 = rn_rend_sp500[scn_idx_int, t_idx_int]
+                        r_eafe = rn_rend_eafe[scn_idx_int, t_idx_int]
+                        fwd = rn_forward_rate[scn_idx_int, t_idx_int]
+                        ajust_fwd = rn_ajust_forward[scn_idx_int, t_idx_int]
                     else:
-                        r_portfolio = 0.0
-                    
-                    if debug_int_year < 0 or t_int == debug_int_year:
-                        debug_curr_vm = curr_vm
-                        debug_fees = fees
-                        debug_pv_path = pv_path
-                        debug_r_portfolio = r_portfolio
-                        debug_fwd_rate = fwd
-                    
-                    # Time series debug output
-                    if debug_ts_output is not None and (debug_int_year < 0 or t_int == debug_int_year):
-                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_CURR_VM] = curr_vm
-                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_FEES] = fees
-                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_PV_PATH] = pv_path
-                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_R_PORTFOLIO] = r_portfolio
-                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_FWD_RATE] = fwd
-                        debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_DF] = df
+                        r_dex = DEFAULT_RETURN_RATE
+                        r_mm = DEFAULT_RETURN_RATE
+                        r_tsx = DEFAULT_RETURN_RATE
+                        r_sp500 = DEFAULT_RETURN_RATE
+                        r_eafe = DEFAULT_RETURN_RATE
+                        fwd = DEFAULT_FORWARD_RATE
+                        ajust_fwd = 0.0
 
-            sum_pv_flux_choc += pv_path
+                    if MT_VM_PROJ == 0.0:
+                        fwd = fwd + ajust_fwd
 
-        # Average over internal scenarios for this choc
-        avg_pv_flux = sum_pv_flux_choc / n_internal_scenarios if n_internal_scenarios > 0 else 0.0
+                    curr_mt_sp500 = curr_mt_sp500 * math.exp(r_sp500)
+                    curr_mt_tsx = curr_mt_tsx * math.exp(r_tsx)
+                    curr_mt_eafe = curr_mt_eafe * math.exp(r_eafe)
+                    curr_mt_dex = curr_mt_dex * math.exp(r_dex)
+                    curr_mt_mm = curr_mt_mm * math.exp(r_mm)
 
-        # Store results for this choc
-        # For simplicity, storing PV flux as both reserve and capital
-        # In practice, you might want different calculations
-        output_metrics[acc_idx, scn_idx, year_idx, choc_idx, METRICS_RESERVE_IDX] = avg_pv_flux  # Reserve
-        output_metrics[acc_idx, scn_idx, year_idx, choc_idx, METRICS_CAPITAL_IDX] = avg_pv_flux  # Capital (same for now)
+                    MT_VM_AV_RETRAIT_FRAIS = curr_mt_sp500 + curr_mt_tsx + curr_mt_eafe + curr_mt_dex + curr_mt_mm
+
+                    tx_actu = tx_actu * math.exp(-fwd)
+
+                    TX_SURVIE_DEB = TX_SURVIE
+
+                    current_date = annee_reelle + mois_eval / 12.0
+                    issue_date = ANNEE_COTIS + MOIS_COTIS / 12.0
+                    duree = int(current_date - issue_date) + 1
+                    if duree < 1:
+                        duree = 1
+                    duree_max10 = duree
+                    if duree_max10 > 10:
+                        duree_max10 = 10
+
+                    month_diff = MOIS_NAIS - mois_eval
+                    if month_diff <= 0:
+                        month_diff = month_diff + 12
+                    age_mort = age + 1 if month_diff <= MORTALITY_AGE_ADJUSTMENT_THRESHOLD else age
+                    if age_mort >= mortality_lookup.shape[1]:
+                        age_mort = mortality_lookup.shape[1] - 1
+
+                    if (I_SEXE < mortality_lookup.shape[0] and
+                            annee_reelle < mortality_lookup.shape[2] and
+                            I_PRODUIT_REGR < mortality_lookup.shape[3]):
+                        qx = mortality_lookup[I_SEXE, age_mort, annee_reelle, I_PRODUIT_REGR]
+                    else:
+                        qx = DEFAULT_MORTALITY_RATE
+                    qx = 1.0 - math.pow(1.0 - qx, 1.0 / FREQ_EVAL_INT)
+
+                    LAPSE_TOT = 0.0
+                    LAPSE_PART = 0.0
+                    VM_VG_RATIO = 0.0
+
+                    if MT_VM_PROJ == 0.0:
+                        LAPSE_TOT = 0.0
+                        LAPSE_PART = 0.0
+                    else:
+                        vm_mid_period = (MT_VM_PROJ + MT_VM_AV_RETRAIT_FRAIS) / 2.0
+                        pc_gar_ech_ratio = PC_GAR_ECH / max(MT_GAR_ECH_PROJ, MIN_GUARANTEE_VALUE) if MT_GAR_ECH_PROJ > 0 else 1.0
+                        pc_gar_deces_ratio = pc_gar_deces_1 / max(MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ, MIN_GUARANTEE_VALUE) if (MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ) > 0 else 1.0
+                        srg_ratio = 1.0 / max(MT_SRG_PROJ, MIN_GUARANTEE_VALUE) if MT_SRG_PROJ > 0 else 1.0
+                        min_ratio = min(pc_gar_ech_ratio, pc_gar_deces_ratio, srg_ratio)
+                        VM_VG_RATIO = min(VM_VG_RATIO_MAX, vm_mid_period * min_ratio)
+
+                        if VM_VG_RATIO <= VM_VG_RATIO_LEVEL1_THRESHOLD:
+                            LAPSE_NIV_TOT = LAPSE_LEVEL_1
+                            LAPSE_NIV_PART = LAPSE_LEVEL_1
+                        elif VM_VG_RATIO <= VM_VG_RATIO_LEVEL2_THRESHOLD:
+                            LAPSE_NIV_TOT = LAPSE_LEVEL_2
+                            LAPSE_NIV_PART = LAPSE_LEVEL_2
+                        else:
+                            LAPSE_NIV_TOT = LAPSE_LEVEL_3
+                            LAPSE_NIV_PART = LAPSE_LEVEL_3
+
+                        if (duree_max10 < lapse_tot_min.shape[0] and ID_LAPSE < lapse_tot_min.shape[1] and
+                                LAPSE_NIV_TOT < lapse_tot_min.shape[2]):
+                            tx_lapse_tot_min = lapse_tot_min[duree_max10, ID_LAPSE, LAPSE_NIV_TOT]
+                            tx_lapse_tot_max = lapse_tot_max[duree_max10, ID_LAPSE, LAPSE_NIV_TOT]
+                            fact_dim = lapse_tot_fact[duree_max10, ID_LAPSE, LAPSE_NIV_TOT]
+                        else:
+                            tx_lapse_tot_min = tx_lapse_tot_max = DEFAULT_LAPSE_RATE_TOT
+                            fact_dim = DEFAULT_LAPSE_FACT_DIM
+
+                        if tx_lapse_tot_min == tx_lapse_tot_max:
+                            LAPSE_TOT = tx_lapse_tot_min
+                        else:
+                            if LAPSE_NIV_TOT == LAPSE_LEVEL_1:
+                                lapse_interp = (VM_VG_RATIO - 0.0) / VM_VG_RATIO_LEVEL1_THRESHOLD
+                            elif LAPSE_NIV_TOT == LAPSE_LEVEL_2:
+                                lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL1_THRESHOLD) / (VM_VG_RATIO_LEVEL2_THRESHOLD - VM_VG_RATIO_LEVEL1_THRESHOLD)
+                            else:
+                                lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL2_THRESHOLD) / VM_VG_RATIO_LEVEL3_DIVISOR
+                            LAPSE_TOT = lapse_interp * (tx_lapse_tot_max - tx_lapse_tot_min) + tx_lapse_tot_min
+
+                        if age >= AGE_DECAISSEMENT:
+                            LAPSE_TOT = LAPSE_TOT * fact_dim
+
+                        if (age < lapse_part_min.shape[0] and ID_LAPSE < lapse_part_min.shape[1] and
+                                I_REGIME_2 < lapse_part_min.shape[2] and LAPSE_NIV_PART < lapse_part_min.shape[3]):
+                            tx_lapse_part_min = lapse_part_min[age, ID_LAPSE, I_REGIME_2, LAPSE_NIV_PART]
+                            tx_lapse_part_max = lapse_part_max[age, ID_LAPSE, I_REGIME_2, LAPSE_NIV_PART]
+                        else:
+                            tx_lapse_part_min = tx_lapse_part_max = DEFAULT_LAPSE_RATE_PART
+
+                        if tx_lapse_part_min == tx_lapse_part_max:
+                            LAPSE_PART = tx_lapse_part_min
+                        else:
+                            if LAPSE_NIV_PART == LAPSE_LEVEL_1:
+                                lapse_interp = (VM_VG_RATIO - 0.0) / VM_VG_RATIO_LEVEL1_THRESHOLD
+                            elif LAPSE_NIV_PART == LAPSE_LEVEL_2:
+                                lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL1_THRESHOLD) / (VM_VG_RATIO_LEVEL2_THRESHOLD - VM_VG_RATIO_LEVEL1_THRESHOLD)
+                            else:
+                                lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL2_THRESHOLD) / VM_VG_RATIO_LEVEL3_DIVISOR
+                            LAPSE_PART = lapse_interp * (tx_lapse_part_max - tx_lapse_part_min) + tx_lapse_part_min
+
+                    lapse = 1.0 - math.pow(1.0 - LAPSE_TOT - LAPSE_PART, 1.0 / FREQ_EVAL_INT)
+
+                    TX_SURVIE = TX_SURVIE * (1.0 - qx) * (1.0 - lapse)
+
+                    MT_VM_AV_RETRAIT = MT_VM_AV_RETRAIT_FRAIS * math.exp(-PC_RFG / FREQ_EVAL_INT)
+
+                    guarantee_fee_amount = 0.0
+                    if PC_FRAIS_GARANTIE > 0.0:
+                        base_fee_calc = MT_VM_AV_RETRAIT if I_FRAIS_SUR_SRG == 0 else MT_SRG_PROJ
+                        guarantee_fee_amount = base_fee_calc * PC_FRAIS_GARANTIE / FREQ_EVAL_INT
+                        if guarantee_fee_amount > MT_VM_AV_RETRAIT:
+                            guarantee_fee_amount = MT_VM_AV_RETRAIT
+                        MT_VM_AV_RETRAIT = MT_VM_AV_RETRAIT - guarantee_fee_amount
+                        if MT_VM_AV_RETRAIT < 0.0:
+                            MT_VM_AV_RETRAIT = 0.0
+
+                    PRIMES_GARANTIES = guarantee_fee_amount * TX_SURVIE_DEB
+                    VP_PRIMES_GARANTIES = PRIMES_GARANTIES * tx_actu
+
+                    if age < min_ferr_lookup.shape[0]:
+                        min_ferr_rate = min_ferr_lookup[age]
+                    else:
+                        min_ferr_rate = DEFAULT_FERR_MIN_RATE
+                    MT_MIN_FERR_PROJ = MT_VM_PROJ * min_ferr_rate
+
+                    AGE_RETRAIT = age + 1
+
+                    if I_PRODUIT_REGR == 1:
+                        base_amount = MT_SRG_PROJ if TABLE_TAUX_MRV_MRG_MRA == 1 else MT_VM_PROJ
+                        if AGE_RETRAIT < AGE_MRV_PERMIS and base_amount == 0.0:
+                            MT_MRV_MRG_MRA_PROJ = 0.0
+
+                        if TABLE_TAUX_MRV_MRG_MRA == 2:
+                            max_age_start = AGE_MRV_PERMIS if AGE_MRV_PERMIS > AGE_DECAISSEMENT else AGE_DECAISSEMENT
+                            should_reinit = (AGE_RETRAIT == max_age_start or (MT_SRG_PROJ == MT_VM_PROJ and MT_VM_PROJ != 0.0))
+                            if should_reinit:
+                                if AGE_RETRAIT < 60:
+                                    TAUX_MRV_MRG_MRA_PROJ = 0.03
+                                elif AGE_RETRAIT < 65:
+                                    TAUX_MRV_MRG_MRA_PROJ = 0.035
+                                elif AGE_RETRAIT < 70:
+                                    TAUX_MRV_MRG_MRA_PROJ = 0.04
+                                elif AGE_RETRAIT < 75:
+                                    TAUX_MRV_MRG_MRA_PROJ = 0.0425
+                                else:
+                                    TAUX_MRV_MRG_MRA_PROJ = 0.05
+                                MT_MRV_MRG_MRA_PROJ = TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ
+                            else:
+                                tmp_mrv = TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ
+                                if tmp_mrv > MT_MRV_MRG_MRA_PROJ:
+                                    MT_MRV_MRG_MRA_PROJ = tmp_mrv
+                        else:
+                            if AGE_RETRAIT == AGE_MRV_PERMIS:
+                                MT_MRV_MRG_MRA_PROJ = TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ
+                            else:
+                                tmp_mrv = TAUX_MRV_MRG_MRA_PROJ * MT_SRG_PROJ
+                                if tmp_mrv > MT_MRV_MRG_MRA_PROJ:
+                                    MT_MRV_MRG_MRA_PROJ = tmp_mrv
+
+                        if (M_MT_MRV_EXCEDENT > 1.0 and year_idx == 0):
+                            base_excedent = MT_SRG_PROJ if MT_SRG_PROJ > MT_VM_PROJ else MT_VM_PROJ
+                            tmp_mrv = TAUX_MRV_MRG_MRA_PROJ * base_excedent
+                            if tmp_mrv < MT_MRV_MRG_MRA_PROJ:
+                                MT_MRV_MRG_MRA_PROJ = tmp_mrv
+
+                    RETRAIT = 0.0
+                    if not (
+                            AGE_RETRAIT < AGE_DECAISSEMENT or
+                            (AGE_RETRAIT == AGE_DECAISSEMENT and mois_eval >= MOIS_NAIS) or
+                            (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)
+                    ):
+                        if VAR_RETRAIT_FCT == 1:
+                            RETRAIT = MT_TPA_RETRAIT if MT_TPA_RETRAIT > 0.0 else MT_VM_PROJ * PC_RETRAIT_AGE
+                        elif VAR_RETRAIT_FCT == 2:
+                            if MT_TPA_RETRAIT > MT_MIN_FERR_PROJ:
+                                RETRAIT = MT_TPA_RETRAIT
+                            else:
+                                pc_ra = PC_RETRAIT_AGE
+                                if pc_ra < 1.0:
+                                    pc_ra = 1.0
+                                RETRAIT = MT_MIN_FERR_PROJ * pc_ra
+                        elif VAR_RETRAIT_FCT == 3:
+                            base_mrv = MT_MRV_MRG_MRA_PROJ if MT_MRV_MRG_MRA_PROJ > MT_MIN_FERR_PROJ else MT_MIN_FERR_PROJ
+                            RETRAIT = base_mrv * PC_RETRAIT_AGE
+                        else:
+                            RETRAIT = 0.0
+
+                        if RETRAIT > MT_RETRAIT_MAX and MT_RETRAIT_MAX > 0.0:
+                            RETRAIT = MT_RETRAIT_MAX
+                        RETRAIT = RETRAIT / FREQ_EVAL_INT
+
+                    PREST_MRV = 0.0
+                    if I_PRODUIT_REGR == 1:
+                        diff_mrv = RETRAIT - MT_VM_AV_RETRAIT
+                        PREST_MRV = -diff_mrv * TX_SURVIE_DEB if diff_mrv > 0.0 else 0.0
+                    VP_PREST_MRV = PREST_MRV * tx_actu
+
+                    if MT_VM_AV_RETRAIT <= RETRAIT:
+                        MT_GAR_ECH_PROJ = 0.0
+                        MT_GAR_DECES_PROJ = 0.0
+                        MT_BONI_DECES_PROJ = 0.0
+                        MT_SRG_PROJ = 0.0
+                    else:
+                        withdrawal_factor = 1.0 - RETRAIT / MT_VM_AV_RETRAIT
+                        MT_GAR_ECH_PROJ = MT_GAR_ECH_PROJ * withdrawal_factor
+                        MT_GAR_DECES_PROJ = MT_GAR_DECES_PROJ * withdrawal_factor
+                        MT_BONI_DECES_PROJ = MT_BONI_DECES_PROJ * withdrawal_factor
+                        MT_SRG_PROJ = MT_SRG_PROJ - RETRAIT
+                        if MT_SRG_PROJ < 0.0:
+                            MT_SRG_PROJ = 0.0
+
+                    MT_VM_AP_RETRAIT = MT_VM_AV_RETRAIT - RETRAIT
+                    if MT_VM_AP_RETRAIT < 0.0:
+                        MT_VM_AP_RETRAIT = 0.0
+
+                    depot_futur = 0.0
+                    if (duree_max10 < deposits_pc.shape[0] and ID_DEPOT < deposits_pc.shape[1]):
+                        pc_depot_annuel = deposits_pc[duree_max10, ID_DEPOT]
+                        var_depot_fct = int(deposits_var[duree_max10, ID_DEPOT])
+                        age_max_depot = int(deposits_age_max[duree_max10, ID_DEPOT])
+                        i_even_cesse_depot = int(deposits_i_even[duree_max10, ID_DEPOT])
+                    else:
+                        pc_depot_annuel = 0.0
+                        var_depot_fct = 0
+                        age_max_depot = 999
+                        i_even_cesse_depot = 0
+
+                    if (pc_depot_annuel == 0.0 or
+                            (i_even_cesse_depot == 1 and AGE_RETRAIT >= AGE_DECAISSEMENT) or
+                            (age_max_depot < age) or
+                            (MT_VM_AP_RETRAIT <= 0 and I_PRODUIT_REGR == 0)):
+                        depot_futur = 0.0
+                    else:
+                        if MT_TPA_DEPOT > 0.0:
+                            depot_futur = MT_TPA_DEPOT
+                        else:
+                            base_depot_calc = MT_VM_AP_RETRAIT if var_depot_fct == 1 else (MT_GAR_DECES_PROJ / max(pc_gar_deces_1, MIN_GUARANTEE_VALUE))
+                            depot_futur = base_depot_calc * pc_depot_annuel
+                        depot_futur = depot_futur / FREQ_EVAL_INT
+
+                    if MT_VM_AP_RETRAIT > 0.0:
+                        MT_VM_PROJ = MT_VM_AP_RETRAIT + depot_futur
+                        MT_GAR_ECH_PROJ = MT_GAR_ECH_PROJ + depot_futur * PC_GAR_ECH_DEP_FUT
+                        MT_GAR_DECES_PROJ = MT_GAR_DECES_PROJ + depot_futur
+                        if MT_SRG_PROJ > 0.0:
+                            MT_SRG_PROJ = MT_SRG_PROJ + depot_futur
+                    else:
+                        MT_VM_PROJ = MT_VM_AP_RETRAIT
+
+                    claim = MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ - MT_VM_PROJ
+                    PREST_DECES = -qx * claim * TX_SURVIE_DEB if claim > 0.0 else 0.0
+                    VP_PREST_DECES = PREST_DECES * tx_actu
+
+                    PREST_ECH = 0.0
+                    if annee_reelle == ANNEE_ECH_PROJ and mois_eval == MOIS_ECH_PROJ:
+                        diff_ech = MT_GAR_ECH_PROJ - MT_VM_AP_RETRAIT
+                        PREST_ECH = -diff_ech * TX_SURVIE if diff_ech > 0.0 else 0.0
+                        ANNEE_ECH_PROJ = ANNEE_ECH_PROJ + NB_AN_ECH
+                        MOIS_ECH_PROJ = mois_eval
+                        if diff_ech > 0.0:
+                            MT_VM_PROJ = MT_VM_AP_RETRAIT + diff_ech
+                        else:
+                            MT_VM_PROJ = MT_VM_AP_RETRAIT
+                        MT_GAR_ECH_PROJ = MT_VM_PROJ * PC_GAR_ECH
+                        if I_RESET_DECES_ECH == 1:
+                            MT_GAR_DECES_PROJ = MT_VM_PROJ * pc_gar_deces_1
+                        pc_renouv = PC_RENOUV_ECH
+                        if age > AGE_MAX_RENOUV_ECH:
+                            pc_renouv = 0.0
+                        TX_SURVIE = TX_SURVIE * pc_renouv
+                    VP_PREST_ECH = PREST_ECH * tx_actu
+
+                    MT_GAR_DECES_PROJ = MT_GAR_DECES_PROJ - AJUSTEMENT_MENSUEL_GAR * 12.0 / FREQ_EVAL_INT
+
+                    if I_PRODUIT_REGR == 1:
+                        if (age < MAX_RESET_SRG and
+                                MT_SRG_PROJ < MT_VM_PROJ and
+                                annee_reelle > ANNEE_COTIS and
+                                FREQ_RESET_SRG > 0):
+                            years_since_issue = annee_reelle - ANNEE_COTIS
+                            if int(years_since_issue / FREQ_RESET_SRG) == years_since_issue / FREQ_RESET_SRG and mois_eval == MOIS_COTIS:
+                                MT_SRG_PROJ = MT_VM_PROJ
+                                if MT_VM_PROJ > MT_BCB_PROJ:
+                                    MT_BCB_PROJ = MT_VM_PROJ
+
+                        if age < AGE_DECAISSEMENT and mois_eval == 12:
+                            MT_SRG_PROJ = MT_SRG_PROJ + PC_BONI_SRG * MT_BCB_PROJ
+
+                    if (age < MAX_RESET_DECES and
+                            (MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ) < (MT_VM_PROJ * pc_gar_deces_1) and
+                            annee_reelle > ANNEE_COTIS):
+                        should_reset = False
+                        if FREQ_RESET_DECES > 0:
+                            years_since_issue = annee_reelle - ANNEE_COTIS
+                            if int(years_since_issue / FREQ_RESET_DECES) == years_since_issue / FREQ_RESET_DECES and mois_eval == MOIS_COTIS:
+                                should_reset = True
+
+                        target_month = 12 if MOIS_NAIS == int(12 // FREQ_EVAL_INT) else (MOIS_NAIS - int(12 // FREQ_EVAL_INT))
+                        if age == MAX_RESET_DECES - 1 and mois_eval == target_month:
+                            should_reset = True
+
+                        if should_reset:
+                            MT_GAR_DECES_PROJ = MT_VM_PROJ * pc_gar_deces_1
+                            MT_BONI_DECES_PROJ = 0.0
+
+                    if mois_eval == 6 or mois_eval == 12:
+                        if (I_RESET_FACUL_ECH == 1 and
+                                age <= MAX_RESET_FACUL_ECH and
+                                MT_GAR_ECH_PROJ > 0.0 and
+                                (MT_VM_PROJ * PC_GAR_ECH) >= RATIO_VM_VG_RESET_ECH * MT_GAR_ECH_PROJ):
+                            tmp_gar = MT_VM_PROJ * PC_GAR_ECH
+                            if tmp_gar > MT_GAR_ECH_PROJ:
+                                MT_GAR_ECH_PROJ = tmp_gar
+
+                            tmp_annee = annee_reelle + NB_AN_ECH
+                            min_annee = ANNEE_NAIS + AGE_ECH_MIN
+                            ANNEE_ECH_PROJ = tmp_annee if tmp_annee > min_annee else min_annee
+                            if ANNEE_ECH_PROJ == min_annee:
+                                MOIS_ECH_PROJ = MOIS_NAIS
+                            else:
+                                MOIS_ECH_PROJ = mois_eval
+
+                    target_month = 12 if MOIS_NAIS == int(12 // FREQ_EVAL_INT) else (MOIS_NAIS - int(12 // FREQ_EVAL_INT))
+                    if age == AGE_CHANG_DECES - 1 and mois_eval == target_month:
+                        if pc_gar_deces_1 != 0.0:
+                            MT_GAR_DECES_PROJ = MT_GAR_DECES_PROJ * PC_GAR_DECES_2 / pc_gar_deces_1
+                        pc_gar_deces_1 = PC_GAR_DECES_2
+
+                    if MT_VM_PROJ > 0.0:
+                        curr_mt_sp500 = MT_VM_PROJ * w_sp500
+                        curr_mt_tsx = MT_VM_PROJ * w_tsx
+                        curr_mt_eafe = MT_VM_PROJ * w_eafe
+                        curr_mt_dex = MT_VM_PROJ * w_dex
+                        curr_mt_mm = MT_VM_PROJ * w_mm
+                        curr_vm = MT_VM_PROJ
+                    else:
+                        curr_mt_sp500 = 0.0
+                        curr_mt_tsx = 0.0
+                        curr_mt_eafe = 0.0
+                        curr_mt_dex = 0.0
+                        curr_mt_mm = 0.0
+                        curr_vm = 0.0
+
+                    pc_commission_maintien = DEFAULT_COMMISSION_MAINTIEN
+                    pc_frais_an = 0.0
+                    pc_commission_vente = 0.0
+
+                    if MT_VM_AV_RETRAIT_FRAIS != 0.0:
+                        if (duree_max10 < acq_vente_rf.shape[0] and ID_ACQUI < acq_vente_rf.shape[1]):
+                            pc_vente_rf_v = acq_vente_rf[duree_max10, ID_ACQUI]
+                            pc_vente_ac_v = acq_vente_ac[duree_max10, ID_ACQUI]
+                            pc_maintien_rf_v = acq_maintien_rf[duree_max10, ID_ACQUI]
+                            pc_maintien_ac_v = acq_maintien_ac[duree_max10, ID_ACQUI]
+                            pc_frais_ac_v = acq_frais_ac[duree_max10, ID_ACQUI]
+                            pc_frais_rf_v = acq_frais_rf[duree_max10, ID_ACQUI]
+                        else:
+                            pc_vente_rf_v = 0.0
+                            pc_vente_ac_v = 0.0
+                            pc_maintien_rf_v = 0.0
+                            pc_maintien_ac_v = 0.0
+                            pc_frais_ac_v = 0.0
+                            pc_frais_rf_v = 0.0
+
+                        mt_vm_base = acc[ACCOUNT_IDX_MT_VM]
+                        mt_vm_for_rates = mt_vm_base if mt_vm_base != 0.0 else MT_VM_PROJ
+                        if mt_vm_for_rates > 0.0:
+                            weight_rf = MT_RF / mt_vm_for_rates
+                            if weight_rf < 0.0:
+                                weight_rf = 0.0
+                            if weight_rf > 1.0:
+                                weight_rf = 1.0
+                            pc_commission_vente = ((pc_vente_ac_v * (1.0 - weight_rf)) + (pc_vente_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
+                            pc_commission_maintien = ((pc_maintien_ac_v * (1.0 - weight_rf)) + (pc_maintien_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
+                            pc_frais_an = (pc_frais_ac_v * (1.0 - weight_rf)) + (pc_frais_rf_v * weight_rf)
+
+                    COMM_VENTE = -pc_commission_vente * depot_futur * TX_SURVIE
+                    VP_COMM_VENTE = COMM_VENTE * tx_actu
+
+                    FRAIS_ACQUIS = pc_frais_an * MT_VM_AP_RETRAIT * lapse * TX_SURVIE_DEB * (1.0 - qx)
+                    VP_FRAIS_ACQUIS = FRAIS_ACQUIS * tx_actu
+
+                    fixed_fee_annual = 0.0
+                    if ID_PRODUIT < fees_lookup.shape[0] and annee_reelle < fees_lookup.shape[1]:
+                        fixed_fee_annual = fees_lookup[ID_PRODUIT, annee_reelle]
+                    FRAIS_FIXES = -fixed_fee_annual / FREQ_EVAL_INT * TX_SURVIE_DEB if MT_VM_AV_RETRAIT > 0.0 else 0.0
+                    VP_FRAIS_FIXES = FRAIS_FIXES * tx_actu
+
+                    HON_GEST = -MT_VM_AV_RETRAIT_FRAIS * (math.exp(PC_HONORAIRES_GEST / FREQ_EVAL_INT) - 1.0) * TX_SURVIE_DEB
+                    VP_HON_GEST = HON_GEST * tx_actu
+
+                    COMM_MAINTIEN = -MT_VM_AV_RETRAIT_FRAIS * (math.exp(pc_commission_maintien / FREQ_EVAL_INT) - 1.0) * TX_SURVIE_DEB
+                    VP_COMM_MAINTIEN = COMM_MAINTIEN * tx_actu
+
+                    PRIMES_VARIABLES = MT_VM_AV_RETRAIT_FRAIS * math.exp(-(PC_RFG - PC_REVENU_FDS) / FREQ_EVAL_INT) * (-(math.exp(-PC_REVENU_FDS / FREQ_EVAL_INT) - 1.0)) * TX_SURVIE_DEB
+                    VP_PRIMES_VARIABLES = PRIMES_VARIABLES * tx_actu
+
+                    fees = -(HON_GEST + COMM_MAINTIEN + FRAIS_FIXES)
+
+                    vp_flux_tot = (VP_COMM_MAINTIEN + VP_HON_GEST + VP_FRAIS_FIXES + VP_FRAIS_ACQUIS + VP_COMM_VENTE +
+                                   VP_PRIMES_VARIABLES + VP_PRIMES_GARANTIES + VP_PREST_ECH + VP_PREST_MRV + VP_PREST_DECES)
+
+                    pv_path = pv_path + vp_flux_tot
+
+                    if do_capital == 0 and is_debug_node and debug_int_scenario >= 0 and i_int == debug_int_scenario:
+                        if vm_choc_start > 0:
+                            r_portfolio = (r_dex * mt_dex_choc + r_mm * mt_mm_choc + r_tsx * mt_tsx_choc + 
+                                           r_sp500 * mt_sp500_choc + r_eafe * mt_eafe_choc) / vm_choc_start
+                        else:
+                            r_portfolio = 0.0
+
+                        if debug_int_year < 0 or t_int == debug_int_year:
+                            debug_curr_vm = curr_vm
+                            debug_fees = fees
+                            debug_pv_path = pv_path
+                            debug_r_portfolio = r_portfolio
+                            debug_fwd_rate = fwd
+
+                        if debug_ts_output is not None and (debug_int_year < 0 or t_int == debug_int_year):
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_CURR_VM] = curr_vm
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_FEES] = fees
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_PV_PATH] = pv_path
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_R_PORTFOLIO] = r_portfolio
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_FWD_RATE] = fwd
+                            debug_ts_output[choc_idx, t_int, INT_TS_DEBUG_IDX_DF] = tx_actu
+
+                if do_capital == 0:
+                    pv_reserve = pv_path
+                else:
+                    pv_capital = pv_path
+
+            sum_pv_reserve_choc = sum_pv_reserve_choc + pv_reserve
+            sum_pv_capital_choc = sum_pv_capital_choc + pv_capital
+
+        avg_reserve = sum_pv_reserve_choc / n_internal_scenarios if n_internal_scenarios > 0 else 0.0
+        avg_capital = sum_pv_capital_choc / n_internal_scenarios if n_internal_scenarios > 0 else 0.0
+
+        output_metrics[acc_idx, scn_idx, year_idx, choc_idx, METRICS_RESERVE_IDX] = avg_reserve
+        output_metrics[acc_idx, scn_idx, year_idx, choc_idx, METRICS_CAPITAL_IDX] = avg_capital
 
         # === SAVE DEBUG OUTPUT (one row per choc, only if filter matches) ===
         if debug_output is not None:
@@ -1047,9 +1732,9 @@ def nested_valuation_kernel_five_chocs(
             if matches_filter:
                 debug_output[choc_idx, INT_DEBUG_IDX_START_VM] = start_vm
                 debug_output[choc_idx, INT_DEBUG_IDX_VM_CHOC] = vm_choc_start
-                debug_output[choc_idx, INT_DEBUG_IDX_AVG_PV_FLUX] = avg_pv_flux
-                debug_output[choc_idx, INT_DEBUG_IDX_RESERVE] = avg_pv_flux
-                debug_output[choc_idx, INT_DEBUG_IDX_CAPITAL] = avg_pv_flux
+                debug_output[choc_idx, INT_DEBUG_IDX_AVG_PV_FLUX] = avg_reserve
+                debug_output[choc_idx, INT_DEBUG_IDX_RESERVE] = avg_reserve
+                debug_output[choc_idx, INT_DEBUG_IDX_CAPITAL] = avg_capital
                 debug_output[choc_idx, INT_DEBUG_IDX_START_TX_SURVIE] = start_tx_survie
                 debug_output[choc_idx, INT_DEBUG_IDX_START_AGE] = start_age
                 # Values from specific internal iteration

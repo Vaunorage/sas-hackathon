@@ -92,7 +92,7 @@ class KernelIncompatibilityError(RuntimeError):
 
 
 EXPECTED_EXTERNAL_GENERATOR_ARGCOUNT = 18
-EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT = 14
+EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT = 18
 
 
 def validate_kernel_compatibility():
@@ -535,6 +535,7 @@ def process_batch(
     nb_ext_scenarios: int,
     nb_an_projection: int,
     nb_int_scenarios: int,
+    shock_capital_pct: float,
     total_mem_per_account: float,
     threads_per_block: tuple,
     gpu_lookups: dict,
@@ -681,6 +682,9 @@ def process_batch(
         nb_an_projection,
         gpu_lookups['rn_returns'],
         gpu_lookups['mortality'],
+        gpu_lookups['lapse'],
+        gpu_lookups['policy'],
+        gpu_lookups['commission'],
         d_metrics,
         d_int_debug,
         d_int_debug_ts,
@@ -689,6 +693,7 @@ def process_batch(
         debug_account,
         debug_scenario,
         debug_year,
+        float(shock_capital_pct),
     )
     cuda.synchronize()
     
@@ -1453,6 +1458,7 @@ def run_projection_gpu_nested(
             nb_ext_scenarios=nb_ext_scenarios,
             nb_an_projection=nb_an_projection,
             nb_int_scenarios=nb_int_scenarios,
+            shock_capital_pct=shock_capital_pct,
             total_mem_per_account=total_mem_per_account,
             threads_per_block=threads_per_block,
             gpu_lookups=gpu_lookups,
