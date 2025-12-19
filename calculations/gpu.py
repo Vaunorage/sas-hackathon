@@ -75,7 +75,7 @@ import polars as pl
 import gc
 import sys
 from pathlib import Path
-from typing import Optional, List, TypedDict
+from typing import Optional, List, TypedDict, Dict
 from dataclasses import dataclass
 from datetime import datetime
 from fastparquet import write as fastparquet_write
