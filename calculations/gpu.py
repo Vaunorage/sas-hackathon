@@ -1005,13 +1005,8 @@ def save_results(
                     w0['ID_COMPTE'] = int(acc_row.get('ID_COMPTE', -1))
                     w0['scn_eval'] = int(debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
                     w0['an_eval'] = 0
-                    mois_ini = acc_row.get('MOIS_EVALUATION_INI', 12)
-                    try:
-                        mois_ini = int(mois_ini)
-                    except Exception:
-                        mois_ini = 12
-                    w0['mois_eval'] = mois_ini
-                    w0['mois_eval_ext'] = mois_ini
+                    w0['mois_eval'] = 12
+                    w0['mois_eval_ext'] = 12
                     w0['TX_SURVIE'] = 1.0
                     w0['TX_SURVIE_DEB'] = 1.0
                     w0['MT_VM_PROJ'] = acc_row.get('MT_VM', np.nan)
