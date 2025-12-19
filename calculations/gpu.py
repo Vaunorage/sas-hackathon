@@ -1092,6 +1092,81 @@ def save_results(
                     w['FRAIS_FIXES'] = r.get('FRAIS_FIXES', np.nan)
                     w['HON_GEST'] = r.get('HON_GEST', np.nan)
                     w['COMM_MAINTIEN'] = r.get('COMM_MAINTIEN', np.nan)
+                    
+                    # Additional computed/derived columns
+                    w['VALEUR_MARCHANDE'] = r.get('VALEUR_MARCHANDE', np.nan)
+                    w['PASSIF_REDRESSE'] = r.get('PASSIF_REDRESSE', np.nan)
+                    w['COUSSIN_CREDIT'] = r.get('COUSSIN_CREDIT', np.nan)
+                    w['COUSSIN_MARCHE'] = r.get('COUSSIN_MARCHE', np.nan)
+                    w['COUSSIN_DEPENSE'] = r.get('COUSSIN_DEPENSE', np.nan)
+                    w['COUSSIN_DECHEANCE'] = r.get('COUSSIN_DECHEANCE', np.nan)
+                    w['COUSSIN_MORTALITE'] = r.get('COUSSIN_MORTALITE', np.nan)
+                    w['COUSSIN_DEPOT'] = r.get('COUSSIN_DEPOT', np.nan)
+                    
+                    # Computed fields from acc_row and current state
+                    if acc_row is not None:
+                        an_eval = r.get('AN_EVAL', 0)
+                        mois_eval = r.get('MOIS_EVAL', 0)
+                        age = r.get('AGE', 0)
+                        
+                        # Age-related columns
+                        w['age_MORTALITE'] = age
+                        w['AGE_RETRAIT'] = age
+                        
+                        # Year calculations
+                        annee_eval_ini = acc_row.get('ANNEE_EVALUATION_INI', 2024)
+                        w['annee_reelle'] = annee_eval_ini + an_eval if pd.notna(an_eval) else np.nan
+                        
+                        # Duration calculation
+                        annee_cotis = acc_row.get('ANNEE_COTIS', 2024)
+                        if pd.notna(an_eval) and pd.notna(annee_eval_ini) and pd.notna(annee_cotis):
+                            duree = (annee_eval_ini + an_eval) - annee_cotis
+                            w['duree_max10'] = min(duree, 10) if duree >= 0 else 0
+                        
+                        # VM/VG ratio
+                        mt_vm_proj = r.get('MT_VM', 0)
+                        mt_gar_deces = r.get('MT_GAR_DECES', 0)
+                        mt_gar_ech = r.get('MT_GAR_ECH', 0)
+                        vg = max(mt_gar_deces, mt_gar_ech) if pd.notna(mt_gar_deces) and pd.notna(mt_gar_ech) else 0
+                        if vg > 0 and pd.notna(mt_vm_proj) and mt_vm_proj > 0:
+                            w['VM_VG_RATIO'] = mt_vm_proj / vg
+                        else:
+                            w['VM_VG_RATIO'] = 0.0
+                        
+                        # Lapse levels (simplified - would need full lookup logic)
+                        w['LAPSE_NIV_TOT'] = 1  # Default level
+                        w['LAPSE_NIV_PART'] = 1  # Default level
+                        w['LAPSE'] = r.get('LAPSE_TOT', 0)  # Total lapse
+                        
+                        # Projected guarantee columns
+                        w['MT_BONI_DECES_PROJ'] = acc_row.get('MT_BONI_DECES', 0)
+                        w['MT_BCB_PROJ'] = acc_row.get('MT_BCB', 0)
+                        w['MT_MRV_MRG_MRA_PROJ'] = acc_row.get('MT_MRV_MRG_MRA', 0)
+                        w['TAUX_MRV_MRG_MRA_PROJ'] = acc_row.get('TAUX_MRV_MRG_MRA', 0)
+                        
+                        # Echeance projections
+                        w['ANNEE_ECH_PROJ'] = acc_row.get('ANNEE_ECH', np.nan)
+                        w['MOIS_ECH_PROJ'] = acc_row.get('MOIS_ECH', np.nan)
+                        
+                        # Age factors (simplified)
+                        w['FACTEUR_AGE_80'] = 1.0 if age < 80 else 0.0
+                        w['FACTEUR_AGE_90'] = 1.0 if age < 90 else 0.0
+                        
+                        # MIN_FERR_PROJ (would need lookup)
+                        w['MT_MIN_FERR_PROJ'] = 0.0
+                        
+                        # Actualization rates (simplified)
+                        w['TX_ACTUALISATION'] = 0.0
+                        w['TX_ACTUALISATION_DEB'] = 0.0
+                        
+                        # Internal scenario fields
+                        w['scn_eval_int'] = np.nan
+                        w['an_eval_int'] = np.nan
+                        
+                        # Adjustment fields
+                        w['rc'] = 0.0
+                        w['AJUST_NOUV_AFFAIRES'] = 0.0
+                        w['MT_VM_AV_RETRAIT_FRAIS'] = r.get('MT_VM_AV_RETRAIT', np.nan)
 
                     if acc_row is not None:
                         for c in example_header:
