@@ -831,6 +831,7 @@ def save_results(
     population_ids: Optional[np.ndarray] = None,
     debug_flux: Optional[np.ndarray] = None,
     population_df: Optional[pd.DataFrame] = None,
+    lookup_data: Optional[Dict[str, pd.DataFrame]] = None,
 ):
     """
     Save all results (final simulation results and debug output) to CSV files.
@@ -1099,8 +1100,98 @@ def save_results(
 
                     wide_rows.append(w)
 
+                # Convert to DataFrame and fill NA columns from lookup tables
+                output_df = pd.DataFrame(wide_rows, columns=example_header)
+                
+                if lookup_data is not None and acc_row is not None:
+                    # Get account keys for lookups
+                    id_lapse = acc_row.get('ID_LAPSE', 0)
+                    id_acqui = acc_row.get('ID_ACQUI', 0)
+                    id_depot = acc_row.get('ID_DEPOT', 0)
+                    i_regime_2 = acc_row.get('I_REGIME_2', 0)
+                    
+                    # Fill MIN_FERR from min_ferr table (keyed by AGE)
+                    if 'min_ferr' in lookup_data and 'MIN_FERR' in output_df.columns:
+                        min_ferr_df = lookup_data['min_ferr']
+                        if 'AGE' in min_ferr_df.columns and 'MIN_FERR' in min_ferr_df.columns:
+                            age_to_minferr = dict(zip(min_ferr_df['AGE'], min_ferr_df['MIN_FERR']))
+                            output_df['MIN_FERR'] = output_df['AGE'].map(age_to_minferr)
+                    
+                    # Fill TX_LAPSE_TOT columns from tx_lapse_tot table
+                    if 'tx_lapse_tot' in lookup_data:
+                        lapse_tot_df = lookup_data['tx_lapse_tot']
+                        if 'ID_LAPSE' in lapse_tot_df.columns:
+                            lapse_tot_row = lapse_tot_df[lapse_tot_df['ID_LAPSE'] == id_lapse]
+                            if len(lapse_tot_row) > 0:
+                                for col in ['TX_LAPSE_TOT_MIN', 'TX_LAPSE_TOT_MAX', 'FACT_DIM']:
+                                    if col in lapse_tot_row.columns and col in output_df.columns:
+                                        output_df[col] = lapse_tot_row[col].iloc[0]
+                    
+                    # Fill TX_LAPSE_PART columns from tx_lapse_part table
+                    if 'tx_lapse_part' in lookup_data:
+                        lapse_part_df = lookup_data['tx_lapse_part']
+                        if 'ID_LAPSE' in lapse_part_df.columns:
+                            lapse_part_row = lapse_part_df[lapse_part_df['ID_LAPSE'] == id_lapse]
+                            if len(lapse_part_row) > 0:
+                                for col in ['TX_LAPSE_PART_MIN', 'TX_LAPSE_PART_MAX']:
+                                    if col in lapse_part_row.columns and col in output_df.columns:
+                                        output_df[col] = lapse_part_row[col].iloc[0]
+                    
+                    # Fill ACQUISITION columns (PC_COMMISSION_*, PC_FRAIS_AN_*)
+                    if 'acquisition' in lookup_data:
+                        acq_df = lookup_data['acquisition']
+                        if 'ID_ACQUI' in acq_df.columns:
+                            acq_row = acq_df[acq_df['ID_ACQUI'] == id_acqui]
+                            if len(acq_row) > 0:
+                                for col in ['PC_COMMISSION_VENTE_RF', 'PC_COMMISSION_VENTE_AC', 
+                                           'PC_COMMISSION_MAINTIEN_RF', 'PC_COMMISSION_MAINTIEN_AC',
+                                           'PC_FRAIS_AN_AC', 'PC_FRAIS_AN_RF']:
+                                    if col in acq_row.columns and col in output_df.columns:
+                                        output_df[col] = acq_row[col].iloc[0]
+                    
+                    # Fill DEPOTS_FUTURS columns
+                    if 'depots_futurs' in lookup_data:
+                        depot_df = lookup_data['depots_futurs']
+                        if 'ID_DEPOT' in depot_df.columns:
+                            depot_row = depot_df[depot_df['ID_DEPOT'] == id_depot]
+                            if len(depot_row) > 0:
+                                for col in ['PC_DEPOT_ANNUEL', 'VAR_DEPOT_FCT', 'AGE_MAX_DEPOT', 'I_EVEN_CESSE_DEPOT']:
+                                    if col in depot_row.columns and col in output_df.columns:
+                                        output_df[col] = depot_row[col].iloc[0]
+                    
+                    # Fill FORWARD_RATE and AJUST_FORWARD_RATE_VM_0 from rendements
+                    if 'rendements' in lookup_data:
+                        rend_df = lookup_data['rendements']
+                        if 'AN_EVAL' in rend_df.columns or 'an_eval' in rend_df.columns:
+                            an_col = 'AN_EVAL' if 'AN_EVAL' in rend_df.columns else 'an_eval'
+                            mois_col = 'MOIS_EVAL' if 'MOIS_EVAL' in rend_df.columns else 'mois_eval'
+                            for idx, row in output_df.iterrows():
+                                an_val = row.get('an_eval', np.nan)
+                                mois_val = row.get('mois_eval', np.nan)
+                                if pd.notna(an_val) and pd.notna(mois_val):
+                                    rend_match = rend_df[(rend_df[an_col] == an_val) & (rend_df[mois_col] == mois_val)]
+                                    if len(rend_match) > 0:
+                                        if 'FORWARD_RATE' in rend_match.columns and pd.isna(output_df.loc[idx, 'FORWARD_RATE']):
+                                            output_df.loc[idx, 'FORWARD_RATE'] = rend_match['FORWARD_RATE'].iloc[0]
+                                        if 'AJUST_FORWARD_RATE_VM_0' in rend_match.columns and pd.isna(output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0']):
+                                            output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0'] = rend_match['AJUST_FORWARD_RATE_VM_0'].iloc[0]
+                    
+                    # Fill FRAIS from frais_admin
+                    if 'frais_admin' in lookup_data:
+                        frais_df = lookup_data['frais_admin']
+                        if 'FRAIS' in frais_df.columns and 'FRAIS' in output_df.columns:
+                            output_df['FRAIS'] = frais_df['FRAIS'].iloc[0] if len(frais_df) > 0 else np.nan
+                    
+                    # Fill COUSSINS_ESCAP columns
+                    if 'coussins_escap' in lookup_data:
+                        coussin_df = lookup_data['coussins_escap']
+                        coussin_cols = [c for c in coussin_df.columns if c.startswith('BASE_') or c.startswith('TX_')]
+                        for col in coussin_cols:
+                            if col in output_df.columns:
+                                output_df[col] = coussin_df[col].iloc[0] if len(coussin_df) > 0 else np.nan
+
                 output_example_gpu_path = output_path / "OUTPUT_EXAMPLE_GPU.csv"
-                pd.DataFrame(wide_rows, columns=example_header).to_csv(output_example_gpu_path, index=False)
+                output_df.to_csv(output_example_gpu_path, index=False)
                 print(f"✓ Saved OUTPUT_EXAMPLE_GPU.csv (matches output_example.csv schema; debug: account={debug_account_idx}, scenario={debug_scenario_idx})")
                 saved_files.append("OUTPUT_EXAMPLE_GPU.csv (output_example.csv schema; partial fill)")
     
@@ -1721,6 +1812,7 @@ def run_projection_gpu_nested(
         population_ids=population_ids,
         debug_flux=debug_flux_result,
         population_df=data.get('population'),
+        lookup_data=data,
     )
     
     return ProjectionResult(
