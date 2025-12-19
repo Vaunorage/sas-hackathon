@@ -1023,7 +1023,10 @@ def save_results(
                     w0['MT_GAR_DECES_PROJ'] = acc_row.get('MT_GAR_DECES', np.nan)
                     w0['MT_GAR_ECH_PROJ'] = acc_row.get('MT_GAR_ECH', np.nan)
                     w0['MT_SRG_PROJ'] = acc_row.get('MT_SRG', np.nan)
+                    skip_cols = {'mois_eval', 'mois_eval_ext', 'an_eval', 'TX_SURVIE', 'TX_SURVIE_DEB'}
                     for c in example_header:
+                        if c in skip_cols:
+                            continue
                         if pd.isna(w0.get(c, np.nan)) and c in acc_row.index:
                             w0[c] = acc_row[c]
                     wide_rows.append(w0)
