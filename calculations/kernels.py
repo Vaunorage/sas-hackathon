@@ -1091,6 +1091,8 @@ def nested_valuation_kernel_five_chocs(
     I_FRAIS_SUR_SRG = int(acc[ACCOUNT_IDX_I_FRAIS_SUR_SRG])
     ANNEE_COTIS = int(acc[ACCOUNT_IDX_ANNEE_COTIS]) if acc[ACCOUNT_IDX_ANNEE_COTIS] > 0 else start_annee_reelle
     MOIS_COTIS = int(acc[ACCOUNT_IDX_MOIS_COTIS]) if acc[ACCOUNT_IDX_MOIS_COTIS] > 0 else 1
+    PC_BONI_DECES = acc[ACCOUNT_IDX_PC_BONI_DECES]
+    MAX_BONI_DECES = int(acc[ACCOUNT_IDX_MAX_BONI_DECES])
     AJUSTEMENT_MENSUEL_GAR = acc[ACCOUNT_IDX_AJUSTEMENT_MENSUEL_GAR]
     PC_GAR_DECES_2 = acc[ACCOUNT_IDX_PC_GAR_DECES_2]
     AGE_CHANG_DECES = int(acc[ACCOUNT_IDX_AGE_CHANG_DECES])
@@ -1230,20 +1232,18 @@ def nested_valuation_kernel_five_chocs(
                 MOIS_ECH_PROJ = start_mois_ech
                 pc_gar_deces_1 = start_pc_gar_deces_1
 
-                orig_total = (acc[ACCOUNT_IDX_MT_SP500] + acc[ACCOUNT_IDX_MT_TSX] + acc[ACCOUNT_IDX_MT_EAFE] +
-                              acc[ACCOUNT_IDX_MT_DEX] + acc[ACCOUNT_IDX_MT_MM])
-                if orig_total > 0.0:
-                    w_sp500 = acc[ACCOUNT_IDX_MT_SP500] / orig_total
-                    w_tsx = acc[ACCOUNT_IDX_MT_TSX] / orig_total
-                    w_eafe = acc[ACCOUNT_IDX_MT_EAFE] / orig_total
-                    w_dex = acc[ACCOUNT_IDX_MT_DEX] / orig_total
-                    w_mm = acc[ACCOUNT_IDX_MT_MM] / orig_total
-                else:
+                if curr_vm > 0.0:
                     w_sp500 = curr_mt_sp500 / curr_vm
                     w_tsx = curr_mt_tsx / curr_vm
                     w_eafe = curr_mt_eafe / curr_vm
                     w_dex = curr_mt_dex / curr_vm
                     w_mm = curr_mt_mm / curr_vm
+                else:
+                    w_sp500 = 0.0
+                    w_tsx = 0.0
+                    w_eafe = 0.0
+                    w_dex = 0.0
+                    w_mm = 0.0
 
                 for t_int in range(n_internal_years):
                     if curr_vm <= 0.0 or TX_SURVIE <= 0.0:
@@ -1386,6 +1386,11 @@ def nested_valuation_kernel_five_chocs(
                     lapse = 1.0 - math.pow(1.0 - LAPSE_TOT - LAPSE_PART, 1.0 / FREQ_EVAL_INT)
 
                     TX_SURVIE = TX_SURVIE * (1.0 - qx) * (1.0 - lapse)
+
+                    if PC_BONI_DECES > 0.0 and age < MAX_BONI_DECES:
+                        MT_BONI_DECES_PROJ = MT_BONI_DECES_PROJ + (MT_GAR_DECES_PROJ * PC_BONI_DECES / FREQ_EVAL_INT)
+                    else:
+                        MT_BONI_DECES_PROJ = 0.0
 
                     MT_VM_AV_RETRAIT = MT_VM_AV_RETRAIT_FRAIS * math.exp(-PC_RFG / FREQ_EVAL_INT)
 
@@ -1537,7 +1542,9 @@ def nested_valuation_kernel_five_chocs(
                     VP_PREST_DECES = PREST_DECES * tx_actu
 
                     PREST_ECH = 0.0
-                    if annee_reelle == ANNEE_ECH_PROJ and mois_eval == MOIS_ECH_PROJ:
+                    target_month_ech = 12 if MOIS_NAIS == int(12 // FREQ_EVAL_INT) else (MOIS_NAIS - int(12 // FREQ_EVAL_INT))
+                    if ((annee_reelle == ANNEE_ECH_PROJ and mois_eval == MOIS_ECH_PROJ) or
+                            (age == AGE_FIN_CONTRAT and mois_eval == target_month_ech)):
                         diff_ech = MT_GAR_ECH_PROJ - MT_VM_AP_RETRAIT
                         PREST_ECH = -diff_ech * TX_SURVIE if diff_ech > 0.0 else 0.0
                         ANNEE_ECH_PROJ = ANNEE_ECH_PROJ + NB_AN_ECH
@@ -1667,7 +1674,10 @@ def nested_valuation_kernel_five_chocs(
                     fixed_fee_annual = 0.0
                     if ID_PRODUIT < fees_lookup.shape[0] and annee_reelle < fees_lookup.shape[1]:
                         fixed_fee_annual = fees_lookup[ID_PRODUIT, annee_reelle]
-                    FRAIS_FIXES = -fixed_fee_annual / FREQ_EVAL_INT * TX_SURVIE_DEB if MT_VM_AV_RETRAIT > 0.0 else 0.0
+                    if MT_VM_AV_RETRAIT <= 0.0 and VP_PREST_MRV == 0.0:
+                        FRAIS_FIXES = 0.0
+                    else:
+                        FRAIS_FIXES = -fixed_fee_annual / FREQ_EVAL_INT * TX_SURVIE_DEB
                     VP_FRAIS_FIXES = FRAIS_FIXES * tx_actu
 
                     HON_GEST = -MT_VM_AV_RETRAIT_FRAIS * (math.exp(PC_HONORAIRES_GEST / FREQ_EVAL_INT) - 1.0) * TX_SURVIE_DEB
