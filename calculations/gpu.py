@@ -1724,15 +1724,15 @@ Examples:
         """
     )
 
-    parser.add_argument('--max-accounts', type=int, default=2,
+    parser.add_argument('--max-accounts', type=int, default=1,
                         help='Maximum number of accounts to process (for testing)')
-    parser.add_argument('--years', type=int, default=100,
+    parser.add_argument('--years', type=int, default=3,
                         help='Number of years to project (default: 100)')
 
     # Nested mode parameters
-    parser.add_argument('--ext-scenarios', type=int, default=100,
+    parser.add_argument('--ext-scenarios', type=int, default=1,
                         help='Number of external (real-world) scenarios for nested mode (default: 100)')
-    parser.add_argument('--int-scenarios', type=int, default=100,
+    parser.add_argument('--int-scenarios', type=int, default=5,
                         help='Number of internal (risk-neutral) scenarios per node for nested mode (default: 100)')
     parser.add_argument('--shock', type=float, default=0.35,
                         help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
@@ -1750,7 +1750,7 @@ Examples:
                         help='Month (mois_eval) to debug (-1 = disabled)')
     parser.add_argument('--debug-int-scenario', type=int, default=0,
                         help='Internal scenario to debug (-1 = disabled)')
-    parser.add_argument('--debug-int-year', type=int, default=0,
+    parser.add_argument('--debug-int-year', type=int, default=-1,
                         help='Internal year to debug (-1 = disabled)')
 
     args = parser.parse_args()
