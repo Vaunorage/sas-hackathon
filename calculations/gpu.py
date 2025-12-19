@@ -1167,6 +1167,49 @@ def save_results(
                         w['rc'] = 0.0
                         w['AJUST_NOUV_AFFAIRES'] = 0.0
                         w['MT_VM_AV_RETRAIT_FRAIS'] = r.get('MT_VM_AV_RETRAIT', np.nan)
+                        
+                        # Present value columns (VP_*) - set to 0 as placeholders
+                        w['VP_PRIMES_GARANTIES'] = 0.0
+                        w['VP_PREST_MRV'] = 0.0
+                        w['VP_PREST_DECES'] = 0.0
+                        w['VP_PREST_ECH'] = 0.0
+                        w['VP_COMM_VENTE'] = 0.0
+                        w['VP_FRAIS_ACQUIS'] = 0.0
+                        w['VP_FRAIS_FIXES'] = 0.0
+                        w['VP_HON_GEST'] = 0.0
+                        w['VP_COMM_MAINTIEN'] = 0.0
+                        w['VP_PRIMES_VARIABLES'] = 0.0
+                        w['VP_FLUX_TOT'] = 0.0
+                        w['VP_VALEUR_MARCHANDE'] = 0.0
+                        w['VP_COUSSIN_DEPENSE'] = 0.0
+                        w['VP_COUSSIN_DECHEANCE'] = 0.0
+                        w['VP_COUSSIN_MORTALITE'] = 0.0
+                        w['VP_COUSSIN_DEPOT'] = 0.0
+                        w['VP_PASSIF_REDRESSE'] = 0.0
+                        w['VP_COUSSIN_CREDIT'] = 0.0
+                        w['VP_COUSSIN_MARCHE'] = 0.0
+                        
+                        # Additional computed fields
+                        w['MT_SRG_AV_RETRAIT'] = r.get('MT_SRG', np.nan)
+                        w['MT_VM_AP_RETRAIT_DEPOT'] = r.get('MT_VM_AP_RETRAIT', np.nan)
+                        w['DEPOT_FUTUR_SURVIE'] = r.get('DEPOT_FUTUR', 0) * w.get('TX_SURVIE', 1.0) if pd.notna(r.get('DEPOT_FUTUR')) else 0.0
+                        
+                        # Commission/fee percentages from acquisition table (will be filled from lookup)
+                        w['PC_COMMISSION_MAINTIEN'] = 0.0
+                        w['PC_COMMISSION_VENTE'] = 0.0
+                        w['PC_FRAIS_AN'] = 0.0
+                        
+                        # Category and coverage fields
+                        w['UNITE_COUVERTURE'] = 1.0
+                        w['VALEUR_GARANTIE'] = max(mt_gar_deces, mt_gar_ech) if pd.notna(mt_gar_deces) and pd.notna(mt_gar_ech) else 0.0
+                        w['REM_COMP_INV'] = 0.0
+                        w['CODE_CAT_PRODUIT'] = acc_row.get('ID_PRODUIT', 0)
+                        w['CAT_COUSSIN_1'] = 0
+                        w['CAT_COUSSIN_2'] = 0
+                        
+                        # Internal scenario fields (set to scenario index if available)
+                        w['scn_eval_int'] = debug_scenario_idx + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
+                        w['an_eval_int'] = an_eval
 
                     if acc_row is not None:
                         for c in example_header:
