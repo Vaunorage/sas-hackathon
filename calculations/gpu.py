@@ -1788,7 +1788,7 @@ Examples:
                         help='Month (mois_eval) to debug (-1 = disabled)')
     parser.add_argument('--debug-int-scenario', type=int, default=0,
                         help='Internal scenario to debug (-1 = disabled)')
-    parser.add_argument('--debug-int-year', type=int, default=-1,
+    parser.add_argument('--debug-int-year', type=int, default=1,
                         help='Internal year to debug (-1 = disabled)')
 
     args = parser.parse_args()
