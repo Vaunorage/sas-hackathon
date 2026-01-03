@@ -1840,8 +1840,10 @@ def run_projection_gpu_nested(
         if progress_callback is not None:
             progress_callback(i + 1, num_batches)
     
-    # Create results DataFrames
+    # Extract population IDs early for use in debug output
     population_ids = data['population']['ID_COMPTE'].values
+    
+    # Create results DataFrames
     results_df, results_5chocs_df, sensitivities_df = create_results_dataframes(
         population_ids=population_ids,
         all_reserves=all_reserves,
