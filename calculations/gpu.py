@@ -1941,15 +1941,15 @@ Examples:
         """
     )
 
-    parser.add_argument('--max-accounts', type=int, default=1,
+    parser.add_argument('--max-accounts', type=int, default=200,
                         help='Maximum number of accounts to process (for testing)')
-    parser.add_argument('--years', type=int, default=3,
+    parser.add_argument('--years', type=int, default=100,
                         help='Number of years to project (default: 100)')
 
     # Nested mode parameters
-    parser.add_argument('--ext-scenarios', type=int, default=1,
+    parser.add_argument('--ext-scenarios', type=int, default=100,
                         help='Number of external (real-world) scenarios for nested mode (default: 100)')
-    parser.add_argument('--int-scenarios', type=int, default=5,
+    parser.add_argument('--int-scenarios', type=int, default=100,
                         help='Number of internal (risk-neutral) scenarios per node for nested mode (default: 100)')
     parser.add_argument('--shock', type=float, default=0.35,
                         help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
