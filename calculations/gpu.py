@@ -1356,33 +1356,7 @@ def save_results(
     # 2. DEBUG OUTPUT (if enabled)
     # ===========================================
     
-    if ext_debug is not None:
-        print(f"\n✓ [DEBUG] Saving external kernel debug output...")
-        
-        # Create single-row DataFrame with debug filter context
-        row = {}
-        if debug_params:
-            debug_account_idx = debug_params.get('account', -1)
-            row['DEBUG_ACCOUNT_IDX'] = debug_account_idx
-            # Map account index to real ID_COMPTE if available
-            if population_ids is not None and debug_account_idx >= 0 and debug_account_idx < len(population_ids):
-                row['ID_COMPTE'] = int(population_ids[debug_account_idx])
-            else:
-                row['ID_COMPTE'] = -1
-            row['DEBUG_SCENARIO'] = debug_params.get('scenario', -1)
-            row['DEBUG_YEAR'] = debug_params.get('year', -1)
-            row['DEBUG_MONTH'] = debug_params.get('month', -1)
-        
-        for col_idx, col_name in enumerate(EXT_DEBUG_COLUMNS):
-            row[col_name] = ext_debug[col_idx]
-        
-        ext_debug_df = pd.DataFrame([row])
-        ext_debug_path = output_path / "DEBUG_EXTERNAL_KERNEL.csv"
-        ext_debug_df.to_csv(ext_debug_path, index=False, sep=';')
-        print(f"  Saved DEBUG_EXTERNAL_KERNEL.csv (1 row)")
-        if debug_params:
-            print(f"  Filter: account={debug_params.get('account', -1)}, scenario={debug_params.get('scenario', -1)}, year={debug_params.get('year', -1)}, month={debug_params.get('month', -1)}")
-        saved_files.append("DEBUG_EXTERNAL_KERNEL.csv (external kernel debug)")
+    # Note: EXT_DEBUG_GPU.csv removed - redundant with FLUX_PROJETES_GPU.csv
     
     if int_debug is not None:
         print(f"\n✓ [DEBUG] Saving internal kernel debug output...")
@@ -1418,12 +1392,7 @@ def save_results(
             print(f"  Filter: int_scenario={debug_params.get('int_scenario', -1)}, int_year={debug_params.get('int_year', -1)}")
         saved_files.append("DEBUG_INTERNAL_KERNEL.csv (internal kernel debug)")
 
-    if int_debug_ts_df is not None and len(int_debug_ts_df) > 0:
-        int_debug_ts_saved_df = int_debug_ts_df.copy()
-        int_debug_ts_path = output_path / "DEBUG_INTERNAL_LOOP_TS.csv"
-        int_debug_ts_saved_df.to_csv(int_debug_ts_path, index=False, sep=';')
-        print(f"  Saved DEBUG_INTERNAL_LOOP_TS.csv ({len(int_debug_ts_saved_df)} rows)")
-        saved_files.append("DEBUG_INTERNAL_LOOP_TS.csv (internal loop time series debug)")
+    # Note: INT_DEBUG_TS_GPU.csv removed - rarely needed, use INT_DEBUG_GPU.csv instead
     
     # ===========================================
     # 3. SUMMARY
@@ -1441,9 +1410,9 @@ def save_results(
         'saved_files': saved_files,
         'vp_flux_total': vp_flux_total_df,
         'chocs_summary': chocs_summary_df if results_5chocs_df is not None else None,
-        'ext_debug_df': ext_debug_df if ext_debug is not None else None,
+        'ext_debug_df': None,  # Removed - redundant with FLUX_PROJETES_GPU.csv
         'int_debug_df': int_debug_df if int_debug is not None else None,
-        'int_debug_ts_df': int_debug_ts_saved_df,
+        'int_debug_ts_df': None,  # Removed - rarely needed
         'flux_projetes_df': flux_projetes_df,
     }
     
