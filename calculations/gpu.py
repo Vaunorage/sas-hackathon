@@ -1955,11 +1955,11 @@ Examples:
                         help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
     
     # Debug filter parameters
-    parser.add_argument('--debug-account', type=int, default=0,
+    parser.add_argument('--debug-account', type=int, default=1,
                         help='Account index (0-based row index) to debug (-1 = disabled)')
     parser.add_argument('--debug-account-id', type=int, default=None,
                         help='Account ID_COMPTE to debug (overrides --debug-account when provided)')
-    parser.add_argument('--debug-scenario', type=int, default=0,
+    parser.add_argument('--debug-scenario', type=int, default=1,
                         help='External scenario index to debug (-1 = disabled)')
     parser.add_argument('--debug-year', type=int, default=-1,
                         help='Year (an_eval) to debug (-1 = disabled)')
