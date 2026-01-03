@@ -999,34 +999,8 @@ def save_results(
                     acc_row = population_df.iloc[debug_account_idx]
 
                 wide_rows = []
-                # Match output_example.csv convention: include an initial evaluation row (t0)
-                # with TX_SURVIE = 1 and projected values equal to initial account values.
-                if acc_row is not None:
-                    w0 = {c: np.nan for c in example_header}
-                    w0['ID_COMPTE'] = int(acc_row.get('ID_COMPTE', -1))
-                    w0['scn_eval'] = int(debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
-                    w0['an_eval'] = 0
-                    w0['mois_eval'] = 12
-                    w0['mois_eval_ext'] = 12
-                    w0['TX_SURVIE'] = 1.0
-                    w0['TX_SURVIE_DEB'] = 1.0
-                    w0['MT_VM_PROJ'] = acc_row.get('MT_VM', np.nan)
-                    w0['MT_SP500_PROJ'] = acc_row.get('MT_SP500', np.nan)
-                    w0['MT_TSX_PROJ'] = acc_row.get('MT_TSX', np.nan)
-                    w0['MT_EAFE_PROJ'] = acc_row.get('MT_EAFE', np.nan)
-                    w0['MT_DEX_PROJ'] = acc_row.get('MT_DEX', np.nan)
-                    w0['MT_MM_PROJ'] = acc_row.get('MT_MM', np.nan)
-                    w0['MT_GAR_DECES_PROJ'] = acc_row.get('MT_GAR_DECES', np.nan)
-                    w0['MT_GAR_ECH_PROJ'] = acc_row.get('MT_GAR_ECH', np.nan)
-                    w0['MT_SRG_PROJ'] = acc_row.get('MT_SRG', np.nan)
-                    skip_cols = {'mois_eval', 'mois_eval_ext', 'an_eval', 'TX_SURVIE', 'TX_SURVIE_DEB'}
-                    for c in example_header:
-                        if c in skip_cols:
-                            continue
-                        if pd.isna(w0.get(c, np.nan)) and c in acc_row.index:
-                            w0[c] = acc_row[c]
-                    wide_rows.append(w0)
-
+                # Note: Ground truth starts directly at year 1, no initial t0 row
+                
                 prev_tx_survie = 1.0
                 for r in rows:
                     w = {c: np.nan for c in example_header}
