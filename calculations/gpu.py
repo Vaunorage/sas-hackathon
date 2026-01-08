@@ -1120,12 +1120,17 @@ def save_results(
                     annee_eval_ini = acc_row.get('ANNEE_EVALUATION_INI', 2024)
                     annee_nais = acc_row.get('ANNEE_NAIS', 2000)
                     mois_nais = acc_row.get('MOIS_NAIS', 1)
-                    init_row['annee_reelle'] = annee_eval_ini
-                    # SAS: age = MAX(INT(YRDIF(MDY(MOIS_NAIS,01,ANNEE_NAIS),MDY(mois_eval,01,annee_reelle),'AGE')),1)
-                    # For init row: mois_eval=12, annee_reelle=annee_eval_ini
-                    # Age calculation considers birth month
-                    age_years = annee_eval_ini - annee_nais
-                    if 12 < mois_nais:  # If birth month hasn't occurred yet in the year
+                    # SAS line 903: annee_reelle = ANNEE_EVALUATION_INI + an_eval - 1
+                    # For init row: an_eval=0, so annee_reelle = ANNEE_EVALUATION_INI - 1
+                    init_row['annee_reelle'] = annee_eval_ini - 1
+                    # SAS line 909: age = MAX(INT(YRDIF(MDY(MOIS_NAIS,01,ANNEE_NAIS),MDY(mois_eval,01,annee_reelle),'AGE')),1)
+                    # For init row: mois_eval=12, annee_reelle=annee_eval_ini-1
+                    # YRDIF calculates years between two dates
+                    annee_reelle_init = annee_eval_ini - 1
+                    # Age = years between (MOIS_NAIS/1/ANNEE_NAIS) and (12/1/annee_reelle_init)
+                    age_years = annee_reelle_init - annee_nais
+                    # If birth month (mois_nais) > eval month (12), subtract 1 year
+                    if mois_nais > 12:
                         age_years -= 1
                     init_row['AGE'] = max(age_years, 1)
                     # These should be NaN in init row
@@ -1378,6 +1383,8 @@ def save_results(
                 # Convert to DataFrame and fill NA columns from lookup tables
                 output_df = pd.DataFrame(wide_rows, columns=example_header)
                 
+                # Note: Row 0 is the init row (an_eval=0, mois_eval=12) which should NOT have lookup values
+                # Only fill lookup values for data rows (row 1 onwards)
                 if lookup_data is not None and acc_row is not None:
                     # Get account keys for lookups
                     id_lapse = acc_row.get('ID_LAPSE', 0)
@@ -1385,14 +1392,15 @@ def save_results(
                     id_depot = acc_row.get('ID_DEPOT', 0)
                     i_regime_2 = acc_row.get('I_REGIME_2', 0)
                     
-                    # Fill MIN_FERR from min_ferr table (keyed by AGE)
+                    # Fill MIN_FERR from min_ferr table (keyed by AGE) - skip init row
                     if 'min_ferr' in lookup_data and 'MIN_FERR' in output_df.columns:
                         min_ferr_df = lookup_data['min_ferr']
                         if 'AGE' in min_ferr_df.columns and 'MIN_FERR' in min_ferr_df.columns:
                             age_to_minferr = dict(zip(min_ferr_df['AGE'], min_ferr_df['MIN_FERR']))
-                            output_df['MIN_FERR'] = output_df['AGE'].map(age_to_minferr)
+                            # Only fill for data rows (skip row 0)
+                            output_df.loc[1:, 'MIN_FERR'] = output_df.loc[1:, 'AGE'].map(age_to_minferr)
                     
-                    # Fill TX_LAPSE_TOT columns from tx_lapse_tot table
+                    # Fill TX_LAPSE_TOT columns from tx_lapse_tot table - skip init row
                     if 'tx_lapse_tot' in lookup_data:
                         lapse_tot_df = lookup_data['tx_lapse_tot']
                         if 'ID_LAPSE' in lapse_tot_df.columns:
@@ -1400,9 +1408,9 @@ def save_results(
                             if len(lapse_tot_row) > 0:
                                 for col in ['TX_LAPSE_TOT_MIN', 'TX_LAPSE_TOT_MAX', 'FACT_DIM']:
                                     if col in lapse_tot_row.columns and col in output_df.columns:
-                                        output_df[col] = lapse_tot_row[col].iloc[0]
+                                        output_df.loc[1:, col] = lapse_tot_row[col].iloc[0]
                     
-                    # Fill TX_LAPSE_PART columns from tx_lapse_part table
+                    # Fill TX_LAPSE_PART columns from tx_lapse_part table - skip init row
                     if 'tx_lapse_part' in lookup_data:
                         lapse_part_df = lookup_data['tx_lapse_part']
                         if 'ID_LAPSE' in lapse_part_df.columns:
@@ -1410,9 +1418,9 @@ def save_results(
                             if len(lapse_part_row) > 0:
                                 for col in ['TX_LAPSE_PART_MIN', 'TX_LAPSE_PART_MAX']:
                                     if col in lapse_part_row.columns and col in output_df.columns:
-                                        output_df[col] = lapse_part_row[col].iloc[0]
+                                        output_df.loc[1:, col] = lapse_part_row[col].iloc[0]
                     
-                    # Fill ACQUISITION columns (PC_COMMISSION_*, PC_FRAIS_AN_*)
+                    # Fill ACQUISITION columns (PC_COMMISSION_*, PC_FRAIS_AN_*) - skip init row
                     if 'acquisition' in lookup_data:
                         acq_df = lookup_data['acquisition']
                         if 'ID_ACQUI' in acq_df.columns:
@@ -1422,9 +1430,9 @@ def save_results(
                                            'PC_COMMISSION_MAINTIEN_RF', 'PC_COMMISSION_MAINTIEN_AC',
                                            'PC_FRAIS_AN_AC', 'PC_FRAIS_AN_RF']:
                                     if col in acq_row.columns and col in output_df.columns:
-                                        output_df[col] = acq_row[col].iloc[0]
+                                        output_df.loc[1:, col] = acq_row[col].iloc[0]
                     
-                    # Fill DEPOTS_FUTURS columns
+                    # Fill DEPOTS_FUTURS columns - skip init row
                     if 'depots_futurs' in lookup_data:
                         depot_df = lookup_data['depots_futurs']
                         if 'ID_DEPOT' in depot_df.columns:
@@ -1432,15 +1440,16 @@ def save_results(
                             if len(depot_row) > 0:
                                 for col in ['PC_DEPOT_ANNUEL', 'VAR_DEPOT_FCT', 'AGE_MAX_DEPOT', 'I_EVEN_CESSE_DEPOT']:
                                     if col in depot_row.columns and col in output_df.columns:
-                                        output_df[col] = depot_row[col].iloc[0]
+                                        output_df.loc[1:, col] = depot_row[col].iloc[0]
                     
-                    # Fill FORWARD_RATE and AJUST_FORWARD_RATE_VM_0 from rendements
+                    # Fill FORWARD_RATE and AJUST_FORWARD_RATE_VM_0 from rendements - skip init row
                     if 'rendements' in lookup_data:
                         rend_df = lookup_data['rendements']
                         if 'AN_EVAL' in rend_df.columns or 'an_eval' in rend_df.columns:
                             an_col = 'AN_EVAL' if 'AN_EVAL' in rend_df.columns else 'an_eval'
                             mois_col = 'MOIS_EVAL' if 'MOIS_EVAL' in rend_df.columns else 'mois_eval'
-                            for idx, row in output_df.iterrows():
+                            # Skip row 0 (init row)
+                            for idx, row in output_df.iloc[1:].iterrows():
                                 an_val = row.get('an_eval', np.nan)
                                 mois_val = row.get('mois_eval', np.nan)
                                 if pd.notna(an_val) and pd.notna(mois_val):
@@ -1451,19 +1460,19 @@ def save_results(
                                         if 'AJUST_FORWARD_RATE_VM_0' in rend_match.columns and pd.isna(output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0']):
                                             output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0'] = rend_match['AJUST_FORWARD_RATE_VM_0'].iloc[0]
                     
-                    # Fill FRAIS from frais_admin
+                    # Fill FRAIS from frais_admin - skip init row
                     if 'frais_admin' in lookup_data:
                         frais_df = lookup_data['frais_admin']
                         if 'FRAIS' in frais_df.columns and 'FRAIS' in output_df.columns:
-                            output_df['FRAIS'] = frais_df['FRAIS'].iloc[0] if len(frais_df) > 0 else np.nan
+                            output_df.loc[1:, 'FRAIS'] = frais_df['FRAIS'].iloc[0] if len(frais_df) > 0 else np.nan
                     
-                    # Fill COUSSINS_ESCAP columns
+                    # Fill COUSSINS_ESCAP columns - skip init row
                     if 'coussins_escap' in lookup_data:
                         coussin_df = lookup_data['coussins_escap']
                         coussin_cols = [c for c in coussin_df.columns if c.startswith('BASE_') or c.startswith('TX_')]
                         for col in coussin_cols:
                             if col in output_df.columns:
-                                output_df[col] = coussin_df[col].iloc[0] if len(coussin_df) > 0 else np.nan
+                                output_df.loc[1:, col] = coussin_df[col].iloc[0] if len(coussin_df) > 0 else np.nan
 
                 output_example_gpu_path = output_path / "OUTPUT_EXAMPLE_GPU.csv"
                 output_df.to_csv(output_example_gpu_path, index=False)
