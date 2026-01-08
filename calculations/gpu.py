@@ -999,9 +999,157 @@ def save_results(
                     acc_row = population_df.iloc[debug_account_idx]
 
                 wide_rows = []
-                # Note: Ground truth starts directly at year 1, no initial t0 row
+                # Add initialization row (an_eval=0, mois_eval=12) like ground truth
+                # Ground truth first row has many NaN fields - only specific fields are populated
+                if acc_row is not None:
+                    init_row = {c: np.nan for c in example_header}
+                    # Only these fields have values in ground truth init row:
+                    init_row['FORWARD_RATE'] = 0.0
+                    # Projected values (from account initial state)
+                    init_row['MT_SP500_PROJ'] = acc_row.get('MT_SP500', np.nan)
+                    init_row['MT_TSX_PROJ'] = acc_row.get('MT_TSX', np.nan)
+                    init_row['MT_EAFE_PROJ'] = acc_row.get('MT_EAFE', np.nan)
+                    init_row['MT_DEX_PROJ'] = acc_row.get('MT_DEX', np.nan)
+                    init_row['MT_MM_PROJ'] = acc_row.get('MT_MM', 0)
+                    init_row['MT_VM_PROJ'] = acc_row.get('MT_VM', np.nan)
+                    init_row['MT_GAR_ECH_PROJ'] = acc_row.get('MT_GAR_ECH', np.nan)
+                    init_row['MT_GAR_DECES_PROJ'] = acc_row.get('MT_GAR_DECES', np.nan)
+                    init_row['MT_BONI_DECES_PROJ'] = acc_row.get('MT_BONI_DECES', 0)
+                    init_row['ANNEE_ECH_PROJ'] = acc_row.get('ANNEE_ECH', np.nan)
+                    init_row['MOIS_ECH_PROJ'] = acc_row.get('MOIS_ECH', np.nan)
+                    init_row['TX_SURVIE'] = 1.0
+                    init_row['MT_SRG_PROJ'] = acc_row.get('MT_SRG', 0)
+                    init_row['MT_BCB_PROJ'] = acc_row.get('MT_BCB', 0)
+                    init_row['MT_MRV_MRG_MRA_PROJ'] = acc_row.get('MT_MRV_MRG_MRA', 0)
+                    init_row['TAUX_MRV_MRG_MRA_PROJ'] = acc_row.get('TAUX_MRV_MRG_MRA', 0)
+                    init_row['MT_MIN_FERR_PROJ'] = 0.0
+                    init_row['TX_ACTUALISATION'] = 1.0
+                    # Initial market values (same as projected for init row)
+                    init_row['MT_VM'] = acc_row.get('MT_VM', np.nan)
+                    init_row['MT_DEX'] = acc_row.get('MT_DEX', np.nan)
+                    init_row['MT_SP500'] = acc_row.get('MT_SP500', np.nan)
+                    init_row['MT_TSX'] = acc_row.get('MT_TSX', np.nan)
+                    init_row['MT_EAFE'] = acc_row.get('MT_EAFE', np.nan)
+                    init_row['MT_MM'] = acc_row.get('MT_MM', 0)
+                    init_row['AJUSTEMENT_MENSUEL_GAR'] = 0
+                    init_row['MT_RF'] = acc_row.get('MT_RF', 0)
+                    # Product parameters
+                    init_row['PC_REVENU_FDS'] = acc_row.get('PC_REVENU_FDS', np.nan)
+                    init_row['PC_RFG'] = acc_row.get('PC_RFG', np.nan)
+                    init_row['PC_FRAIS_GARANTIE'] = acc_row.get('PC_FRAIS_GARANTIE', 0)
+                    init_row['PC_HONORAIRES_GEST'] = acc_row.get('PC_HONORAIRES_GEST', np.nan)
+                    init_row['MT_GAR_ECH'] = acc_row.get('MT_GAR_ECH', np.nan)
+                    init_row['MT_GAR_DECES'] = acc_row.get('MT_GAR_DECES', np.nan)
+                    init_row['MT_BCB'] = acc_row.get('MT_BCB', 0)
+                    init_row['MT_SRG'] = acc_row.get('MT_SRG', 0)
+                    init_row['MT_MRV_MRG_MRA'] = acc_row.get('MT_MRV_MRG_MRA', 0)
+                    init_row['M_MT_MRV_EXCEDENT'] = acc_row.get('M_MT_MRV_EXCEDENT', 0)
+                    init_row['TAUX_MRV_MRG_MRA'] = acc_row.get('TAUX_MRV_MRG_MRA', 0)
+                    init_row['MT_BONI_DECES'] = acc_row.get('MT_BONI_DECES', 0)
+                    # Product info fields
+                    init_row['ID_PRODUIT'] = acc_row.get('ID_PRODUIT', np.nan)
+                    init_row['I_PRODUIT_REGR'] = acc_row.get('I_PRODUIT_REGR', 0)
+                    init_row['I_PRODUIT_HEDGE'] = acc_row.get('I_PRODUIT_HEDGE', 0)
+                    init_row['PC_GAR_ECH'] = acc_row.get('PC_GAR_ECH', np.nan)
+                    init_row['PC_GAR_ECH_DEP_FUT'] = acc_row.get('PC_GAR_ECH_DEP_FUT', np.nan)
+                    init_row['MAX_RESET_FACUL_ECH'] = acc_row.get('MAX_RESET_FACUL_ECH', 0)
+                    init_row['RATIO_VM_VG_RESET_ECH'] = acc_row.get('RATIO_VM_VG_RESET_ECH', 0)
+                    init_row['AGE_FIN_CONTRAT'] = acc_row.get('AGE_FIN_CONTRAT', np.nan)
+                    init_row['PC_RENOUV_ECH'] = acc_row.get('PC_RENOUV_ECH', np.nan)
+                    init_row['AGE_MAX_RENOUV_ECH'] = acc_row.get('AGE_MAX_RENOUV_ECH', np.nan)
+                    init_row['NB_AN_ECH'] = acc_row.get('NB_AN_ECH', np.nan)
+                    init_row['AGE_ECH_MIN'] = acc_row.get('AGE_ECH_MIN', 0)
+                    init_row['PC_GAR_DECES_1'] = acc_row.get('PC_GAR_DECES_1', np.nan)
+                    init_row['PC_GAR_DECES_2'] = acc_row.get('PC_GAR_DECES_2', 0)
+                    init_row['AGE_CHANG_DECES'] = acc_row.get('AGE_CHANG_DECES', np.nan)
+                    init_row['FREQ_RESET_DECES'] = acc_row.get('FREQ_RESET_DECES', 0)
+                    init_row['MAX_RESET_DECES'] = acc_row.get('MAX_RESET_DECES', 0)
+                    init_row['I_RESET_DECES_ECH'] = acc_row.get('I_RESET_DECES_ECH', 0)
+                    init_row['PC_BONI_DECES'] = acc_row.get('PC_BONI_DECES', 0)
+                    init_row['MAX_BONI_DECES'] = acc_row.get('MAX_BONI_DECES', np.nan)
+                    init_row['AGE_MRV_PERMIS'] = acc_row.get('AGE_MRV_PERMIS', 0)
+                    init_row['PC_BONI_SRG'] = acc_row.get('PC_BONI_SRG', np.nan)
+                    init_row['FREQ_RESET_SRG'] = acc_row.get('FREQ_RESET_SRG', 0)
+                    init_row['MAX_RESET_SRG'] = acc_row.get('MAX_RESET_SRG', 0)
+                    init_row['I_FRAIS_SUR_SRG'] = acc_row.get('I_FRAIS_SUR_SRG', 0)
+                    init_row['TABLE_TAUX_MRV_MRG_MRA'] = acc_row.get('TABLE_TAUX_MRV_MRG_MRA', 0)
+                    init_row['MT_TPA_RETRAIT'] = acc_row.get('MT_TPA_RETRAIT', 0)
+                    init_row['MT_TPA_DEPOT'] = acc_row.get('MT_TPA_DEPOT', 0)
+                    init_row['AJUSTEMENT_COMMISSION'] = acc_row.get('AJUSTEMENT_COMMISSION', 1)
+                    init_row['MOIS_EVALUATION_INI'] = acc_row.get('MOIS_EVALUATION_INI', np.nan)
+                    init_row['ANNEE_NAIS'] = acc_row.get('ANNEE_NAIS', np.nan)
+                    init_row['MOIS_NAIS'] = acc_row.get('MOIS_NAIS', np.nan)
+                    init_row['ANNEE_COTIS'] = acc_row.get('ANNEE_COTIS', np.nan)
+                    init_row['MOIS_COTIS'] = acc_row.get('MOIS_COTIS', np.nan)
+                    init_row['ANNEE_ECH'] = acc_row.get('ANNEE_ECH', np.nan)
+                    init_row['MOIS_ECH'] = acc_row.get('MOIS_ECH', np.nan)
+                    init_row['I_REGIME'] = acc_row.get('I_REGIME', 0)
+                    init_row['I_REGIME_2'] = acc_row.get('I_REGIME_2', 0)
+                    init_row['AGE_DECAISSEMENT'] = acc_row.get('AGE_DECAISSEMENT', np.nan)
+                    init_row['I_SEXE'] = acc_row.get('I_SEXE', 0)
+                    init_row['ID_LAPSE'] = acc_row.get('ID_LAPSE', np.nan)
+                    init_row['ID_ACQUI'] = acc_row.get('ID_ACQUI', np.nan)
+                    init_row['ID_DEPOT'] = acc_row.get('ID_DEPOT', np.nan)
+                    init_row['VAR_RETRAIT_FCT'] = acc_row.get('VAR_RETRAIT_FCT', 1)
+                    init_row['PC_RETRAIT_AGE'] = acc_row.get('PC_RETRAIT_AGE', 0)
+                    init_row['MT_RETRAIT_MAX'] = acc_row.get('MT_RETRAIT_MAX', 0)
+                    init_row['I_RESET_FACUL_ECH'] = acc_row.get('I_RESET_FACUL_ECH', 0)
+                    # Key identifiers
+                    init_row['ID_COMPTE'] = id_compte
+                    init_row['scn_eval'] = int(debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
+                    init_row['an_eval'] = 0
+                    init_row['mois_eval'] = 12
+                    # These should be NaN in init row per ground truth
+                    init_row['scn_eval_int'] = np.nan
+                    init_row['an_eval_int'] = np.nan
+                    init_row['mois_eval_ext'] = np.nan
+                    init_row['TX_SURVIE_DEB'] = 1.0
+                    init_row['TX_ACTUALISATION_DEB'] = 1.0
+                    init_row['VALEUR_MARCHANDE'] = acc_row.get('MT_VM', np.nan)
+                    # These calculation fields should be NaN in init row
+                    init_row['rc'] = np.nan
+                    init_row['AJUST_NOUV_AFFAIRES'] = np.nan
+                    init_row['MT_VM_AV_RETRAIT_FRAIS'] = np.nan
+                    init_row['duree_max10'] = np.nan
+                    init_row['VM_VG_RATIO'] = np.nan
+                    init_row['LAPSE_NIV_PART'] = np.nan
+                    init_row['LAPSE_NIV_TOT'] = np.nan
+                    init_row['LAPSE_TOT'] = np.nan
+                    init_row['LAPSE_PART'] = np.nan
+                    init_row['LAPSE'] = np.nan
+                    annee_eval_ini = acc_row.get('ANNEE_EVALUATION_INI', 2024)
+                    annee_nais = acc_row.get('ANNEE_NAIS', 2000)
+                    mois_nais = acc_row.get('MOIS_NAIS', 1)
+                    init_row['annee_reelle'] = annee_eval_ini
+                    # SAS: age = MAX(INT(YRDIF(MDY(MOIS_NAIS,01,ANNEE_NAIS),MDY(mois_eval,01,annee_reelle),'AGE')),1)
+                    # For init row: mois_eval=12, annee_reelle=annee_eval_ini
+                    # Age calculation considers birth month
+                    age_years = annee_eval_ini - annee_nais
+                    if 12 < mois_nais:  # If birth month hasn't occurred yet in the year
+                        age_years -= 1
+                    init_row['AGE'] = max(age_years, 1)
+                    # These should be NaN in init row
+                    init_row['AGE_RETRAIT'] = np.nan
+                    init_row['age_MORTALITE'] = np.nan
+                    init_row['RETRAIT'] = np.nan
+                    init_row['DEPOT_FUTUR'] = np.nan
+                    init_row['MT_VM_AV_RETRAIT'] = np.nan
+                    init_row['PRIMES_GARANTIES'] = np.nan
+                    init_row['VP_PRIMES_GARANTIES'] = np.nan
+                    init_row['MT_SRG_AV_RETRAIT'] = np.nan
+                    init_row['PREST_MRV'] = np.nan
+                    init_row['VP_PREST_MRV'] = np.nan
+                    init_row['MT_VM_AP_RETRAIT'] = np.nan
+                    init_row['MT_VM_AP_RETRAIT_DEPOT'] = np.nan
+                    init_row['PREST_DECES'] = np.nan
+                    init_row['VP_PREST_DECES'] = np.nan
+                    init_row['PREST_ECH'] = np.nan
+                    init_row['VP_PREST_ECH'] = np.nan
+                    # All other calculation/output fields should be NaN
+                    wide_rows.append(init_row)
                 
                 prev_tx_survie = 1.0
+                prev_tx_actual = 1.0
                 for r in rows:
                     w = {c: np.nan for c in example_header}
 
@@ -1009,7 +1157,8 @@ def save_results(
                     w['scn_eval'] = int(debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
                     w['an_eval'] = r.get('AN_EVAL', np.nan)
                     w['mois_eval'] = r.get('MOIS_EVAL', np.nan)
-                    w['mois_eval_ext'] = r.get('MOIS_EVAL', np.nan)
+                    # mois_eval_ext should be NaN per ground truth
+                    w['mois_eval_ext'] = np.nan
 
                     w['Qx'] = r.get('QX', np.nan)
                     w['TX_SURVIE'] = r.get('TX_SURVIE', np.nan)
@@ -1126,20 +1275,44 @@ def save_results(
                         w['FACTEUR_AGE_80'] = 1.0 if age < 80 else 0.0
                         w['FACTEUR_AGE_90'] = 1.0 if age < 90 else 0.0
                         
-                        # MIN_FERR_PROJ (would need lookup)
-                        w['MT_MIN_FERR_PROJ'] = 0.0
+                        # MIN_FERR_PROJ - lookup from min_ferr table by age
+                        mt_min_ferr = 0.0
+                        if lookup_data is not None and 'min_ferr' in lookup_data:
+                            min_ferr_df = lookup_data['min_ferr']
+                            if 'AGE' in min_ferr_df.columns and 'MIN_FERR' in min_ferr_df.columns:
+                                age_match = min_ferr_df[min_ferr_df['AGE'] == int(age)]
+                                if len(age_match) > 0:
+                                    mt_min_ferr = float(age_match['MIN_FERR'].iloc[0]) * mt_vm_proj
+                        w['MT_MIN_FERR_PROJ'] = mt_min_ferr
                         
-                        # Actualization rates (simplified)
-                        w['TX_ACTUALISATION'] = 0.0
-                        w['TX_ACTUALISATION_DEB'] = 0.0
+                        # Actualization rates - calculate from forward rate
+                        # SAS: TX_ACTUALISATION = TX_ACTUALISATION * EXP(-FORWARD_RATE * AJUST_NOUV_AFFAIRES)
+                        # TX_ACTUALISATION_DEB is the previous period's discount factor
+                        w['TX_ACTUALISATION_DEB'] = prev_tx_actual
+                        # TX_ACTUALISATION is current discount factor (compounded)
+                        forward_rate = 0.0
+                        ajust_nouv_affaires = 1.0  # Default adjustment
+                        if lookup_data is not None and 'rendements' in lookup_data:
+                            rend_df = lookup_data['rendements']
+                            an_col = 'AN_EVAL' if 'AN_EVAL' in rend_df.columns else 'an_eval'
+                            mois_col = 'MOIS_EVAL' if 'MOIS_EVAL' in rend_df.columns else 'mois_eval'
+                            rend_match = rend_df[(rend_df[an_col] == an_eval) & (rend_df[mois_col] == mois_eval)]
+                            if len(rend_match) > 0 and 'FORWARD_RATE' in rend_match.columns:
+                                forward_rate = float(rend_match['FORWARD_RATE'].iloc[0])
+                        # SAS formula: TX_ACTUALISATION = TX_ACTUALISATION * EXP(-FORWARD_RATE * AJUST_NOUV_AFFAIRES)
+                        import math
+                        curr_tx_actual = prev_tx_actual * math.exp(-forward_rate * ajust_nouv_affaires)
+                        w['TX_ACTUALISATION'] = curr_tx_actual
+                        w['AJUST_NOUV_AFFAIRES'] = ajust_nouv_affaires
+                        prev_tx_actual = curr_tx_actual
                         
-                        # Internal scenario fields
+                        # Internal scenario fields - should be NaN per ground truth
                         w['scn_eval_int'] = np.nan
                         w['an_eval_int'] = np.nan
                         
                         # Adjustment fields
                         w['rc'] = 0.0
-                        w['AJUST_NOUV_AFFAIRES'] = 0.0
+                        # AJUST_NOUV_AFFAIRES already set above from discount calculation
                         w['MT_VM_AV_RETRAIT_FRAIS'] = r.get('MT_VM_AV_RETRAIT', np.nan)
                         
                         # Present value columns (VP_*) - set to 0 as placeholders
@@ -1173,17 +1346,27 @@ def save_results(
                         w['PC_COMMISSION_VENTE'] = 0.0
                         w['PC_FRAIS_AN'] = 0.0
                         
-                        # Category and coverage fields
-                        w['UNITE_COUVERTURE'] = 1.0
-                        w['VALEUR_GARANTIE'] = max(mt_gar_deces, mt_gar_ech) if pd.notna(mt_gar_deces) and pd.notna(mt_gar_ech) else 0.0
+                        # Category and coverage fields - SAS formulas:
+                        # VALEUR_GARANTIE = MT_GAR_DECES_PROJ * TX_SURVIE (line 780)
+                        # UNITE_COUVERTURE = MAX(MT_VM_PROJ, MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ, RETRAIT) * TX_SURVIE (line 768)
+                        tx_survie = w.get('TX_SURVIE', 1.0)
+                        if pd.isna(tx_survie):
+                            tx_survie = 1.0
+                        mt_boni_deces_proj = acc_row.get('MT_BONI_DECES', 0) if acc_row is not None else 0
+                        retrait = r.get('RETRAIT', 0) if pd.notna(r.get('RETRAIT')) else 0
+                        # VALEUR_GARANTIE = MT_GAR_DECES_PROJ * TX_SURVIE
+                        valeur_garantie = mt_gar_deces * tx_survie if pd.notna(mt_gar_deces) else 0.0
+                        # UNITE_COUVERTURE = MAX(MT_VM_PROJ, MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ, RETRAIT) * TX_SURVIE
+                        unite_couverture = max(mt_vm_proj if pd.notna(mt_vm_proj) else 0,
+                                              (mt_gar_deces if pd.notna(mt_gar_deces) else 0) + mt_boni_deces_proj,
+                                              retrait) * tx_survie
+                        w['UNITE_COUVERTURE'] = unite_couverture
+                        w['VALEUR_GARANTIE'] = valeur_garantie
                         w['REM_COMP_INV'] = 0.0
-                        w['CODE_CAT_PRODUIT'] = acc_row.get('ID_PRODUIT', 0)
+                        # CODE_CAT_PRODUIT should be 1 (not ID_PRODUIT)
+                        w['CODE_CAT_PRODUIT'] = 1
                         w['CAT_COUSSIN_1'] = 0
                         w['CAT_COUSSIN_2'] = 0
-                        
-                        # Internal scenario fields (set to scenario index if available)
-                        w['scn_eval_int'] = debug_scenario_idx + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
-                        w['an_eval_int'] = an_eval
 
                     if acc_row is not None:
                         for c in example_header:
