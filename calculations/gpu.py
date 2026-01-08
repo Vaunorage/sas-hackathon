@@ -999,65 +999,7 @@ def save_results(
                     acc_row = population_df.iloc[debug_account_idx]
 
                 wide_rows = []
-                
-                # Create initialization row (an_eval=0) to match ground truth format
-                if acc_row is not None:
-                    init_row = {c: np.nan for c in example_header}
-                    init_row['ID_COMPTE'] = acc_row.get('ID_COMPTE', id_compte)
-                    init_row['scn_eval'] = int(debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
-                    init_row['an_eval'] = 0
-                    init_row['mois_eval'] = 12  # Initial month
-                    init_row['mois_eval_ext'] = np.nan
-                    
-                    # Initial values from population
-                    init_row['MT_VM'] = acc_row.get('MT_VM', np.nan)
-                    init_row['MT_VM_PROJ'] = acc_row.get('MT_VM', np.nan)
-                    init_row['MT_SP500'] = acc_row.get('MT_SP500', np.nan)
-                    init_row['MT_SP500_PROJ'] = acc_row.get('MT_SP500', np.nan)
-                    init_row['MT_TSX'] = acc_row.get('MT_TSX', np.nan)
-                    init_row['MT_TSX_PROJ'] = acc_row.get('MT_TSX', np.nan)
-                    init_row['MT_EAFE'] = acc_row.get('MT_EAFE', np.nan)
-                    init_row['MT_EAFE_PROJ'] = acc_row.get('MT_EAFE', np.nan)
-                    init_row['MT_DEX'] = acc_row.get('MT_DEX', np.nan)
-                    init_row['MT_DEX_PROJ'] = acc_row.get('MT_DEX', np.nan)
-                    init_row['MT_MM'] = acc_row.get('MT_MM', np.nan)
-                    init_row['MT_MM_PROJ'] = acc_row.get('MT_MM', np.nan)
-                    init_row['MT_GAR_DECES'] = acc_row.get('MT_GAR_DECES', np.nan)
-                    init_row['MT_GAR_DECES_PROJ'] = acc_row.get('MT_GAR_DECES', np.nan)
-                    init_row['MT_GAR_ECH'] = acc_row.get('MT_GAR_ECH', np.nan)
-                    init_row['MT_GAR_ECH_PROJ'] = acc_row.get('MT_GAR_ECH', np.nan)
-                    init_row['MT_SRG'] = acc_row.get('MT_SRG', 0)
-                    init_row['MT_SRG_PROJ'] = acc_row.get('MT_SRG', 0)
-                    init_row['MT_BCB'] = acc_row.get('MT_BCB', 0)
-                    init_row['MT_BCB_PROJ'] = acc_row.get('MT_BCB', 0)
-                    init_row['MT_MRV_MRG_MRA'] = acc_row.get('MT_MRV_MRG_MRA', 0)
-                    init_row['MT_MRV_MRG_MRA_PROJ'] = acc_row.get('MT_MRV_MRG_MRA', 0)
-                    init_row['MT_BONI_DECES'] = acc_row.get('MT_BONI_DECES', 0)
-                    init_row['MT_BONI_DECES_PROJ'] = acc_row.get('MT_BONI_DECES', 0)
-                    init_row['TAUX_MRV_MRG_MRA'] = acc_row.get('TAUX_MRV_MRG_MRA', 0)
-                    init_row['TAUX_MRV_MRG_MRA_PROJ'] = acc_row.get('TAUX_MRV_MRG_MRA', 0)
-                    
-                    # Initial survival and actualization rates
-                    init_row['TX_SURVIE'] = 1.0
-                    init_row['TX_SURVIE_DEB'] = 1.0
-                    init_row['TX_ACTUALISATION'] = 1.0
-                    init_row['TX_ACTUALISATION_DEB'] = 1.0
-                    init_row['FORWARD_RATE'] = 0.0
-                    
-                    # Initial values
-                    init_row['VALEUR_MARCHANDE'] = acc_row.get('MT_VM', np.nan)
-                    init_row['AGE'] = acc_row.get('age_deb', np.nan)
-                    init_row['annee_reelle'] = acc_row.get('ANNEE_EVALUATION_INI', 2024)
-                    init_row['ANNEE_ECH_PROJ'] = acc_row.get('ANNEE_ECH', np.nan)
-                    init_row['MOIS_ECH_PROJ'] = acc_row.get('MOIS_ECH', np.nan)
-                    init_row['MT_MIN_FERR_PROJ'] = 0.0
-                    
-                    # Copy static fields from acc_row
-                    for c in example_header:
-                        if pd.isna(init_row.get(c, np.nan)) and c in acc_row.index:
-                            init_row[c] = acc_row[c]
-                    
-                    wide_rows.append(init_row)
+                # Note: Ground truth starts directly at year 1, no initial t0 row
                 
                 prev_tx_survie = 1.0
                 for r in rows:
