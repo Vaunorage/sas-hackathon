@@ -1,5 +1,6 @@
 import csv
 import os
+import math
 
 from calculations.kernels import (
     external_generator_kernel, nested_valuation_kernel_five_chocs, STATE_SIZE,
@@ -51,6 +52,8 @@ from calculations.constants import (
     FLUX_COMP_IDX_MT_EAFE,
     FLUX_COMP_IDX_MT_DEX,
     FLUX_COMP_IDX_MT_MM,
+    FLUX_COMP_IDX_CAT_COUSSIN_1,
+    FLUX_COMP_IDX_CAT_COUSSIN_2,
     FLUX_COMP_IDX_SIZE,
     INT_TS_DEBUG_IDX_CURR_VM,
     INT_TS_DEBUG_IDX_FEES,
@@ -975,6 +978,8 @@ def save_results(
                     'MT_EAFE': float(flux_row[FLUX_COMP_IDX_MT_EAFE]),
                     'MT_DEX': float(flux_row[FLUX_COMP_IDX_MT_DEX]),
                     'MT_MM': float(flux_row[FLUX_COMP_IDX_MT_MM]),
+                    'CAT_COUSSIN_1': int(flux_row[FLUX_COMP_IDX_CAT_COUSSIN_1]),
+                    'CAT_COUSSIN_2': int(flux_row[FLUX_COMP_IDX_CAT_COUSSIN_2]),
                 })
         
         if rows:
@@ -1237,9 +1242,20 @@ def save_results(
                         mois_eval = r.get('MOIS_EVAL', 0)
                         age = r.get('AGE', 0)
                         
-                        # Age-related columns
-                        w['age_MORTALITE'] = age
-                        w['AGE_RETRAIT'] = age
+                        # Age-related columns (SAS lines 421-422, 442)
+                        # AGE_RETRAIT = AGE + 1 (SAS line 442)
+                        w['AGE_RETRAIT'] = age + 1
+                        
+                        # age_MORTALITE calculation (SAS lines 421-422)
+                        # if IFN((mois_nais - mois_eval) <=0,(mois_nais - mois_eval)+12,(mois_nais - mois_eval)) <= 6 then age_MORTALITE = age +1
+                        mois_nais = acc_row.get('MOIS_NAIS', 1) if acc_row is not None else 1
+                        month_diff = mois_nais - mois_eval
+                        if month_diff <= 0:
+                            month_diff = month_diff + 12
+                        if month_diff <= 6:
+                            w['age_MORTALITE'] = age + 1
+                        else:
+                            w['age_MORTALITE'] = age
                         
                         # Year calculations
                         annee_eval_ini = acc_row.get('ANNEE_EVALUATION_INI', 2024)
@@ -1264,7 +1280,13 @@ def save_results(
                         # Lapse levels (simplified - would need full lookup logic)
                         w['LAPSE_NIV_TOT'] = 1  # Default level
                         w['LAPSE_NIV_PART'] = 1  # Default level
-                        w['LAPSE'] = r.get('LAPSE_TOT', 0)  # Total lapse
+                        # Calculate LAPSE from LAPSE_TOT and LAPSE_PART using SAS formula (line 412)
+                        # LAPSE = (1-(1 - LAPSE_TOT - LAPSE_PART)**(1/FREQ_EVAL * AJUST_NOUV_AFFAIRES))
+                        lapse_tot = r.get('LAPSE_TOT', 0) if pd.notna(r.get('LAPSE_TOT')) else 0
+                        lapse_part = r.get('LAPSE_PART', 0) if pd.notna(r.get('LAPSE_PART')) else 0
+                        freq_eval = 12.0  # Monthly frequency
+                        ajust_nouv_affaires = 1.0
+                        w['LAPSE'] = 1.0 - math.pow(1.0 - lapse_tot - lapse_part, 1.0 / freq_eval * ajust_nouv_affaires)
                         
                         # Projected guarantee columns
                         w['MT_BONI_DECES_PROJ'] = acc_row.get('MT_BONI_DECES', 0)
@@ -1305,7 +1327,6 @@ def save_results(
                             if len(rend_match) > 0 and 'FORWARD_RATE' in rend_match.columns:
                                 forward_rate = float(rend_match['FORWARD_RATE'].iloc[0])
                         # SAS formula: TX_ACTUALISATION = TX_ACTUALISATION * EXP(-FORWARD_RATE * AJUST_NOUV_AFFAIRES)
-                        import math
                         curr_tx_actual = prev_tx_actual * math.exp(-forward_rate * ajust_nouv_affaires)
                         w['TX_ACTUALISATION'] = curr_tx_actual
                         w['AJUST_NOUV_AFFAIRES'] = ajust_nouv_affaires
@@ -1370,8 +1391,9 @@ def save_results(
                         w['REM_COMP_INV'] = 0.0
                         # CODE_CAT_PRODUIT should be 1 (not ID_PRODUIT)
                         w['CODE_CAT_PRODUIT'] = 1
-                        w['CAT_COUSSIN_1'] = 0
-                        w['CAT_COUSSIN_2'] = 0
+                        # Extract CAT_COUSSIN values from flux data
+                        w['CAT_COUSSIN_1'] = int(r.get('CAT_COUSSIN_1', 0)) if pd.notna(r.get('CAT_COUSSIN_1')) else 0
+                        w['CAT_COUSSIN_2'] = int(r.get('CAT_COUSSIN_2', 0)) if pd.notna(r.get('CAT_COUSSIN_2')) else 0
 
                     if acc_row is not None:
                         for c in example_header:

@@ -109,6 +109,8 @@ from calculations.constants import (
     FLUX_COMP_IDX_MT_EAFE,
     FLUX_COMP_IDX_MT_DEX,
     FLUX_COMP_IDX_MT_MM,
+    FLUX_COMP_IDX_CAT_COUSSIN_1,
+    FLUX_COMP_IDX_CAT_COUSSIN_2,
 )
 
 @cuda.jit
@@ -899,6 +901,8 @@ def external_generator_kernel(
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_EAFE] = MT_EAFE_PROJ
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_DEX] = MT_DEX_PROJ
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_MT_MM] = MT_MM_PROJ
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_CAT_COUSSIN_1] = float(cat_coussin_1)
+                    debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_CAT_COUSSIN_2] = float(cat_coussin_2)
 
             # === SAVE STATE TO GLOBAL MEMORY ===
             if mois_eval == 12 and an_eval >= 1 and an_eval <= n_years:
@@ -1118,6 +1122,7 @@ def nested_valuation_kernel_five_chocs(
     I_RESET_FACUL_ECH = int(acc[ACCOUNT_IDX_I_RESET_FACUL_ECH])
 
     FREQ_EVAL_INT = 1.0
+    AJUST_NOUV_AFFAIRES_INT = 1.0  # SAS line 312: always 1 for mid-period adjustment
 
     # ===========================================
     # LOOP THROUGH ALL 5 CHOCS
@@ -1383,7 +1388,8 @@ def nested_valuation_kernel_five_chocs(
                                 lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL2_THRESHOLD) / VM_VG_RATIO_LEVEL3_DIVISOR
                             LAPSE_PART = lapse_interp * (tx_lapse_part_max - tx_lapse_part_min) + tx_lapse_part_min
 
-                    lapse = 1.0 - math.pow(1.0 - LAPSE_TOT - LAPSE_PART, 1.0 / FREQ_EVAL_INT)
+                    # Convert annual rates to frequency basis (SAS line 412)
+                    lapse = 1.0 - math.pow(1.0 - LAPSE_TOT - LAPSE_PART, 1.0 / FREQ_EVAL_INT * AJUST_NOUV_AFFAIRES_INT)
 
                     TX_SURVIE = TX_SURVIE * (1.0 - qx) * (1.0 - lapse)
 

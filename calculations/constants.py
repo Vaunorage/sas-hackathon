@@ -321,7 +321,9 @@ FLUX_COMP_IDX_MT_TSX = 37
 FLUX_COMP_IDX_MT_EAFE = 38
 FLUX_COMP_IDX_MT_DEX = 39
 FLUX_COMP_IDX_MT_MM = 40
-FLUX_COMP_IDX_SIZE = 41
+FLUX_COMP_IDX_CAT_COUSSIN_1 = 41
+FLUX_COMP_IDX_CAT_COUSSIN_2 = 42
+FLUX_COMP_IDX_SIZE = 43
 
 # Debug flux output dimensions: (n_years+1, freq_eval, FLUX_COMP_IDX_SIZE)
 # This captures flux for a single account/scenario for debugging
