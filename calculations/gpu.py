@@ -1,4 +1,6 @@
+import csv
 import os
+import math
 
 from calculations.kernels import (
     external_generator_kernel, nested_valuation_kernel_five_chocs, STATE_SIZE,
@@ -27,6 +29,31 @@ from calculations.constants import (
     FLUX_COMP_IDX_COUSSIN_DECHEANCE,
     FLUX_COMP_IDX_COUSSIN_MORTALITE,
     FLUX_COMP_IDX_COUSSIN_DEPOT,
+    FLUX_COMP_IDX_MT_VM,
+    FLUX_COMP_IDX_MT_VM_AV_RETRAIT,
+    FLUX_COMP_IDX_MT_VM_AP_RETRAIT,
+    FLUX_COMP_IDX_AGE,
+    FLUX_COMP_IDX_QX,
+    FLUX_COMP_IDX_LAPSE_TOT,
+    FLUX_COMP_IDX_LAPSE_PART,
+    FLUX_COMP_IDX_TX_SURVIE,
+    FLUX_COMP_IDX_RETRAIT,
+    FLUX_COMP_IDX_DEPOT_FUTUR,
+    FLUX_COMP_IDX_MT_GAR_DECES,
+    FLUX_COMP_IDX_MT_GAR_ECH,
+    FLUX_COMP_IDX_MT_SRG,
+    FLUX_COMP_IDX_REND_SP500,
+    FLUX_COMP_IDX_REND_TSX,
+    FLUX_COMP_IDX_REND_EAFE,
+    FLUX_COMP_IDX_REND_DEX,
+    FLUX_COMP_IDX_REND_MM,
+    FLUX_COMP_IDX_MT_SP500,
+    FLUX_COMP_IDX_MT_TSX,
+    FLUX_COMP_IDX_MT_EAFE,
+    FLUX_COMP_IDX_MT_DEX,
+    FLUX_COMP_IDX_MT_MM,
+    FLUX_COMP_IDX_CAT_COUSSIN_1,
+    FLUX_COMP_IDX_CAT_COUSSIN_2,
     FLUX_COMP_IDX_SIZE,
     INT_TS_DEBUG_IDX_CURR_VM,
     INT_TS_DEBUG_IDX_FEES,
@@ -51,7 +78,7 @@ import polars as pl
 import gc
 import sys
 from pathlib import Path
-from typing import Optional, List, TypedDict
+from typing import Optional, List, TypedDict, Dict
 from dataclasses import dataclass
 from datetime import datetime
 from fastparquet import write as fastparquet_write
@@ -69,7 +96,7 @@ class KernelIncompatibilityError(RuntimeError):
 
 
 EXPECTED_EXTERNAL_GENERATOR_ARGCOUNT = 18
-EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT = 14
+EXPECTED_NESTED_VALUATION_FIVE_CHOCS_ARGCOUNT = 18
 
 
 def validate_kernel_compatibility():
@@ -486,7 +513,6 @@ class ProcessBatchResult(TypedDict):
     ext_debug: Optional[np.ndarray]  # Debug output from external kernel
     int_debug: Optional[np.ndarray]  # Debug output from internal kernel
     int_debug_ts: Optional[np.ndarray]  # Debug time series output from internal kernel
-    flux_agg: Optional[np.ndarray]   # Aggregated external cashflow components (years+1, 13, FLUX_COMP_IDX_SIZE)
 
 
 def check_gpu_memory(batch_size: int, mem_per_account: float, batch_idx: int = 0):
@@ -513,6 +539,7 @@ def process_batch(
     nb_ext_scenarios: int,
     nb_an_projection: int,
     nb_int_scenarios: int,
+    shock_capital_pct: float,
     total_mem_per_account: float,
     threads_per_block: tuple,
     gpu_lookups: dict,
@@ -558,8 +585,6 @@ def process_batch(
     batch_account_data_contiguous = np.ascontiguousarray(batch_account_data)
     d_batch_accounts = _to_device_contiguous(batch_account_data_contiguous)
 
-    d_flux_agg = _to_device_contiguous(np.zeros((nb_an_projection + 1, 13, FLUX_COMP_IDX_SIZE), dtype=np.float32))
-    
     # Allocate tensors using cupy to avoid numba-cuda device_pointer bug
     try:
         d_states = _device_array_cupy(
@@ -584,6 +609,18 @@ def process_batch(
         # Always allocate debug arrays (kernel uses -1 flags to skip writing)
         d_ext_debug = _device_array_cupy((EXT_DEBUG_SIZE,))
         d_int_debug = _device_array_cupy((NUM_CHOCS, INT_DEBUG_SIZE))
+        
+        # Allocate debug flux array for single account/scenario flux capture
+        # Shape: (n_years+1, freq_eval, FLUX_COMP_IDX_SIZE)
+        freq_eval_int = int(CONFIG['FREQ_EVAL'])
+        if enable_ext_debug:
+            d_debug_flux = _to_device_contiguous(
+                np.zeros((nb_an_projection + 1, freq_eval_int + 1, FLUX_COMP_IDX_SIZE), dtype=np.float32)
+            )
+        else:
+            # Minimal array when debug is disabled
+            d_debug_flux = _to_device_contiguous(np.zeros((1, 1, FLUX_COMP_IDX_SIZE), dtype=np.float32))
+        
         enable_int_debug_ts = enable_int_debug and debug_int_scenario >= 0
         if enable_int_debug_ts:
             d_int_debug_ts = _to_device_contiguous(
@@ -623,8 +660,8 @@ def process_batch(
         gpu_lookups['coussins'],
         d_states,
         d_cashflows,
-        d_flux_agg,
         d_ext_debug,
+        d_debug_flux,
         debug_account,
         debug_scenario,
         debug_year,
@@ -649,6 +686,9 @@ def process_batch(
         nb_an_projection,
         gpu_lookups['rn_returns'],
         gpu_lookups['mortality'],
+        gpu_lookups['lapse'],
+        gpu_lookups['policy'],
+        gpu_lookups['commission'],
         d_metrics,
         d_int_debug,
         d_int_debug_ts,
@@ -657,6 +697,7 @@ def process_batch(
         debug_account,
         debug_scenario,
         debug_year,
+        float(shock_capital_pct),
     )
     cuda.synchronize()
     
@@ -671,17 +712,16 @@ def process_batch(
     h_ext_debug = None
     h_int_debug = None
     h_int_debug_ts = None
-    h_flux_agg = None
+    h_debug_flux = None
     if enable_ext_debug:
         logger.info("  Copying external debug output to CPU...")
         h_ext_debug = d_ext_debug.copy_to_host()
+        h_debug_flux = d_debug_flux.copy_to_host()
     if enable_int_debug:
         logger.info("  Copying internal debug output to CPU...")
         h_int_debug = d_int_debug.copy_to_host()
         if enable_int_debug_ts:
             h_int_debug_ts = d_int_debug_ts.copy_to_host()
-
-    h_flux_agg = d_flux_agg.copy_to_host()
     
     # Process metrics
     batch_reserves_5chocs = h_metrics[:, :, :, :, METRICS_RESERVE_IDX].mean(axis=(1, 2))
@@ -690,7 +730,7 @@ def process_batch(
     batch_capital = batch_capital_5chocs[:, 0]
     
     # Cleanup
-    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug, d_int_debug_ts, d_flux_agg
+    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug, d_int_debug_ts, d_debug_flux
     cuda.synchronize()
     del h_metrics
     gc.collect()
@@ -712,7 +752,7 @@ def process_batch(
         'ext_debug': h_ext_debug,
         'int_debug': h_int_debug,
         'int_debug_ts': h_int_debug_ts,
-        'flux_agg': h_flux_agg,
+        'debug_flux': h_debug_flux,
     }
 
 
@@ -791,8 +831,10 @@ def save_results(
     int_debug: Optional[np.ndarray] = None,
     int_debug_ts_df: Optional[pd.DataFrame] = None,
     debug_params: Optional[dict] = None,
-    flux_projetes_periods: Optional[pd.DataFrame] = None,
     population_ids: Optional[np.ndarray] = None,
+    debug_flux: Optional[np.ndarray] = None,
+    population_df: Optional[pd.DataFrame] = None,
+    lookup_data: Optional[Dict[str, pd.DataFrame]] = None,
 ):
     """
     Save all results (final simulation results and debug output) to CSV files.
@@ -866,33 +908,598 @@ def save_results(
     print(f"  Total SCR:          ${vp_flux_total_df['VP_SCR'].iloc[0]:,.2f}")
     saved_files.append("VP_FLUX_TOTAL_GPU.csv (portfolio totals)")
 
-    if flux_projetes_periods is not None and len(flux_projetes_periods) > 0:
-        flux_cols = [
-            'AN_EVAL', 'MOIS_EVAL',
-            'PRIMES_GARANTIES', 'PREST_DECES', 'PREST_ECH', 'PREST_MRV',
-            'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_VARIABLES',
-            'FRAIS_FIXES', 'HON_GEST', 'COMM_MAINTIEN',
-            'VALEUR_MARCHANDE', 'PASSIF_REDRESSE',
-            'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE',
-            'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT'
-        ]
-
-        flux_projetes_df = flux_projetes_periods.copy()
-        for key in ('AN_EVAL', 'MOIS_EVAL'):
-            if key not in flux_projetes_df.columns:
-                flux_projetes_df[key] = 0
-
-        for col in flux_cols:
-            if col not in flux_projetes_df.columns:
-                if col in ('AN_EVAL', 'MOIS_EVAL'):
+    # Save debug flux for single account/scenario if available
+    if debug_flux is not None and debug_params is not None:
+        debug_account_idx = debug_params.get('account', -1)
+        debug_scenario_idx = debug_params.get('scenario', -1)
+        
+        # Get ID_COMPTE for the debug account
+        id_compte = -1
+        if population_ids is not None and debug_account_idx >= 0 and debug_account_idx < len(population_ids):
+            id_compte = int(population_ids[debug_account_idx])
+        
+        # Build flux DataFrame from debug_flux array (n_years+1, freq_eval+1, FLUX_COMP_IDX_SIZE)
+        rows = []
+        n_years = debug_flux.shape[0]
+        n_months = debug_flux.shape[1]
+        
+        for an_eval in range(n_years):
+            for mois_eval in range(n_months):
+                # Skip if all values are zero (no data for this period)
+                flux_row = debug_flux[an_eval, mois_eval, :]
+                if np.all(flux_row == 0):
                     continue
-                flux_projetes_df[col] = 0.0
+                rows.append({
+                    'ID_COMPTE': id_compte,
+                    'DEBUG_ACCOUNT_IDX': debug_account_idx,
+                    'DEBUG_SCENARIO': debug_scenario_idx,
+                    'AN_EVAL': an_eval,
+                    'MOIS_EVAL': mois_eval,
+                    # Cashflow components
+                    'PRIMES_GARANTIES': float(flux_row[FLUX_COMP_IDX_PRIMES_GARANTIES]),
+                    'PREST_DECES': float(flux_row[FLUX_COMP_IDX_PREST_DECES]),
+                    'PREST_ECH': float(flux_row[FLUX_COMP_IDX_PREST_ECH]),
+                    'PREST_MRV': float(flux_row[FLUX_COMP_IDX_PREST_MRV]),
+                    'FRAIS_ACQUIS': float(flux_row[FLUX_COMP_IDX_FRAIS_ACQUIS]),
+                    'COMM_VENTE': float(flux_row[FLUX_COMP_IDX_COMM_VENTE]),
+                    'PRIMES_VARIABLES': float(flux_row[FLUX_COMP_IDX_PRIMES_VARIABLES]),
+                    'FRAIS_FIXES': float(flux_row[FLUX_COMP_IDX_FRAIS_FIXES]),
+                    'HON_GEST': float(flux_row[FLUX_COMP_IDX_HON_GEST]),
+                    'COMM_MAINTIEN': float(flux_row[FLUX_COMP_IDX_COMM_MAINTIEN]),
+                    'VALEUR_MARCHANDE': float(flux_row[FLUX_COMP_IDX_VALEUR_MARCHANDE]),
+                    'PASSIF_REDRESSE': float(flux_row[FLUX_COMP_IDX_PASSIF_REDRESSE]),
+                    'COUSSIN_CREDIT': float(flux_row[FLUX_COMP_IDX_COUSSIN_CREDIT]),
+                    'COUSSIN_MARCHE': float(flux_row[FLUX_COMP_IDX_COUSSIN_MARCHE]),
+                    'COUSSIN_DEPENSE': float(flux_row[FLUX_COMP_IDX_COUSSIN_DEPENSE]),
+                    'COUSSIN_DECHEANCE': float(flux_row[FLUX_COMP_IDX_COUSSIN_DECHEANCE]),
+                    'COUSSIN_MORTALITE': float(flux_row[FLUX_COMP_IDX_COUSSIN_MORTALITE]),
+                    'COUSSIN_DEPOT': float(flux_row[FLUX_COMP_IDX_COUSSIN_DEPOT]),
+                    # Detailed calculation fields
+                    'MT_VM': float(flux_row[FLUX_COMP_IDX_MT_VM]),
+                    'MT_VM_AV_RETRAIT': float(flux_row[FLUX_COMP_IDX_MT_VM_AV_RETRAIT]),
+                    'MT_VM_AP_RETRAIT': float(flux_row[FLUX_COMP_IDX_MT_VM_AP_RETRAIT]),
+                    'AGE': float(flux_row[FLUX_COMP_IDX_AGE]),
+                    'QX': float(flux_row[FLUX_COMP_IDX_QX]),
+                    'LAPSE_TOT': float(flux_row[FLUX_COMP_IDX_LAPSE_TOT]),
+                    'LAPSE_PART': float(flux_row[FLUX_COMP_IDX_LAPSE_PART]),
+                    'TX_SURVIE': float(flux_row[FLUX_COMP_IDX_TX_SURVIE]),
+                    'RETRAIT': float(flux_row[FLUX_COMP_IDX_RETRAIT]),
+                    'DEPOT_FUTUR': float(flux_row[FLUX_COMP_IDX_DEPOT_FUTUR]),
+                    'MT_GAR_DECES': float(flux_row[FLUX_COMP_IDX_MT_GAR_DECES]),
+                    'MT_GAR_ECH': float(flux_row[FLUX_COMP_IDX_MT_GAR_ECH]),
+                    'MT_SRG': float(flux_row[FLUX_COMP_IDX_MT_SRG]),
+                    'REND_SP500': float(flux_row[FLUX_COMP_IDX_REND_SP500]),
+                    'REND_TSX': float(flux_row[FLUX_COMP_IDX_REND_TSX]),
+                    'REND_EAFE': float(flux_row[FLUX_COMP_IDX_REND_EAFE]),
+                    'REND_DEX': float(flux_row[FLUX_COMP_IDX_REND_DEX]),
+                    'REND_MM': float(flux_row[FLUX_COMP_IDX_REND_MM]),
+                    'MT_SP500': float(flux_row[FLUX_COMP_IDX_MT_SP500]),
+                    'MT_TSX': float(flux_row[FLUX_COMP_IDX_MT_TSX]),
+                    'MT_EAFE': float(flux_row[FLUX_COMP_IDX_MT_EAFE]),
+                    'MT_DEX': float(flux_row[FLUX_COMP_IDX_MT_DEX]),
+                    'MT_MM': float(flux_row[FLUX_COMP_IDX_MT_MM]),
+                    'CAT_COUSSIN_1': int(flux_row[FLUX_COMP_IDX_CAT_COUSSIN_1]),
+                    'CAT_COUSSIN_2': int(flux_row[FLUX_COMP_IDX_CAT_COUSSIN_2]),
+                })
+        
+        if rows:
+            flux_projetes_df = pd.DataFrame(rows)
+            flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
+            flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
+            print(f"✓ Saved FLUX_PROJETES_GPU.csv (debug: account={debug_account_idx}, scenario={debug_scenario_idx}, ID_COMPTE={id_compte})")
+            saved_files.append("FLUX_PROJETES_GPU.csv (single account/scenario flux)")
 
-        flux_projetes_df = flux_projetes_df[flux_cols]
-        flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
-        flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
-        print(f"✓ Saved FLUX_PROJETES_GPU.csv")
-        saved_files.append("FLUX_PROJETES_GPU.csv (external loop logs)")
+            example_header = None
+            example_path = Path(__file__).resolve().parents[1] / "output_example.csv"
+            try:
+                with example_path.open('r', newline='') as f:
+                    reader = csv.reader(f)
+                    example_header = next(reader)
+            except Exception:
+                example_header = None
+
+            if example_header:
+                acc_row = None
+                if population_df is not None and 0 <= debug_account_idx < len(population_df):
+                    acc_row = population_df.iloc[debug_account_idx]
+
+                wide_rows = []
+                # Add initialization row (an_eval=0, mois_eval=12) like ground truth
+                # Ground truth first row has many NaN fields - only specific fields are populated
+                if acc_row is not None:
+                    init_row = {c: np.nan for c in example_header}
+                    # Only these fields have values in ground truth init row:
+                    init_row['FORWARD_RATE'] = 0.0
+                    # Projected values (from account initial state)
+                    init_row['MT_SP500_PROJ'] = acc_row.get('MT_SP500', np.nan)
+                    init_row['MT_TSX_PROJ'] = acc_row.get('MT_TSX', np.nan)
+                    init_row['MT_EAFE_PROJ'] = acc_row.get('MT_EAFE', np.nan)
+                    init_row['MT_DEX_PROJ'] = acc_row.get('MT_DEX', np.nan)
+                    init_row['MT_MM_PROJ'] = acc_row.get('MT_MM', 0)
+                    init_row['MT_VM_PROJ'] = acc_row.get('MT_VM', np.nan)
+                    init_row['MT_GAR_ECH_PROJ'] = acc_row.get('MT_GAR_ECH', np.nan)
+                    init_row['MT_GAR_DECES_PROJ'] = acc_row.get('MT_GAR_DECES', np.nan)
+                    init_row['MT_BONI_DECES_PROJ'] = acc_row.get('MT_BONI_DECES', 0)
+                    init_row['ANNEE_ECH_PROJ'] = acc_row.get('ANNEE_ECH', np.nan)
+                    init_row['MOIS_ECH_PROJ'] = acc_row.get('MOIS_ECH', np.nan)
+                    init_row['TX_SURVIE'] = 1.0
+                    init_row['MT_SRG_PROJ'] = acc_row.get('MT_SRG', 0)
+                    init_row['MT_BCB_PROJ'] = acc_row.get('MT_BCB', 0)
+                    init_row['MT_MRV_MRG_MRA_PROJ'] = acc_row.get('MT_MRV_MRG_MRA', 0)
+                    init_row['TAUX_MRV_MRG_MRA_PROJ'] = acc_row.get('TAUX_MRV_MRG_MRA', 0)
+                    init_row['MT_MIN_FERR_PROJ'] = 0.0
+                    init_row['TX_ACTUALISATION'] = 1.0
+                    # Initial market values (same as projected for init row)
+                    init_row['MT_VM'] = acc_row.get('MT_VM', np.nan)
+                    init_row['MT_DEX'] = acc_row.get('MT_DEX', np.nan)
+                    init_row['MT_SP500'] = acc_row.get('MT_SP500', np.nan)
+                    init_row['MT_TSX'] = acc_row.get('MT_TSX', np.nan)
+                    init_row['MT_EAFE'] = acc_row.get('MT_EAFE', np.nan)
+                    init_row['MT_MM'] = acc_row.get('MT_MM', 0)
+                    init_row['AJUSTEMENT_MENSUEL_GAR'] = 0
+                    init_row['MT_RF'] = acc_row.get('MT_RF', 0)
+                    # Product parameters
+                    init_row['PC_REVENU_FDS'] = acc_row.get('PC_REVENU_FDS', np.nan)
+                    init_row['PC_RFG'] = acc_row.get('PC_RFG', np.nan)
+                    init_row['PC_FRAIS_GARANTIE'] = acc_row.get('PC_FRAIS_GARANTIE', 0)
+                    init_row['PC_HONORAIRES_GEST'] = acc_row.get('PC_HONORAIRES_GEST', np.nan)
+                    init_row['MT_GAR_ECH'] = acc_row.get('MT_GAR_ECH', np.nan)
+                    init_row['MT_GAR_DECES'] = acc_row.get('MT_GAR_DECES', np.nan)
+                    init_row['MT_BCB'] = acc_row.get('MT_BCB', 0)
+                    init_row['MT_SRG'] = acc_row.get('MT_SRG', 0)
+                    init_row['MT_MRV_MRG_MRA'] = acc_row.get('MT_MRV_MRG_MRA', 0)
+                    init_row['M_MT_MRV_EXCEDENT'] = acc_row.get('M_MT_MRV_EXCEDENT', 0)
+                    init_row['TAUX_MRV_MRG_MRA'] = acc_row.get('TAUX_MRV_MRG_MRA', 0)
+                    init_row['MT_BONI_DECES'] = acc_row.get('MT_BONI_DECES', 0)
+                    # Product info fields
+                    init_row['ID_PRODUIT'] = acc_row.get('ID_PRODUIT', np.nan)
+                    init_row['I_PRODUIT_REGR'] = acc_row.get('I_PRODUIT_REGR', 0)
+                    init_row['I_PRODUIT_HEDGE'] = acc_row.get('I_PRODUIT_HEDGE', 0)
+                    init_row['PC_GAR_ECH'] = acc_row.get('PC_GAR_ECH', np.nan)
+                    init_row['PC_GAR_ECH_DEP_FUT'] = acc_row.get('PC_GAR_ECH_DEP_FUT', np.nan)
+                    init_row['MAX_RESET_FACUL_ECH'] = acc_row.get('MAX_RESET_FACUL_ECH', 0)
+                    init_row['RATIO_VM_VG_RESET_ECH'] = acc_row.get('RATIO_VM_VG_RESET_ECH', 0)
+                    init_row['AGE_FIN_CONTRAT'] = acc_row.get('AGE_FIN_CONTRAT', np.nan)
+                    init_row['PC_RENOUV_ECH'] = acc_row.get('PC_RENOUV_ECH', np.nan)
+                    init_row['AGE_MAX_RENOUV_ECH'] = acc_row.get('AGE_MAX_RENOUV_ECH', np.nan)
+                    init_row['NB_AN_ECH'] = acc_row.get('NB_AN_ECH', np.nan)
+                    init_row['AGE_ECH_MIN'] = acc_row.get('AGE_ECH_MIN', 0)
+                    init_row['PC_GAR_DECES_1'] = acc_row.get('PC_GAR_DECES_1', np.nan)
+                    init_row['PC_GAR_DECES_2'] = acc_row.get('PC_GAR_DECES_2', 0)
+                    init_row['AGE_CHANG_DECES'] = acc_row.get('AGE_CHANG_DECES', np.nan)
+                    init_row['FREQ_RESET_DECES'] = acc_row.get('FREQ_RESET_DECES', 0)
+                    init_row['MAX_RESET_DECES'] = acc_row.get('MAX_RESET_DECES', 0)
+                    init_row['I_RESET_DECES_ECH'] = acc_row.get('I_RESET_DECES_ECH', 0)
+                    init_row['PC_BONI_DECES'] = acc_row.get('PC_BONI_DECES', 0)
+                    init_row['MAX_BONI_DECES'] = acc_row.get('MAX_BONI_DECES', np.nan)
+                    init_row['AGE_MRV_PERMIS'] = acc_row.get('AGE_MRV_PERMIS', 0)
+                    init_row['PC_BONI_SRG'] = acc_row.get('PC_BONI_SRG', np.nan)
+                    init_row['FREQ_RESET_SRG'] = acc_row.get('FREQ_RESET_SRG', 0)
+                    init_row['MAX_RESET_SRG'] = acc_row.get('MAX_RESET_SRG', 0)
+                    init_row['I_FRAIS_SUR_SRG'] = acc_row.get('I_FRAIS_SUR_SRG', 0)
+                    init_row['TABLE_TAUX_MRV_MRG_MRA'] = acc_row.get('TABLE_TAUX_MRV_MRG_MRA', 0)
+                    init_row['MT_TPA_RETRAIT'] = acc_row.get('MT_TPA_RETRAIT', 0)
+                    init_row['MT_TPA_DEPOT'] = acc_row.get('MT_TPA_DEPOT', 0)
+                    init_row['AJUSTEMENT_COMMISSION'] = acc_row.get('AJUSTEMENT_COMMISSION', 1)
+                    init_row['MOIS_EVALUATION_INI'] = acc_row.get('MOIS_EVALUATION_INI', np.nan)
+                    init_row['ANNEE_NAIS'] = acc_row.get('ANNEE_NAIS', np.nan)
+                    init_row['MOIS_NAIS'] = acc_row.get('MOIS_NAIS', np.nan)
+                    init_row['ANNEE_COTIS'] = acc_row.get('ANNEE_COTIS', np.nan)
+                    init_row['MOIS_COTIS'] = acc_row.get('MOIS_COTIS', np.nan)
+                    init_row['ANNEE_ECH'] = acc_row.get('ANNEE_ECH', np.nan)
+                    init_row['MOIS_ECH'] = acc_row.get('MOIS_ECH', np.nan)
+                    init_row['I_REGIME'] = acc_row.get('I_REGIME', 0)
+                    init_row['I_REGIME_2'] = acc_row.get('I_REGIME_2', 0)
+                    init_row['AGE_DECAISSEMENT'] = acc_row.get('AGE_DECAISSEMENT', np.nan)
+                    init_row['I_SEXE'] = acc_row.get('I_SEXE', 0)
+                    init_row['ID_LAPSE'] = acc_row.get('ID_LAPSE', np.nan)
+                    init_row['ID_ACQUI'] = acc_row.get('ID_ACQUI', np.nan)
+                    init_row['ID_DEPOT'] = acc_row.get('ID_DEPOT', np.nan)
+                    init_row['VAR_RETRAIT_FCT'] = acc_row.get('VAR_RETRAIT_FCT', 1)
+                    init_row['PC_RETRAIT_AGE'] = acc_row.get('PC_RETRAIT_AGE', 0)
+                    init_row['MT_RETRAIT_MAX'] = acc_row.get('MT_RETRAIT_MAX', 0)
+                    init_row['I_RESET_FACUL_ECH'] = acc_row.get('I_RESET_FACUL_ECH', 0)
+                    # Key identifiers
+                    init_row['ID_COMPTE'] = id_compte
+                    init_row['scn_eval'] = int(debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
+                    init_row['an_eval'] = 0
+                    init_row['mois_eval'] = 12
+                    # These should be NaN in init row per ground truth
+                    init_row['scn_eval_int'] = np.nan
+                    init_row['an_eval_int'] = np.nan
+                    init_row['mois_eval_ext'] = np.nan
+                    init_row['TX_SURVIE_DEB'] = 1.0
+                    init_row['TX_ACTUALISATION_DEB'] = 1.0
+                    init_row['VALEUR_MARCHANDE'] = acc_row.get('MT_VM', np.nan)
+                    # These calculation fields should be NaN in init row
+                    init_row['rc'] = np.nan
+                    init_row['AJUST_NOUV_AFFAIRES'] = np.nan
+                    init_row['MT_VM_AV_RETRAIT_FRAIS'] = np.nan
+                    init_row['duree_max10'] = np.nan
+                    init_row['VM_VG_RATIO'] = np.nan
+                    init_row['LAPSE_NIV_PART'] = np.nan
+                    init_row['LAPSE_NIV_TOT'] = np.nan
+                    init_row['LAPSE_TOT'] = np.nan
+                    init_row['LAPSE_PART'] = np.nan
+                    init_row['LAPSE'] = np.nan
+                    annee_eval_ini = acc_row.get('ANNEE_EVALUATION_INI', 2024)
+                    annee_nais = acc_row.get('ANNEE_NAIS', 2000)
+                    mois_nais = acc_row.get('MOIS_NAIS', 1)
+                    # SAS line 903: annee_reelle = ANNEE_EVALUATION_INI + an_eval - 1
+                    # For init row: an_eval=0, so annee_reelle = ANNEE_EVALUATION_INI - 1
+                    init_row['annee_reelle'] = annee_eval_ini - 1
+                    # SAS line 909: age = MAX(INT(YRDIF(MDY(MOIS_NAIS,01,ANNEE_NAIS),MDY(mois_eval,01,annee_reelle),'AGE')),1)
+                    # For init row: mois_eval=12, annee_reelle=annee_eval_ini-1
+                    # YRDIF calculates years between two dates
+                    annee_reelle_init = annee_eval_ini - 1
+                    # Age = years between (MOIS_NAIS/1/ANNEE_NAIS) and (12/1/annee_reelle_init)
+                    age_years = annee_reelle_init - annee_nais
+                    # If birth month (mois_nais) > eval month (12), subtract 1 year
+                    if mois_nais > 12:
+                        age_years -= 1
+                    init_row['AGE'] = max(age_years, 1)
+                    # These should be NaN in init row
+                    init_row['AGE_RETRAIT'] = np.nan
+                    init_row['age_MORTALITE'] = np.nan
+                    init_row['RETRAIT'] = np.nan
+                    init_row['DEPOT_FUTUR'] = np.nan
+                    init_row['MT_VM_AV_RETRAIT'] = np.nan
+                    init_row['PRIMES_GARANTIES'] = np.nan
+                    init_row['VP_PRIMES_GARANTIES'] = np.nan
+                    init_row['MT_SRG_AV_RETRAIT'] = np.nan
+                    init_row['PREST_MRV'] = np.nan
+                    init_row['VP_PREST_MRV'] = np.nan
+                    init_row['MT_VM_AP_RETRAIT'] = np.nan
+                    init_row['MT_VM_AP_RETRAIT_DEPOT'] = np.nan
+                    init_row['PREST_DECES'] = np.nan
+                    init_row['VP_PREST_DECES'] = np.nan
+                    init_row['PREST_ECH'] = np.nan
+                    init_row['VP_PREST_ECH'] = np.nan
+                    # All other calculation/output fields should be NaN
+                    wide_rows.append(init_row)
+                
+                prev_tx_survie = 1.0
+                prev_tx_actual = 1.0
+                for r in rows:
+                    w = {c: np.nan for c in example_header}
+
+                    w['ID_COMPTE'] = r.get('ID_COMPTE', -1)
+                    w['scn_eval'] = int(debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
+                    w['an_eval'] = r.get('AN_EVAL', np.nan)
+                    w['mois_eval'] = r.get('MOIS_EVAL', np.nan)
+                    # mois_eval_ext should be NaN per ground truth
+                    w['mois_eval_ext'] = np.nan
+
+                    w['Qx'] = r.get('QX', np.nan)
+                    w['TX_SURVIE'] = r.get('TX_SURVIE', np.nan)
+                    w['TX_SURVIE_DEB'] = prev_tx_survie
+                    w['LAPSE_TOT'] = r.get('LAPSE_TOT', np.nan)
+                    w['LAPSE_PART'] = r.get('LAPSE_PART', np.nan)
+                    w['RETRAIT'] = r.get('RETRAIT', np.nan)
+                    w['DEPOT_FUTUR'] = r.get('DEPOT_FUTUR', np.nan)
+
+                    try:
+                        curr_survie = float(w['TX_SURVIE'])
+                        if not np.isnan(curr_survie):
+                            prev_tx_survie = curr_survie
+                    except Exception:
+                        pass
+
+                    w['rendSP500_an'] = r.get('REND_SP500', np.nan)
+                    w['rendTSX_an'] = r.get('REND_TSX', np.nan)
+                    w['rendEAFE_an'] = r.get('REND_EAFE', np.nan)
+                    w['rendDEX_an'] = r.get('REND_DEX', np.nan)
+                    w['rendMM_an'] = r.get('REND_MM', np.nan)
+
+                    w['MT_VM_PROJ'] = r.get('MT_VM', np.nan)
+                    w['MT_VM_AV_RETRAIT'] = r.get('MT_VM_AV_RETRAIT', np.nan)
+                    w['MT_VM_AP_RETRAIT'] = r.get('MT_VM_AP_RETRAIT', np.nan)
+                    w['MT_SP500_PROJ'] = r.get('MT_SP500', np.nan)
+                    w['MT_TSX_PROJ'] = r.get('MT_TSX', np.nan)
+                    w['MT_EAFE_PROJ'] = r.get('MT_EAFE', np.nan)
+                    w['MT_DEX_PROJ'] = r.get('MT_DEX', np.nan)
+                    w['MT_MM_PROJ'] = r.get('MT_MM', np.nan)
+                    if acc_row is not None:
+                        w['MT_VM'] = acc_row.get('MT_VM', np.nan)
+                        w['MT_SP500'] = acc_row.get('MT_SP500', np.nan)
+                        w['MT_TSX'] = acc_row.get('MT_TSX', np.nan)
+                        w['MT_EAFE'] = acc_row.get('MT_EAFE', np.nan)
+                        w['MT_DEX'] = acc_row.get('MT_DEX', np.nan)
+                        w['MT_MM'] = acc_row.get('MT_MM', np.nan)
+                    w['MT_GAR_DECES_PROJ'] = r.get('MT_GAR_DECES', np.nan)
+                    w['MT_GAR_ECH_PROJ'] = r.get('MT_GAR_ECH', np.nan)
+                    w['MT_SRG_PROJ'] = r.get('MT_SRG', np.nan)
+                    if acc_row is not None:
+                        w['MT_GAR_DECES'] = acc_row.get('MT_GAR_DECES', np.nan)
+                        w['MT_GAR_ECH'] = acc_row.get('MT_GAR_ECH', np.nan)
+                        w['MT_SRG'] = acc_row.get('MT_SRG', np.nan)
+                    w['AGE'] = r.get('AGE', np.nan)
+
+                    w['PRIMES_GARANTIES'] = r.get('PRIMES_GARANTIES', np.nan)
+                    w['PREST_DECES'] = r.get('PREST_DECES', np.nan)
+                    w['PREST_ECH'] = r.get('PREST_ECH', np.nan)
+                    w['PREST_MRV'] = r.get('PREST_MRV', np.nan)
+                    w['FRAIS_ACQUIS'] = r.get('FRAIS_ACQUIS', np.nan)
+                    w['COMM_VENTE'] = r.get('COMM_VENTE', np.nan)
+                    w['PRIMES_VARIABLES'] = r.get('PRIMES_VARIABLES', np.nan)
+                    w['FRAIS_FIXES'] = r.get('FRAIS_FIXES', np.nan)
+                    w['HON_GEST'] = r.get('HON_GEST', np.nan)
+                    w['COMM_MAINTIEN'] = r.get('COMM_MAINTIEN', np.nan)
+                    
+                    # Additional computed/derived columns
+                    w['VALEUR_MARCHANDE'] = r.get('VALEUR_MARCHANDE', np.nan)
+                    w['PASSIF_REDRESSE'] = r.get('PASSIF_REDRESSE', np.nan)
+                    w['COUSSIN_CREDIT'] = r.get('COUSSIN_CREDIT', np.nan)
+                    w['COUSSIN_MARCHE'] = r.get('COUSSIN_MARCHE', np.nan)
+                    w['COUSSIN_DEPENSE'] = r.get('COUSSIN_DEPENSE', np.nan)
+                    w['COUSSIN_DECHEANCE'] = r.get('COUSSIN_DECHEANCE', np.nan)
+                    w['COUSSIN_MORTALITE'] = r.get('COUSSIN_MORTALITE', np.nan)
+                    w['COUSSIN_DEPOT'] = r.get('COUSSIN_DEPOT', np.nan)
+                    
+                    # Computed fields from acc_row and current state
+                    if acc_row is not None:
+                        an_eval = r.get('AN_EVAL', 0)
+                        mois_eval = r.get('MOIS_EVAL', 0)
+                        age = r.get('AGE', 0)
+                        
+                        # Age-related columns (SAS lines 421-422, 442)
+                        # AGE_RETRAIT = AGE + 1 (SAS line 442)
+                        w['AGE_RETRAIT'] = age + 1
+                        
+                        # age_MORTALITE calculation (SAS lines 421-422)
+                        # if IFN((mois_nais - mois_eval) <=0,(mois_nais - mois_eval)+12,(mois_nais - mois_eval)) <= 6 then age_MORTALITE = age +1
+                        mois_nais = acc_row.get('MOIS_NAIS', 1) if acc_row is not None else 1
+                        month_diff = mois_nais - mois_eval
+                        if month_diff <= 0:
+                            month_diff = month_diff + 12
+                        if month_diff <= 6:
+                            w['age_MORTALITE'] = age + 1
+                        else:
+                            w['age_MORTALITE'] = age
+                        
+                        # Year calculations
+                        annee_eval_ini = acc_row.get('ANNEE_EVALUATION_INI', 2024)
+                        w['annee_reelle'] = annee_eval_ini + an_eval if pd.notna(an_eval) else np.nan
+                        
+                        # Duration calculation
+                        annee_cotis = acc_row.get('ANNEE_COTIS', 2024)
+                        if pd.notna(an_eval) and pd.notna(annee_eval_ini) and pd.notna(annee_cotis):
+                            duree = (annee_eval_ini + an_eval) - annee_cotis
+                            w['duree_max10'] = min(duree, 10) if duree >= 0 else 0
+                        
+                        # VM/VG ratio
+                        mt_vm_proj = r.get('MT_VM', 0)
+                        mt_gar_deces = r.get('MT_GAR_DECES', 0)
+                        mt_gar_ech = r.get('MT_GAR_ECH', 0)
+                        vg = max(mt_gar_deces, mt_gar_ech) if pd.notna(mt_gar_deces) and pd.notna(mt_gar_ech) else 0
+                        if vg > 0 and pd.notna(mt_vm_proj) and mt_vm_proj > 0:
+                            w['VM_VG_RATIO'] = mt_vm_proj / vg
+                        else:
+                            w['VM_VG_RATIO'] = 0.0
+                        
+                        # Lapse levels (simplified - would need full lookup logic)
+                        w['LAPSE_NIV_TOT'] = 1  # Default level
+                        w['LAPSE_NIV_PART'] = 1  # Default level
+                        # Calculate LAPSE from LAPSE_TOT and LAPSE_PART using SAS formula (line 412)
+                        # LAPSE = (1-(1 - LAPSE_TOT - LAPSE_PART)**(1/FREQ_EVAL * AJUST_NOUV_AFFAIRES))
+                        lapse_tot = r.get('LAPSE_TOT', 0) if pd.notna(r.get('LAPSE_TOT')) else 0
+                        lapse_part = r.get('LAPSE_PART', 0) if pd.notna(r.get('LAPSE_PART')) else 0
+                        freq_eval = 12.0  # Monthly frequency
+                        ajust_nouv_affaires = 1.0
+                        w['LAPSE'] = 1.0 - math.pow(1.0 - lapse_tot - lapse_part, 1.0 / freq_eval * ajust_nouv_affaires)
+                        
+                        # Projected guarantee columns
+                        w['MT_BONI_DECES_PROJ'] = acc_row.get('MT_BONI_DECES', 0)
+                        w['MT_BCB_PROJ'] = acc_row.get('MT_BCB', 0)
+                        w['MT_MRV_MRG_MRA_PROJ'] = acc_row.get('MT_MRV_MRG_MRA', 0)
+                        w['TAUX_MRV_MRG_MRA_PROJ'] = acc_row.get('TAUX_MRV_MRG_MRA', 0)
+                        
+                        # Echeance projections
+                        w['ANNEE_ECH_PROJ'] = acc_row.get('ANNEE_ECH', np.nan)
+                        w['MOIS_ECH_PROJ'] = acc_row.get('MOIS_ECH', np.nan)
+                        
+                        # Age factors (simplified)
+                        w['FACTEUR_AGE_80'] = 1.0 if age < 80 else 0.0
+                        w['FACTEUR_AGE_90'] = 1.0 if age < 90 else 0.0
+                        
+                        # MIN_FERR_PROJ - lookup from min_ferr table by age
+                        mt_min_ferr = 0.0
+                        if lookup_data is not None and 'min_ferr' in lookup_data:
+                            min_ferr_df = lookup_data['min_ferr']
+                            if 'AGE' in min_ferr_df.columns and 'MIN_FERR' in min_ferr_df.columns:
+                                age_match = min_ferr_df[min_ferr_df['AGE'] == int(age)]
+                                if len(age_match) > 0:
+                                    mt_min_ferr = float(age_match['MIN_FERR'].iloc[0]) * mt_vm_proj
+                        w['MT_MIN_FERR_PROJ'] = mt_min_ferr
+                        
+                        # Actualization rates - calculate from forward rate
+                        # SAS: TX_ACTUALISATION = TX_ACTUALISATION * EXP(-FORWARD_RATE * AJUST_NOUV_AFFAIRES)
+                        # TX_ACTUALISATION_DEB is the previous period's discount factor
+                        w['TX_ACTUALISATION_DEB'] = prev_tx_actual
+                        # TX_ACTUALISATION is current discount factor (compounded)
+                        forward_rate = 0.0
+                        ajust_nouv_affaires = 1.0  # Default adjustment
+                        if lookup_data is not None and 'rendements' in lookup_data:
+                            rend_df = lookup_data['rendements']
+                            an_col = 'AN_EVAL' if 'AN_EVAL' in rend_df.columns else 'an_eval'
+                            mois_col = 'MOIS_EVAL' if 'MOIS_EVAL' in rend_df.columns else 'mois_eval'
+                            rend_match = rend_df[(rend_df[an_col] == an_eval) & (rend_df[mois_col] == mois_eval)]
+                            if len(rend_match) > 0 and 'FORWARD_RATE' in rend_match.columns:
+                                forward_rate = float(rend_match['FORWARD_RATE'].iloc[0])
+                        # SAS formula: TX_ACTUALISATION = TX_ACTUALISATION * EXP(-FORWARD_RATE * AJUST_NOUV_AFFAIRES)
+                        curr_tx_actual = prev_tx_actual * math.exp(-forward_rate * ajust_nouv_affaires)
+                        w['TX_ACTUALISATION'] = curr_tx_actual
+                        w['AJUST_NOUV_AFFAIRES'] = ajust_nouv_affaires
+                        prev_tx_actual = curr_tx_actual
+                        
+                        # Internal scenario fields - should be NaN per ground truth
+                        w['scn_eval_int'] = np.nan
+                        w['an_eval_int'] = np.nan
+                        
+                        # Adjustment fields
+                        w['rc'] = 0.0
+                        # AJUST_NOUV_AFFAIRES already set above from discount calculation
+                        w['MT_VM_AV_RETRAIT_FRAIS'] = r.get('MT_VM_AV_RETRAIT', np.nan)
+                        
+                        # Present value columns (VP_*) - set to 0 as placeholders
+                        w['VP_PRIMES_GARANTIES'] = 0.0
+                        w['VP_PREST_MRV'] = 0.0
+                        w['VP_PREST_DECES'] = 0.0
+                        w['VP_PREST_ECH'] = 0.0
+                        w['VP_COMM_VENTE'] = 0.0
+                        w['VP_FRAIS_ACQUIS'] = 0.0
+                        w['VP_FRAIS_FIXES'] = 0.0
+                        w['VP_HON_GEST'] = 0.0
+                        w['VP_COMM_MAINTIEN'] = 0.0
+                        w['VP_PRIMES_VARIABLES'] = 0.0
+                        w['VP_FLUX_TOT'] = 0.0
+                        w['VP_VALEUR_MARCHANDE'] = 0.0
+                        w['VP_COUSSIN_DEPENSE'] = 0.0
+                        w['VP_COUSSIN_DECHEANCE'] = 0.0
+                        w['VP_COUSSIN_MORTALITE'] = 0.0
+                        w['VP_COUSSIN_DEPOT'] = 0.0
+                        w['VP_PASSIF_REDRESSE'] = 0.0
+                        w['VP_COUSSIN_CREDIT'] = 0.0
+                        w['VP_COUSSIN_MARCHE'] = 0.0
+                        
+                        # Additional computed fields
+                        w['MT_SRG_AV_RETRAIT'] = r.get('MT_SRG', np.nan)
+                        w['MT_VM_AP_RETRAIT_DEPOT'] = r.get('MT_VM_AP_RETRAIT', np.nan)
+                        w['DEPOT_FUTUR_SURVIE'] = r.get('DEPOT_FUTUR', 0) * w.get('TX_SURVIE', 1.0) if pd.notna(r.get('DEPOT_FUTUR')) else 0.0
+                        
+                        # Commission/fee percentages from acquisition table (will be filled from lookup)
+                        w['PC_COMMISSION_MAINTIEN'] = 0.0
+                        w['PC_COMMISSION_VENTE'] = 0.0
+                        w['PC_FRAIS_AN'] = 0.0
+                        
+                        # Category and coverage fields - SAS formulas:
+                        # VALEUR_GARANTIE = MT_GAR_DECES_PROJ * TX_SURVIE (line 780)
+                        # UNITE_COUVERTURE = MAX(MT_VM_PROJ, MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ, RETRAIT) * TX_SURVIE (line 768)
+                        tx_survie = w.get('TX_SURVIE', 1.0)
+                        if pd.isna(tx_survie):
+                            tx_survie = 1.0
+                        mt_boni_deces_proj = acc_row.get('MT_BONI_DECES', 0) if acc_row is not None else 0
+                        retrait = r.get('RETRAIT', 0) if pd.notna(r.get('RETRAIT')) else 0
+                        # VALEUR_GARANTIE = MT_GAR_DECES_PROJ * TX_SURVIE
+                        valeur_garantie = mt_gar_deces * tx_survie if pd.notna(mt_gar_deces) else 0.0
+                        # UNITE_COUVERTURE = MAX(MT_VM_PROJ, MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ, RETRAIT) * TX_SURVIE
+                        unite_couverture = max(mt_vm_proj if pd.notna(mt_vm_proj) else 0,
+                                              (mt_gar_deces if pd.notna(mt_gar_deces) else 0) + mt_boni_deces_proj,
+                                              retrait) * tx_survie
+                        w['UNITE_COUVERTURE'] = unite_couverture
+                        w['VALEUR_GARANTIE'] = valeur_garantie
+                        w['REM_COMP_INV'] = 0.0
+                        # CODE_CAT_PRODUIT should be 1 (not ID_PRODUIT)
+                        w['CODE_CAT_PRODUIT'] = 1
+                        # Extract CAT_COUSSIN values from flux data
+                        w['CAT_COUSSIN_1'] = int(r.get('CAT_COUSSIN_1', 0)) if pd.notna(r.get('CAT_COUSSIN_1')) else 0
+                        w['CAT_COUSSIN_2'] = int(r.get('CAT_COUSSIN_2', 0)) if pd.notna(r.get('CAT_COUSSIN_2')) else 0
+
+                    if acc_row is not None:
+                        for c in example_header:
+                            if pd.isna(w.get(c, np.nan)) and c in acc_row.index:
+                                w[c] = acc_row[c]
+
+                    wide_rows.append(w)
+
+                # Convert to DataFrame and fill NA columns from lookup tables
+                output_df = pd.DataFrame(wide_rows, columns=example_header)
+                
+                # Note: Row 0 is the init row (an_eval=0, mois_eval=12) which should NOT have lookup values
+                # Only fill lookup values for data rows (row 1 onwards)
+                if lookup_data is not None and acc_row is not None:
+                    # Get account keys for lookups
+                    id_lapse = acc_row.get('ID_LAPSE', 0)
+                    id_acqui = acc_row.get('ID_ACQUI', 0)
+                    id_depot = acc_row.get('ID_DEPOT', 0)
+                    i_regime_2 = acc_row.get('I_REGIME_2', 0)
+                    
+                    # Fill MIN_FERR from min_ferr table (keyed by AGE) - skip init row
+                    if 'min_ferr' in lookup_data and 'MIN_FERR' in output_df.columns:
+                        min_ferr_df = lookup_data['min_ferr']
+                        if 'AGE' in min_ferr_df.columns and 'MIN_FERR' in min_ferr_df.columns:
+                            age_to_minferr = dict(zip(min_ferr_df['AGE'], min_ferr_df['MIN_FERR']))
+                            # Only fill for data rows (skip row 0)
+                            output_df.loc[1:, 'MIN_FERR'] = output_df.loc[1:, 'AGE'].map(age_to_minferr)
+                    
+                    # Fill TX_LAPSE_TOT columns from tx_lapse_tot table - skip init row
+                    if 'tx_lapse_tot' in lookup_data:
+                        lapse_tot_df = lookup_data['tx_lapse_tot']
+                        if 'ID_LAPSE' in lapse_tot_df.columns:
+                            lapse_tot_row = lapse_tot_df[lapse_tot_df['ID_LAPSE'] == id_lapse]
+                            if len(lapse_tot_row) > 0:
+                                for col in ['TX_LAPSE_TOT_MIN', 'TX_LAPSE_TOT_MAX', 'FACT_DIM']:
+                                    if col in lapse_tot_row.columns and col in output_df.columns:
+                                        output_df.loc[1:, col] = lapse_tot_row[col].iloc[0]
+                    
+                    # Fill TX_LAPSE_PART columns from tx_lapse_part table - skip init row
+                    if 'tx_lapse_part' in lookup_data:
+                        lapse_part_df = lookup_data['tx_lapse_part']
+                        if 'ID_LAPSE' in lapse_part_df.columns:
+                            lapse_part_row = lapse_part_df[lapse_part_df['ID_LAPSE'] == id_lapse]
+                            if len(lapse_part_row) > 0:
+                                for col in ['TX_LAPSE_PART_MIN', 'TX_LAPSE_PART_MAX']:
+                                    if col in lapse_part_row.columns and col in output_df.columns:
+                                        output_df.loc[1:, col] = lapse_part_row[col].iloc[0]
+                    
+                    # Fill ACQUISITION columns (PC_COMMISSION_*, PC_FRAIS_AN_*) - skip init row
+                    if 'acquisition' in lookup_data:
+                        acq_df = lookup_data['acquisition']
+                        if 'ID_ACQUI' in acq_df.columns:
+                            acq_row = acq_df[acq_df['ID_ACQUI'] == id_acqui]
+                            if len(acq_row) > 0:
+                                for col in ['PC_COMMISSION_VENTE_RF', 'PC_COMMISSION_VENTE_AC', 
+                                           'PC_COMMISSION_MAINTIEN_RF', 'PC_COMMISSION_MAINTIEN_AC',
+                                           'PC_FRAIS_AN_AC', 'PC_FRAIS_AN_RF']:
+                                    if col in acq_row.columns and col in output_df.columns:
+                                        output_df.loc[1:, col] = acq_row[col].iloc[0]
+                    
+                    # Fill DEPOTS_FUTURS columns - skip init row
+                    if 'depots_futurs' in lookup_data:
+                        depot_df = lookup_data['depots_futurs']
+                        if 'ID_DEPOT' in depot_df.columns:
+                            depot_row = depot_df[depot_df['ID_DEPOT'] == id_depot]
+                            if len(depot_row) > 0:
+                                for col in ['PC_DEPOT_ANNUEL', 'VAR_DEPOT_FCT', 'AGE_MAX_DEPOT', 'I_EVEN_CESSE_DEPOT']:
+                                    if col in depot_row.columns and col in output_df.columns:
+                                        output_df.loc[1:, col] = depot_row[col].iloc[0]
+                    
+                    # Fill FORWARD_RATE and AJUST_FORWARD_RATE_VM_0 from rendements - skip init row
+                    if 'rendements' in lookup_data:
+                        rend_df = lookup_data['rendements']
+                        if 'AN_EVAL' in rend_df.columns or 'an_eval' in rend_df.columns:
+                            an_col = 'AN_EVAL' if 'AN_EVAL' in rend_df.columns else 'an_eval'
+                            mois_col = 'MOIS_EVAL' if 'MOIS_EVAL' in rend_df.columns else 'mois_eval'
+                            # Skip row 0 (init row)
+                            for idx, row in output_df.iloc[1:].iterrows():
+                                an_val = row.get('an_eval', np.nan)
+                                mois_val = row.get('mois_eval', np.nan)
+                                if pd.notna(an_val) and pd.notna(mois_val):
+                                    rend_match = rend_df[(rend_df[an_col] == an_val) & (rend_df[mois_col] == mois_val)]
+                                    if len(rend_match) > 0:
+                                        if 'FORWARD_RATE' in rend_match.columns and pd.isna(output_df.loc[idx, 'FORWARD_RATE']):
+                                            output_df.loc[idx, 'FORWARD_RATE'] = rend_match['FORWARD_RATE'].iloc[0]
+                                        if 'AJUST_FORWARD_RATE_VM_0' in rend_match.columns and pd.isna(output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0']):
+                                            output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0'] = rend_match['AJUST_FORWARD_RATE_VM_0'].iloc[0]
+                    
+                    # Fill FRAIS from frais_admin - skip init row
+                    if 'frais_admin' in lookup_data:
+                        frais_df = lookup_data['frais_admin']
+                        if 'FRAIS' in frais_df.columns and 'FRAIS' in output_df.columns:
+                            output_df.loc[1:, 'FRAIS'] = frais_df['FRAIS'].iloc[0] if len(frais_df) > 0 else np.nan
+                    
+                    # Fill COUSSINS_ESCAP columns - skip init row
+                    if 'coussins_escap' in lookup_data:
+                        coussin_df = lookup_data['coussins_escap']
+                        coussin_cols = [c for c in coussin_df.columns if c.startswith('BASE_') or c.startswith('TX_')]
+                        for col in coussin_cols:
+                            if col in output_df.columns:
+                                output_df.loc[1:, col] = coussin_df[col].iloc[0] if len(coussin_df) > 0 else np.nan
+
+                output_example_gpu_path = output_path / "OUTPUT_EXAMPLE_GPU.csv"
+                output_df.to_csv(output_example_gpu_path, index=False)
+                print(f"✓ Saved OUTPUT_EXAMPLE_GPU.csv (matches output_example.csv schema; debug: account={debug_account_idx}, scenario={debug_scenario_idx})")
+                saved_files.append("OUTPUT_EXAMPLE_GPU.csv (output_example.csv schema; partial fill)")
     
     # 1b. Five Chocs Results
     if results_5chocs_df is not None:
@@ -937,33 +1544,7 @@ def save_results(
     # 2. DEBUG OUTPUT (if enabled)
     # ===========================================
     
-    if ext_debug is not None:
-        print(f"\n✓ [DEBUG] Saving external kernel debug output...")
-        
-        # Create single-row DataFrame with debug filter context
-        row = {}
-        if debug_params:
-            debug_account_idx = debug_params.get('account', -1)
-            row['DEBUG_ACCOUNT_IDX'] = debug_account_idx
-            # Map account index to real ID_COMPTE if available
-            if population_ids is not None and debug_account_idx >= 0 and debug_account_idx < len(population_ids):
-                row['ID_COMPTE'] = int(population_ids[debug_account_idx])
-            else:
-                row['ID_COMPTE'] = -1
-            row['DEBUG_SCENARIO'] = debug_params.get('scenario', -1)
-            row['DEBUG_YEAR'] = debug_params.get('year', -1)
-            row['DEBUG_MONTH'] = debug_params.get('month', -1)
-        
-        for col_idx, col_name in enumerate(EXT_DEBUG_COLUMNS):
-            row[col_name] = ext_debug[col_idx]
-        
-        ext_debug_df = pd.DataFrame([row])
-        ext_debug_path = output_path / "DEBUG_EXTERNAL_KERNEL.csv"
-        ext_debug_df.to_csv(ext_debug_path, index=False, sep=';')
-        print(f"  Saved DEBUG_EXTERNAL_KERNEL.csv (1 row)")
-        if debug_params:
-            print(f"  Filter: account={debug_params.get('account', -1)}, scenario={debug_params.get('scenario', -1)}, year={debug_params.get('year', -1)}, month={debug_params.get('month', -1)}")
-        saved_files.append("DEBUG_EXTERNAL_KERNEL.csv (external kernel debug)")
+    # Note: EXT_DEBUG_GPU.csv removed - redundant with FLUX_PROJETES_GPU.csv
     
     if int_debug is not None:
         print(f"\n✓ [DEBUG] Saving internal kernel debug output...")
@@ -999,12 +1580,7 @@ def save_results(
             print(f"  Filter: int_scenario={debug_params.get('int_scenario', -1)}, int_year={debug_params.get('int_year', -1)}")
         saved_files.append("DEBUG_INTERNAL_KERNEL.csv (internal kernel debug)")
 
-    if int_debug_ts_df is not None and len(int_debug_ts_df) > 0:
-        int_debug_ts_saved_df = int_debug_ts_df.copy()
-        int_debug_ts_path = output_path / "DEBUG_INTERNAL_LOOP_TS.csv"
-        int_debug_ts_saved_df.to_csv(int_debug_ts_path, index=False, sep=';')
-        print(f"  Saved DEBUG_INTERNAL_LOOP_TS.csv ({len(int_debug_ts_saved_df)} rows)")
-        saved_files.append("DEBUG_INTERNAL_LOOP_TS.csv (internal loop time series debug)")
+    # Note: INT_DEBUG_TS_GPU.csv removed - rarely needed, use INT_DEBUG_GPU.csv instead
     
     # ===========================================
     # 3. SUMMARY
@@ -1022,9 +1598,9 @@ def save_results(
         'saved_files': saved_files,
         'vp_flux_total': vp_flux_total_df,
         'chocs_summary': chocs_summary_df if results_5chocs_df is not None else None,
-        'ext_debug_df': ext_debug_df if ext_debug is not None else None,
+        'ext_debug_df': None,  # Removed - redundant with FLUX_PROJETES_GPU.csv
         'int_debug_df': int_debug_df if int_debug is not None else None,
-        'int_debug_ts_df': int_debug_ts_saved_df,
+        'int_debug_ts_df': None,  # Removed - rarely needed
         'flux_projetes_df': flux_projetes_df,
     }
     
@@ -1236,6 +1812,7 @@ def run_projection_gpu_nested(
         acquisition_path: Optional[Path] = None,
         coussins_escap_path: Optional[Path] = None,
         progress_callback: Optional[callable] = None,
+        debug_account_id: Optional[int] = None,
         debug_account: int = -1,
         debug_scenario: int = -1,
         debug_year: int = -1,
@@ -1299,28 +1876,13 @@ def run_projection_gpu_nested(
                          rendements_int_path=rendements_int_path)
     print("✓ Data loaded successfully")
 
-    flux_projetes_periods = None
-    if 'rendements' in data and data['rendements'] is not None:
-        try:
-            flux_projetes_periods = (
-                data['rendements'][['AN_EVAL', 'MOIS_EVAL']]
-                .drop_duplicates()
-                .sort_values(['AN_EVAL', 'MOIS_EVAL'])
-                .reset_index(drop=True)
-            )
-            if not ((flux_projetes_periods['AN_EVAL'] == 0) & (flux_projetes_periods['MOIS_EVAL'] == 12)).any():
-                flux_projetes_periods = pd.concat(
-                    [pd.DataFrame([{'AN_EVAL': 0, 'MOIS_EVAL': 12}]), flux_projetes_periods],
-                    ignore_index=True,
-                ).sort_values(['AN_EVAL', 'MOIS_EVAL']).reset_index(drop=True)
-        except Exception:
-            flux_projetes_periods = None
-
     # Filter to single account if debug_only mode
     if debug_only and debug_account >= 0:
         # Find the account by ID (assuming there's an ID column like 'NO_COMPTE' or index)
         pop_df = data['population']
-        if 'NO_COMPTE' in pop_df.columns:
+        if 'ID_COMPTE' in pop_df.columns:
+            filtered = pop_df[pop_df['ID_COMPTE'] == debug_account]
+        elif 'NO_COMPTE' in pop_df.columns:
             filtered = pop_df[pop_df['NO_COMPTE'] == debug_account]
         else:
             # Fall back to using index/row position
@@ -1338,6 +1900,19 @@ def run_projection_gpu_nested(
         max_accounts = None
     elif max_accounts:
         data['population'] = data['population'].head(max_accounts)
+
+    if debug_account_id is not None:
+        if 'ID_COMPTE' not in data['population'].columns:
+            raise ValueError("Population data does not contain ID_COMPTE; cannot use debug_account_id")
+        matches = np.where(data['population']['ID_COMPTE'].values == debug_account_id)[0]
+        if len(matches) == 0:
+            raise ValueError(
+                f"debug_account_id={debug_account_id} not found in loaded population (after max_accounts/debug_only filtering). "
+                f"Available ID_COMPTE examples: {data['population']['ID_COMPTE'].head(10).tolist()}"
+            )
+        debug_account = int(matches[0])
+        enable_debug = True
+        print(f"Debug account resolved: debug_account_id={debug_account_id} -> debug_account_index={debug_account} (0-based)")
 
     n_accounts = len(data['population'])
     print(f"\nPreparing {n_accounts} accounts for GPU processing...")
@@ -1367,10 +1942,10 @@ def run_projection_gpu_nested(
     all_capital = []
     all_reserves_5chocs = []
     all_capital_5chocs = []
-    total_flux_agg = np.zeros((nb_an_projection + 1, 13, FLUX_COMP_IDX_SIZE), dtype=np.float64)
     ext_debug_result = None
     int_debug_result = None
     int_debug_ts_result = None
+    debug_flux_result = None
     
     for i in range(num_batches):
         start_idx = i * batch_size
@@ -1388,6 +1963,7 @@ def run_projection_gpu_nested(
             nb_ext_scenarios=nb_ext_scenarios,
             nb_an_projection=nb_an_projection,
             nb_int_scenarios=nb_int_scenarios,
+            shock_capital_pct=shock_capital_pct,
             total_mem_per_account=total_mem_per_account,
             threads_per_block=threads_per_block,
             gpu_lookups=gpu_lookups,
@@ -1414,17 +1990,19 @@ def run_projection_gpu_nested(
             int_debug_result = batch_result['int_debug']
         if batch_result.get('int_debug_ts') is not None:
             int_debug_ts_result = batch_result['int_debug_ts']
-
-        if batch_result.get('flux_agg') is not None:
-            total_flux_agg += batch_result['flux_agg']
+        if batch_result.get('debug_flux') is not None:
+            debug_flux_result = batch_result['debug_flux']
         
         # Call progress callback if provided
         if progress_callback is not None:
             progress_callback(i + 1, num_batches)
     
+    # Extract population IDs early for use in debug output
+    population_ids = data['population']['ID_COMPTE'].values
+    
     # Create results DataFrames
     results_df, results_5chocs_df, sensitivities_df = create_results_dataframes(
-        population_ids=data['population']['ID_COMPTE'].values,
+        population_ids=population_ids,
         all_reserves=all_reserves,
         all_capital=all_capital,
         all_reserves_5chocs=all_reserves_5chocs,
@@ -1465,36 +2043,6 @@ def run_projection_gpu_nested(
             'int_scenario': debug_int_scenario,
             'int_year': debug_int_year,
         }
-
-    if flux_projetes_periods is not None and len(flux_projetes_periods) > 0:
-        denom = float(nb_ext_scenarios) if nb_ext_scenarios > 0 else 1.0
-        flux_projetes_periods = flux_projetes_periods.copy()
-        an_vals = flux_projetes_periods['AN_EVAL'].astype(np.int64).to_numpy()
-        mois_vals = flux_projetes_periods['MOIS_EVAL'].astype(np.int64).to_numpy()
-        an_vals = np.clip(an_vals, 0, total_flux_agg.shape[0] - 1)
-        mois_vals = np.clip(mois_vals, 0, total_flux_agg.shape[1] - 1)
-
-        def col(idx: int) -> np.ndarray:
-            return (total_flux_agg[an_vals, mois_vals, idx] / denom).astype(np.float64)
-
-        flux_projetes_periods['PRIMES_GARANTIES'] = col(FLUX_COMP_IDX_PRIMES_GARANTIES)
-        flux_projetes_periods['PREST_DECES'] = col(FLUX_COMP_IDX_PREST_DECES)
-        flux_projetes_periods['PREST_ECH'] = col(FLUX_COMP_IDX_PREST_ECH)
-        flux_projetes_periods['PREST_MRV'] = col(FLUX_COMP_IDX_PREST_MRV)
-        flux_projetes_periods['FRAIS_ACQUIS'] = col(FLUX_COMP_IDX_FRAIS_ACQUIS)
-        flux_projetes_periods['COMM_VENTE'] = col(FLUX_COMP_IDX_COMM_VENTE)
-        flux_projetes_periods['PRIMES_VARIABLES'] = col(FLUX_COMP_IDX_PRIMES_VARIABLES)
-        flux_projetes_periods['FRAIS_FIXES'] = col(FLUX_COMP_IDX_FRAIS_FIXES)
-        flux_projetes_periods['HON_GEST'] = col(FLUX_COMP_IDX_HON_GEST)
-        flux_projetes_periods['COMM_MAINTIEN'] = col(FLUX_COMP_IDX_COMM_MAINTIEN)
-        flux_projetes_periods['VALEUR_MARCHANDE'] = col(FLUX_COMP_IDX_VALEUR_MARCHANDE)
-        flux_projetes_periods['PASSIF_REDRESSE'] = col(FLUX_COMP_IDX_PASSIF_REDRESSE)
-        flux_projetes_periods['COUSSIN_CREDIT'] = col(FLUX_COMP_IDX_COUSSIN_CREDIT)
-        flux_projetes_periods['COUSSIN_MARCHE'] = col(FLUX_COMP_IDX_COUSSIN_MARCHE)
-        flux_projetes_periods['COUSSIN_DEPENSE'] = col(FLUX_COMP_IDX_COUSSIN_DEPENSE)
-        flux_projetes_periods['COUSSIN_DECHEANCE'] = col(FLUX_COMP_IDX_COUSSIN_DECHEANCE)
-        flux_projetes_periods['COUSSIN_MORTALITE'] = col(FLUX_COMP_IDX_COUSSIN_MORTALITE)
-        flux_projetes_periods['COUSSIN_DEPOT'] = col(FLUX_COMP_IDX_COUSSIN_DEPOT)
 
     int_debug_ts_df = None
     if enable_debug and int_debug_ts_result is not None:
@@ -1538,8 +2086,10 @@ def run_projection_gpu_nested(
         int_debug=int_debug_result,
         int_debug_ts_df=int_debug_ts_df,
         debug_params=debug_params,
-        flux_projetes_periods=flux_projetes_periods,
         population_ids=population_ids,
+        debug_flux=debug_flux_result,
+        population_df=data.get('population'),
+        lookup_data=data,
     )
     
     return ProjectionResult(
@@ -1579,7 +2129,7 @@ Examples:
         """
     )
 
-    parser.add_argument('--max-accounts', type=int, default=2000,
+    parser.add_argument('--max-accounts', type=int, default=200,
                         help='Maximum number of accounts to process (for testing)')
     parser.add_argument('--years', type=int, default=100,
                         help='Number of years to project (default: 100)')
@@ -1593,17 +2143,19 @@ Examples:
                         help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
     
     # Debug filter parameters
-    parser.add_argument('--debug-account', type=int, default=-1,
-                        help='Account index to debug (-1 = disabled)')
-    parser.add_argument('--debug-scenario', type=int, default=-1,
+    parser.add_argument('--debug-account', type=int, default=0,
+                        help='Account index (0-based row index) to debug (-1 = disabled)')
+    parser.add_argument('--debug-account-id', type=int, default=None,
+                        help='Account ID_COMPTE to debug (overrides --debug-account when provided)')
+    parser.add_argument('--debug-scenario', type=int, default=0,
                         help='External scenario index to debug (-1 = disabled)')
     parser.add_argument('--debug-year', type=int, default=-1,
                         help='Year (an_eval) to debug (-1 = disabled)')
     parser.add_argument('--debug-month', type=int, default=-1,
                         help='Month (mois_eval) to debug (-1 = disabled)')
-    parser.add_argument('--debug-int-scenario', type=int, default=-1,
+    parser.add_argument('--debug-int-scenario', type=int, default=0,
                         help='Internal scenario to debug (-1 = disabled)')
-    parser.add_argument('--debug-int-year', type=int, default=-1,
+    parser.add_argument('--debug-int-year', type=int, default=1,
                         help='Internal year to debug (-1 = disabled)')
 
     args = parser.parse_args()
@@ -1631,6 +2183,7 @@ Examples:
             shock_capital_pct=args.shock,
             max_accounts=args.max_accounts,
             threads_per_block=(16, 16),
+            debug_account_id=args.debug_account_id,
             debug_account=args.debug_account,
             debug_scenario=args.debug_scenario,
             debug_year=args.debug_year,
