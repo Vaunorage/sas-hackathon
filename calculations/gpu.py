@@ -1257,14 +1257,17 @@ def save_results(
                         else:
                             w['age_MORTALITE'] = age
                         
-                        # Year calculations
+                        # Year calculations - SAS line 903: annee_reelle = ANNEE_EVALUATION_INI + an_eval - 1
                         annee_eval_ini = acc_row.get('ANNEE_EVALUATION_INI', 2024)
-                        w['annee_reelle'] = annee_eval_ini + an_eval if pd.notna(an_eval) else np.nan
+                        w['annee_reelle'] = annee_eval_ini + an_eval - 1 if pd.notna(an_eval) else np.nan
                         
-                        # Duration calculation
+                        # Duration calculation - SAS line 350: duree_max10=min(10,int((annee_reelle+mois_eval/12)-(ANNEE_COTIS+MOIS_COTIS/12))+1)
                         annee_cotis = acc_row.get('ANNEE_COTIS', 2024)
+                        mois_cotis = acc_row.get('MOIS_COTIS', 1)
+                        mois_eval_val = r.get('MOIS_EVAL', 12)
                         if pd.notna(an_eval) and pd.notna(annee_eval_ini) and pd.notna(annee_cotis):
-                            duree = (annee_eval_ini + an_eval) - annee_cotis
+                            annee_reelle = annee_eval_ini + an_eval - 1
+                            duree = int((annee_reelle + mois_eval_val/12) - (annee_cotis + mois_cotis/12)) + 1
                             w['duree_max10'] = min(duree, 10) if duree >= 0 else 0
                         
                         # VM/VG ratio
