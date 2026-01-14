@@ -1160,6 +1160,8 @@ def save_results(
                 
                 prev_tx_survie = 1.0
                 prev_tx_actual = 1.0
+                prev_mt_min_ferr_proj = 0.0  # Retained value per SAS line 212
+                prev_mt_vm_proj = acc_row.get('MT_VM', 0) if acc_row is not None else 0  # Retained MT_VM_PROJ
                 for r in rows:
                     w = {c: np.nan for c in example_header}
 
@@ -1270,19 +1272,38 @@ def save_results(
                             duree = int((annee_reelle + mois_eval_val/12) - (annee_cotis + mois_cotis/12)) + 1
                             w['duree_max10'] = min(duree, 10) if duree >= 0 else 0
                         
-                        # VM/VG ratio
-                        mt_vm_proj = r.get('MT_VM', 0)
-                        mt_gar_deces = r.get('MT_GAR_DECES', 0)
-                        mt_gar_ech = r.get('MT_GAR_ECH', 0)
-                        vg = max(mt_gar_deces, mt_gar_ech) if pd.notna(mt_gar_deces) and pd.notna(mt_gar_ech) else 0
-                        if vg > 0 and pd.notna(mt_vm_proj) and mt_vm_proj > 0:
-                            w['VM_VG_RATIO'] = mt_vm_proj / vg
-                        else:
-                            w['VM_VG_RATIO'] = 0.0
+                        # VM/VG ratio - SAS line 355:
+                        # VM_VG_RATIO=MIN(10,(MT_VM_PROJ+MT_VM_AV_RETRAIT_FRAIS)/2 * MIN(PC_GAR_ECH/MAX(MT_GAR_ECH_PROJ,0.01),PC_GAR_DECES_1/MAX(MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ,0.01),1/MAX(MT_SRG_PROJ,0.01)))
+                        mt_vm_proj = r.get('MT_VM', 0) if pd.notna(r.get('MT_VM')) else 0
+                        mt_vm_av_retrait_frais = r.get('MT_VM_AV_RETRAIT', 0) if pd.notna(r.get('MT_VM_AV_RETRAIT')) else 0
+                        mt_gar_ech_proj = r.get('MT_GAR_ECH', 0) if pd.notna(r.get('MT_GAR_ECH')) else 0
+                        mt_gar_deces_proj = r.get('MT_GAR_DECES', 0) if pd.notna(r.get('MT_GAR_DECES')) else 0
+                        mt_boni_deces_proj = acc_row.get('MT_BONI_DECES', 0) if pd.notna(acc_row.get('MT_BONI_DECES')) else 0
+                        mt_srg_proj = r.get('MT_SRG', 0) if pd.notna(r.get('MT_SRG')) else 0
+                        pc_gar_ech = acc_row.get('PC_GAR_ECH', 1.0) if pd.notna(acc_row.get('PC_GAR_ECH')) else 1.0
+                        pc_gar_deces_1 = acc_row.get('PC_GAR_DECES_1', 1.0) if pd.notna(acc_row.get('PC_GAR_DECES_1')) else 1.0
                         
-                        # Lapse levels (simplified - would need full lookup logic)
-                        w['LAPSE_NIV_TOT'] = 1  # Default level
-                        w['LAPSE_NIV_PART'] = 1  # Default level
+                        vm_avg = (mt_vm_proj + mt_vm_av_retrait_frais) / 2.0
+                        ratio1 = pc_gar_ech / max(mt_gar_ech_proj, 0.01)
+                        ratio2 = pc_gar_deces_1 / max(mt_boni_deces_proj + mt_gar_deces_proj, 0.01)
+                        ratio3 = 1.0 / max(mt_srg_proj, 0.01)
+                        vm_vg_ratio = min(10.0, vm_avg * min(ratio1, ratio2, ratio3))
+                        w['VM_VG_RATIO'] = vm_vg_ratio
+                        
+                        # Lapse levels - SAS lines 363-365 and 392-394
+                        # if vm_vg_ratio <= 0.5 then LAPSE_NIV_TOT=1; else if vm_vg_ratio <= 0.75 then LAPSE_NIV_TOT=2; else LAPSE_NIV_TOT=3;
+                        if vm_vg_ratio <= 0.5:
+                            lapse_niv_tot = 1
+                            lapse_niv_part = 1
+                        elif vm_vg_ratio <= 0.75:
+                            lapse_niv_tot = 2
+                            lapse_niv_part = 2
+                        else:
+                            lapse_niv_tot = 3
+                            lapse_niv_part = 3
+                        w['LAPSE_NIV_TOT'] = lapse_niv_tot
+                        w['LAPSE_NIV_PART'] = lapse_niv_part
+                        
                         # Calculate LAPSE from LAPSE_TOT and LAPSE_PART using SAS formula (line 412)
                         # LAPSE = (1-(1 - LAPSE_TOT - LAPSE_PART)**(1/FREQ_EVAL * AJUST_NOUV_AFFAIRES))
                         lapse_tot = r.get('LAPSE_TOT', 0) if pd.notna(r.get('LAPSE_TOT')) else 0
@@ -1292,28 +1313,45 @@ def save_results(
                         w['LAPSE'] = 1.0 - math.pow(1.0 - lapse_tot - lapse_part, 1.0 / freq_eval * ajust_nouv_affaires)
                         
                         # Projected guarantee columns
-                        w['MT_BONI_DECES_PROJ'] = acc_row.get('MT_BONI_DECES', 0)
+                        w['MT_BONI_DECES_PROJ'] = mt_boni_deces_proj
                         w['MT_BCB_PROJ'] = acc_row.get('MT_BCB', 0)
                         w['MT_MRV_MRG_MRA_PROJ'] = acc_row.get('MT_MRV_MRG_MRA', 0)
                         w['TAUX_MRV_MRG_MRA_PROJ'] = acc_row.get('TAUX_MRV_MRG_MRA', 0)
+                        w['MT_SRG_PROJ'] = mt_srg_proj
                         
                         # Echeance projections
                         w['ANNEE_ECH_PROJ'] = acc_row.get('ANNEE_ECH', np.nan)
                         w['MOIS_ECH_PROJ'] = acc_row.get('MOIS_ECH', np.nan)
                         
-                        # Age factors (simplified)
-                        w['FACTEUR_AGE_80'] = 1.0 if age < 80 else 0.0
-                        w['FACTEUR_AGE_90'] = 1.0 if age < 90 else 0.0
+                        # Age factors - these are looked up from COUSSINS_ESCAP table, not calculated
+                        # Will be filled later from lookup_data
+                        w['FACTEUR_AGE_80'] = np.nan
+                        w['FACTEUR_AGE_90'] = np.nan
                         
                         # MIN_FERR_PROJ - lookup from min_ferr table by age
-                        mt_min_ferr = 0.0
-                        if lookup_data is not None and 'min_ferr' in lookup_data:
-                            min_ferr_df = lookup_data['min_ferr']
-                            if 'AGE' in min_ferr_df.columns and 'MIN_FERR' in min_ferr_df.columns:
-                                age_match = min_ferr_df[min_ferr_df['AGE'] == int(age)]
-                                if len(age_match) > 0:
-                                    mt_min_ferr = float(age_match['MIN_FERR'].iloc[0]) * mt_vm_proj
-                        w['MT_MIN_FERR_PROJ'] = mt_min_ferr
+                        # SAS line 449: if (an_eval = 1 and mois_eval = MOIS_EVALUATION_INI) or mois_eval = 12/&FREQ_EVAL. then MT_MIN_FERR_PROJ = MT_VM_PROJ * MIN_FERR;
+                        # With FREQ_EVAL=12 (monthly), 12/FREQ_EVAL = 1, so update at mois_eval=1 (January) or first month of year 1
+                        mois_eval_ini = acc_row.get('MOIS_EVALUATION_INI', 1) if acc_row is not None else 1
+                        freq_eval = 12  # Monthly evaluation
+                        should_update_min_ferr = (an_eval == 1 and mois_eval == mois_eval_ini) or mois_eval == (12 // freq_eval)
+                        
+                        if should_update_min_ferr:
+                            mt_min_ferr = 0.0
+                            if lookup_data is not None and 'min_ferr' in lookup_data:
+                                min_ferr_df = lookup_data['min_ferr']
+                                if 'AGE' in min_ferr_df.columns and 'MIN_FERR' in min_ferr_df.columns:
+                                    age_match = min_ferr_df[min_ferr_df['AGE'] == int(age)]
+                                    if len(age_match) > 0:
+                                        # Use previous period's MT_VM_PROJ (retained value) per SAS logic
+                                        mt_min_ferr = float(age_match['MIN_FERR'].iloc[0]) * prev_mt_vm_proj
+                            w['MT_MIN_FERR_PROJ'] = mt_min_ferr
+                            prev_mt_min_ferr_proj = mt_min_ferr  # Update retained value
+                        else:
+                            # Retain previous value
+                            w['MT_MIN_FERR_PROJ'] = prev_mt_min_ferr_proj
+                        
+                        # Update retained MT_VM_PROJ for next iteration
+                        prev_mt_vm_proj = mt_vm_proj if pd.notna(mt_vm_proj) else prev_mt_vm_proj
                         
                         # Actualization rates - calculate from forward rate
                         # SAS: TX_ACTUALISATION = TX_ACTUALISATION * EXP(-FORWARD_RATE * AJUST_NOUV_AFFAIRES)
@@ -1344,26 +1382,72 @@ def save_results(
                         # AJUST_NOUV_AFFAIRES already set above from discount calculation
                         w['MT_VM_AV_RETRAIT_FRAIS'] = r.get('MT_VM_AV_RETRAIT', np.nan)
                         
-                        # Present value columns (VP_*) - set to 0 as placeholders
-                        w['VP_PRIMES_GARANTIES'] = 0.0
-                        w['VP_PREST_MRV'] = 0.0
-                        w['VP_PREST_DECES'] = 0.0
-                        w['VP_PREST_ECH'] = 0.0
-                        w['VP_COMM_VENTE'] = 0.0
-                        w['VP_FRAIS_ACQUIS'] = 0.0
-                        w['VP_FRAIS_FIXES'] = 0.0
-                        w['VP_HON_GEST'] = 0.0
-                        w['VP_COMM_MAINTIEN'] = 0.0
-                        w['VP_PRIMES_VARIABLES'] = 0.0
-                        w['VP_FLUX_TOT'] = 0.0
-                        w['VP_VALEUR_MARCHANDE'] = 0.0
-                        w['VP_COUSSIN_DEPENSE'] = 0.0
-                        w['VP_COUSSIN_DECHEANCE'] = 0.0
-                        w['VP_COUSSIN_MORTALITE'] = 0.0
-                        w['VP_COUSSIN_DEPOT'] = 0.0
-                        w['VP_PASSIF_REDRESSE'] = 0.0
-                        w['VP_COUSSIN_CREDIT'] = 0.0
-                        w['VP_COUSSIN_MARCHE'] = 0.0
+                        # Present value columns (VP_*) - calculated as base * TX_ACTUALISATION per SAS lines 736-786
+                        tx_actual = w.get('TX_ACTUALISATION', 1.0)
+                        if pd.isna(tx_actual):
+                            tx_actual = 1.0
+                        
+                        primes_garanties = r.get('PRIMES_GARANTIES', 0) if pd.notna(r.get('PRIMES_GARANTIES')) else 0
+                        w['VP_PRIMES_GARANTIES'] = primes_garanties * tx_actual
+                        
+                        prest_mrv = r.get('PREST_MRV', 0) if pd.notna(r.get('PREST_MRV')) else 0
+                        w['VP_PREST_MRV'] = prest_mrv * tx_actual
+                        
+                        prest_deces = r.get('PREST_DECES', 0) if pd.notna(r.get('PREST_DECES')) else 0
+                        w['VP_PREST_DECES'] = prest_deces * tx_actual
+                        
+                        prest_ech = r.get('PREST_ECH', 0) if pd.notna(r.get('PREST_ECH')) else 0
+                        w['VP_PREST_ECH'] = prest_ech * tx_actual
+                        
+                        comm_vente = r.get('COMM_VENTE', 0) if pd.notna(r.get('COMM_VENTE')) else 0
+                        w['VP_COMM_VENTE'] = comm_vente * tx_actual
+                        
+                        frais_acquis = r.get('FRAIS_ACQUIS', 0) if pd.notna(r.get('FRAIS_ACQUIS')) else 0
+                        w['VP_FRAIS_ACQUIS'] = frais_acquis * tx_actual
+                        
+                        frais_fixes = r.get('FRAIS_FIXES', 0) if pd.notna(r.get('FRAIS_FIXES')) else 0
+                        w['VP_FRAIS_FIXES'] = frais_fixes * tx_actual
+                        
+                        hon_gest = r.get('HON_GEST', 0) if pd.notna(r.get('HON_GEST')) else 0
+                        w['VP_HON_GEST'] = hon_gest * tx_actual
+                        
+                        comm_maintien = r.get('COMM_MAINTIEN', 0) if pd.notna(r.get('COMM_MAINTIEN')) else 0
+                        w['VP_COMM_MAINTIEN'] = comm_maintien * tx_actual
+                        
+                        primes_variables = r.get('PRIMES_VARIABLES', 0) if pd.notna(r.get('PRIMES_VARIABLES')) else 0
+                        w['VP_PRIMES_VARIABLES'] = primes_variables * tx_actual
+                        
+                        # VP_FLUX_TOT is sum of all VP_* cashflows (SAS line 757)
+                        w['VP_FLUX_TOT'] = (w['VP_PRIMES_GARANTIES'] + w['VP_PREST_MRV'] + w['VP_PREST_DECES'] + 
+                                           w['VP_PREST_ECH'] + w['VP_COMM_VENTE'] + w['VP_FRAIS_ACQUIS'] +
+                                           w['VP_FRAIS_FIXES'] + w['VP_HON_GEST'] + w['VP_COMM_MAINTIEN'] +
+                                           w['VP_PRIMES_VARIABLES'])
+                        
+                        # VP_VALEUR_MARCHANDE = VALEUR_MARCHANDE * TX_ACTUALISATION / FREQ_EVAL (SAS line 785)
+                        valeur_marchande = r.get('VALEUR_MARCHANDE', 0) if pd.notna(r.get('VALEUR_MARCHANDE')) else 0
+                        w['VP_VALEUR_MARCHANDE'] = valeur_marchande * tx_actual / 12.0  # FREQ_EVAL=12
+                        
+                        # Cushion VP columns (SAS lines 868-873)
+                        coussin_depense = r.get('COUSSIN_DEPENSE', 0) if pd.notna(r.get('COUSSIN_DEPENSE')) else 0
+                        w['VP_COUSSIN_DEPENSE'] = coussin_depense * tx_actual / 12.0
+                        
+                        coussin_decheance = r.get('COUSSIN_DECHEANCE', 0) if pd.notna(r.get('COUSSIN_DECHEANCE')) else 0
+                        w['VP_COUSSIN_DECHEANCE'] = coussin_decheance * tx_actual / 12.0
+                        
+                        coussin_mortalite = r.get('COUSSIN_MORTALITE', 0) if pd.notna(r.get('COUSSIN_MORTALITE')) else 0
+                        w['VP_COUSSIN_MORTALITE'] = coussin_mortalite * tx_actual / 12.0
+                        
+                        coussin_depot = r.get('COUSSIN_DEPOT', 0) if pd.notna(r.get('COUSSIN_DEPOT')) else 0
+                        w['VP_COUSSIN_DEPOT'] = coussin_depot * tx_actual / 12.0
+                        
+                        passif_redresse = r.get('PASSIF_REDRESSE', 0) if pd.notna(r.get('PASSIF_REDRESSE')) else 0
+                        w['VP_PASSIF_REDRESSE'] = passif_redresse * tx_actual / 12.0
+                        
+                        coussin_credit = r.get('COUSSIN_CREDIT', 0) if pd.notna(r.get('COUSSIN_CREDIT')) else 0
+                        w['VP_COUSSIN_CREDIT'] = coussin_credit * tx_actual / 12.0
+                        
+                        coussin_marche = r.get('COUSSIN_MARCHE', 0) if pd.notna(r.get('COUSSIN_MARCHE')) else 0
+                        w['VP_COUSSIN_MARCHE'] = coussin_marche * tx_actual / 12.0
                         
                         # Additional computed fields
                         w['MT_SRG_AV_RETRAIT'] = r.get('MT_SRG', np.nan)
@@ -1381,17 +1465,32 @@ def save_results(
                         tx_survie = w.get('TX_SURVIE', 1.0)
                         if pd.isna(tx_survie):
                             tx_survie = 1.0
-                        mt_boni_deces_proj = acc_row.get('MT_BONI_DECES', 0) if acc_row is not None else 0
+                        mt_boni_deces_local = acc_row.get('MT_BONI_DECES', 0) if acc_row is not None else 0
+                        mt_gar_deces_local = r.get('MT_GAR_DECES', 0) if pd.notna(r.get('MT_GAR_DECES')) else 0
+                        mt_vm_local = r.get('MT_VM', 0) if pd.notna(r.get('MT_VM')) else 0
                         retrait = r.get('RETRAIT', 0) if pd.notna(r.get('RETRAIT')) else 0
                         # VALEUR_GARANTIE = MT_GAR_DECES_PROJ * TX_SURVIE
-                        valeur_garantie = mt_gar_deces * tx_survie if pd.notna(mt_gar_deces) else 0.0
+                        valeur_garantie = mt_gar_deces_local * tx_survie
                         # UNITE_COUVERTURE = MAX(MT_VM_PROJ, MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ, RETRAIT) * TX_SURVIE
-                        unite_couverture = max(mt_vm_proj if pd.notna(mt_vm_proj) else 0,
-                                              (mt_gar_deces if pd.notna(mt_gar_deces) else 0) + mt_boni_deces_proj,
+                        unite_couverture = max(mt_vm_local,
+                                              mt_gar_deces_local + mt_boni_deces_local,
                                               retrait) * tx_survie
                         w['UNITE_COUVERTURE'] = unite_couverture
                         w['VALEUR_GARANTIE'] = valeur_garantie
-                        w['REM_COMP_INV'] = 0.0
+                        
+                        # REM_COMP_INV calculation per SAS line 791
+                        # REM_COMP_INV = ((RETRAIT - PREST_MRV) + MT_VM_AP_RETRAIT_DEPOT * (1 - TX_SURVIE/TX_SURVIE_DEB)) * TX_SURVIE_DEB
+                        retrait_val = r.get('RETRAIT', 0) if pd.notna(r.get('RETRAIT')) else 0
+                        prest_mrv_val = r.get('PREST_MRV', 0) if pd.notna(r.get('PREST_MRV')) else 0
+                        mt_vm_ap_retrait_depot = r.get('MT_VM_AP_RETRAIT', 0) if pd.notna(r.get('MT_VM_AP_RETRAIT')) else 0
+                        tx_survie_deb = w.get('TX_SURVIE_DEB', 1.0) if pd.notna(w.get('TX_SURVIE_DEB')) else 1.0
+                        tx_survie_val = w.get('TX_SURVIE', 1.0) if pd.notna(w.get('TX_SURVIE')) else 1.0
+                        if tx_survie_deb > 0:
+                            rem_comp_inv = ((retrait_val - prest_mrv_val) + mt_vm_ap_retrait_depot * (1 - tx_survie_val / tx_survie_deb)) * tx_survie_deb
+                        else:
+                            rem_comp_inv = 0.0
+                        w['REM_COMP_INV'] = rem_comp_inv
+                        
                         # CODE_CAT_PRODUIT should be 1 (not ID_PRODUIT)
                         w['CODE_CAT_PRODUIT'] = 1
                         # Extract CAT_COUSSIN values from flux data
@@ -1425,47 +1524,91 @@ def save_results(
                             # Only fill for data rows (skip row 0)
                             output_df.loc[1:, 'MIN_FERR'] = output_df.loc[1:, 'AGE'].map(age_to_minferr)
                     
-                    # Fill TX_LAPSE_TOT columns from tx_lapse_tot table - skip init row
+                    # Fill TX_LAPSE_TOT columns from tx_lapse_tot table - keyed by ID_LAPSE, DUREE_MAX10, LAPSE_NIV_TOT
                     if 'tx_lapse_tot' in lookup_data:
                         lapse_tot_df = lookup_data['tx_lapse_tot']
-                        if 'ID_LAPSE' in lapse_tot_df.columns:
-                            lapse_tot_row = lapse_tot_df[lapse_tot_df['ID_LAPSE'] == id_lapse]
-                            if len(lapse_tot_row) > 0:
-                                for col in ['TX_LAPSE_TOT_MIN', 'TX_LAPSE_TOT_MAX', 'FACT_DIM']:
-                                    if col in lapse_tot_row.columns and col in output_df.columns:
-                                        output_df.loc[1:, col] = lapse_tot_row[col].iloc[0]
+                        if all(c in lapse_tot_df.columns for c in ['ID_LAPSE', 'DUREE_MAX10', 'LAPSE_NIV_TOT']):
+                            # For each data row, look up using composite key
+                            for idx in range(1, len(output_df)):
+                                duree = output_df.loc[idx, 'duree_max10']
+                                lapse_niv = output_df.loc[idx, 'LAPSE_NIV_TOT']
+                                if pd.notna(duree) and pd.notna(lapse_niv):
+                                    match = lapse_tot_df[
+                                        (lapse_tot_df['ID_LAPSE'] == id_lapse) &
+                                        (lapse_tot_df['DUREE_MAX10'] == int(duree)) &
+                                        (lapse_tot_df['LAPSE_NIV_TOT'] == int(lapse_niv))
+                                    ]
+                                    if len(match) > 0:
+                                        for col in ['TX_LAPSE_TOT_MIN', 'TX_LAPSE_TOT_MAX', 'FACT_DIM']:
+                                            if col in match.columns and col in output_df.columns:
+                                                output_df.loc[idx, col] = match[col].iloc[0]
                     
-                    # Fill TX_LAPSE_PART columns from tx_lapse_part table - skip init row
+                    # Fill TX_LAPSE_PART columns from tx_lapse_part table - keyed by ID_LAPSE, AGE, LAPSE_NIV_PART, I_REGIME_2
                     if 'tx_lapse_part' in lookup_data:
                         lapse_part_df = lookup_data['tx_lapse_part']
-                        if 'ID_LAPSE' in lapse_part_df.columns:
-                            lapse_part_row = lapse_part_df[lapse_part_df['ID_LAPSE'] == id_lapse]
-                            if len(lapse_part_row) > 0:
-                                for col in ['TX_LAPSE_PART_MIN', 'TX_LAPSE_PART_MAX']:
-                                    if col in lapse_part_row.columns and col in output_df.columns:
-                                        output_df.loc[1:, col] = lapse_part_row[col].iloc[0]
+                        if all(c in lapse_part_df.columns for c in ['ID_LAPSE', 'AGE', 'LAPSE_NIV_PART', 'I_REGIME_2']):
+                            for idx in range(1, len(output_df)):
+                                age_val = output_df.loc[idx, 'AGE']
+                                lapse_niv = output_df.loc[idx, 'LAPSE_NIV_PART']
+                                if pd.notna(age_val) and pd.notna(lapse_niv):
+                                    match = lapse_part_df[
+                                        (lapse_part_df['ID_LAPSE'] == id_lapse) &
+                                        (lapse_part_df['AGE'] == int(age_val)) &
+                                        (lapse_part_df['LAPSE_NIV_PART'] == int(lapse_niv)) &
+                                        (lapse_part_df['I_REGIME_2'] == i_regime_2)
+                                    ]
+                                    if len(match) > 0:
+                                        for col in ['TX_LAPSE_PART_MIN', 'TX_LAPSE_PART_MAX']:
+                                            if col in match.columns and col in output_df.columns:
+                                                output_df.loc[idx, col] = match[col].iloc[0]
                     
-                    # Fill ACQUISITION columns (PC_COMMISSION_*, PC_FRAIS_AN_*) - skip init row
+                    # Fill ACQUISITION columns (PC_COMMISSION_*, PC_FRAIS_AN_*) - keyed by DUREE_MAX10, ID_ACQUI
                     if 'acquisition' in lookup_data:
                         acq_df = lookup_data['acquisition']
-                        if 'ID_ACQUI' in acq_df.columns:
-                            acq_row = acq_df[acq_df['ID_ACQUI'] == id_acqui]
-                            if len(acq_row) > 0:
-                                for col in ['PC_COMMISSION_VENTE_RF', 'PC_COMMISSION_VENTE_AC', 
-                                           'PC_COMMISSION_MAINTIEN_RF', 'PC_COMMISSION_MAINTIEN_AC',
-                                           'PC_FRAIS_AN_AC', 'PC_FRAIS_AN_RF']:
-                                    if col in acq_row.columns and col in output_df.columns:
-                                        output_df.loc[1:, col] = acq_row[col].iloc[0]
+                        if all(c in acq_df.columns for c in ['DUREE_MAX10', 'ID_ACQUI']):
+                            for idx in range(1, len(output_df)):
+                                duree = output_df.loc[idx, 'duree_max10']
+                                if pd.notna(duree):
+                                    match = acq_df[
+                                        (acq_df['DUREE_MAX10'] == int(duree)) &
+                                        (acq_df['ID_ACQUI'] == id_acqui)
+                                    ]
+                                    if len(match) > 0:
+                                        for col in ['PC_COMMISSION_VENTE_RF', 'PC_COMMISSION_VENTE_AC', 
+                                                   'PC_COMMISSION_MAINTIEN_RF', 'PC_COMMISSION_MAINTIEN_AC',
+                                                   'PC_FRAIS_AN_AC', 'PC_FRAIS_AN_RF']:
+                                            if col in match.columns and col in output_df.columns:
+                                                val = match[col].iloc[0]
+                                                # Handle percentage strings
+                                                if isinstance(val, str) and '%' in val:
+                                                    try:
+                                                        val = float(val.replace('%', '').strip()) / 100.0
+                                                    except:
+                                                        pass
+                                                output_df.loc[idx, col] = val
                     
-                    # Fill DEPOTS_FUTURS columns - skip init row
+                    # Fill DEPOTS_FUTURS columns - keyed by ID_DEPOT, DUREE_MAX10
                     if 'depots_futurs' in lookup_data:
                         depot_df = lookup_data['depots_futurs']
-                        if 'ID_DEPOT' in depot_df.columns:
-                            depot_row = depot_df[depot_df['ID_DEPOT'] == id_depot]
-                            if len(depot_row) > 0:
-                                for col in ['PC_DEPOT_ANNUEL', 'VAR_DEPOT_FCT', 'AGE_MAX_DEPOT', 'I_EVEN_CESSE_DEPOT']:
-                                    if col in depot_row.columns and col in output_df.columns:
-                                        output_df.loc[1:, col] = depot_row[col].iloc[0]
+                        if all(c in depot_df.columns for c in ['ID_DEPOT', 'DUREE_MAX10']):
+                            for idx in range(1, len(output_df)):
+                                duree = output_df.loc[idx, 'duree_max10']
+                                if pd.notna(duree):
+                                    match = depot_df[
+                                        (depot_df['ID_DEPOT'] == id_depot) &
+                                        (depot_df['DUREE_MAX10'] == int(duree))
+                                    ]
+                                    if len(match) > 0:
+                                        for col in ['PC_DEPOT_ANNUEL', 'VAR_DEPOT_FCT', 'AGE_MAX_DEPOT', 'I_EVEN_CESSE_DEPOT']:
+                                            if col in match.columns and col in output_df.columns:
+                                                val = match[col].iloc[0]
+                                                # Handle percentage strings like "8.7%"
+                                                if isinstance(val, str) and '%' in val:
+                                                    try:
+                                                        val = float(val.replace('%', '').strip()) / 100.0
+                                                    except:
+                                                        pass
+                                                output_df.loc[idx, col] = val
                     
                     # Fill FORWARD_RATE and AJUST_FORWARD_RATE_VM_0 from rendements - skip init row
                     if 'rendements' in lookup_data:
@@ -1485,19 +1628,125 @@ def save_results(
                                         if 'AJUST_FORWARD_RATE_VM_0' in rend_match.columns and pd.isna(output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0']):
                                             output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0'] = rend_match['AJUST_FORWARD_RATE_VM_0'].iloc[0]
                     
-                    # Fill FRAIS from frais_admin - skip init row
+                    # Fill FRAIS from frais_admin - keyed by ANNEE_REELLE, ID_PRODUIT
                     if 'frais_admin' in lookup_data:
                         frais_df = lookup_data['frais_admin']
-                        if 'FRAIS' in frais_df.columns and 'FRAIS' in output_df.columns:
-                            output_df.loc[1:, 'FRAIS'] = frais_df['FRAIS'].iloc[0] if len(frais_df) > 0 else np.nan
+                        id_produit = acc_row.get('ID_PRODUIT', 0)
+                        if all(c in frais_df.columns for c in ['ANNEE_REELLE', 'ID_PRODUIT', 'FRAIS']) and 'FRAIS' in output_df.columns:
+                            for idx in range(1, len(output_df)):
+                                annee_reelle = output_df.loc[idx, 'annee_reelle']
+                                if pd.notna(annee_reelle):
+                                    match = frais_df[
+                                        (frais_df['ANNEE_REELLE'] == int(annee_reelle)) &
+                                        (frais_df['ID_PRODUIT'] == id_produit)
+                                    ]
+                                    if len(match) > 0:
+                                        output_df.loc[idx, 'FRAIS'] = match['FRAIS'].iloc[0]
                     
-                    # Fill COUSSINS_ESCAP columns - skip init row
+                    # Fill COUSSINS_ESCAP columns - keyed by CODE_CAT_PRODUIT, CAT_COUSSIN_1, CAT_COUSSIN_2
+                    # SAS lines 801-824 define these categories
                     if 'coussins_escap' in lookup_data:
                         coussin_df = lookup_data['coussins_escap']
-                        coussin_cols = [c for c in coussin_df.columns if c.startswith('BASE_') or c.startswith('TX_')]
-                        for col in coussin_cols:
-                            if col in output_df.columns:
-                                output_df.loc[1:, col] = coussin_df[col].iloc[0] if len(coussin_df) > 0 else np.nan
+                        id_produit = acc_row.get('ID_PRODUIT', 0)
+                        
+                        # CODE_CAT_PRODUIT from ID_PRODUIT (SAS lines 801-808)
+                        if id_produit == 22:
+                            code_cat_produit = 0  # CPG IA
+                        elif id_produit in [12, 13, 14, 15, 16]:
+                            code_cat_produit = 1  # CFB
+                        elif id_produit in [17, 18, 19, 20, 21]:
+                            code_cat_produit = 2  # Courtage
+                        elif id_produit == 6:
+                            code_cat_produit = 3  # R12
+                        elif id_produit in [4, 7]:
+                            code_cat_produit = 4  # E12 et N75
+                        elif id_produit in [5, 8]:
+                            code_cat_produit = 5  # O12 et N10
+                        elif id_produit in [2, 3]:
+                            code_cat_produit = 6  # CIG Boursier A et B
+                        else:
+                            code_cat_produit = 7  # RGS
+                        
+                        coussin_cols = ['BASE_PASSIF_REDRESSE', 'TX_PASSIF_REDRESSE', 'BASE_COUSSIN_CREDIT', 
+                                       'TX_COUSSIN_CREDIT', 'BASE_COUSSIN_MARCHE', 'TX_COUSSIN_MARCHE',
+                                       'BASE_COUSSIN_DEPENSE', 'TX_COUSSIN_DEPENSE', 'BASE_COUSSIN_DECHEANCE',
+                                       'TX_COUSSIN_DECHEANCE', 'BASE_COUSSIN_MORTALITE', 'TX_COUSSIN_MORTALITE',
+                                       'BASE_COUSSIN_DEPOT', 'TX_COUSSIN_DEPOT', 'FACTEUR_AGE_80', 'FACTEUR_AGE_90']
+                        
+                        if all(c in coussin_df.columns for c in ['CODE_CAT_PRODUIT', 'CAT_COUSSIN_1', 'CAT_COUSSIN_2']):
+                            for idx in range(1, len(output_df)):
+                                duree = output_df.loc[idx, 'duree_max10']
+                                vm_vg = output_df.loc[idx, 'VM_VG_RATIO']
+                                mt_dex_proj = output_df.loc[idx, 'MT_DEX_PROJ'] if pd.notna(output_df.loc[idx, 'MT_DEX_PROJ']) else 0
+                                mt_mm_proj = output_df.loc[idx, 'MT_MM_PROJ'] if pd.notna(output_df.loc[idx, 'MT_MM_PROJ']) else 0
+                                mt_vm_proj = output_df.loc[idx, 'MT_VM_PROJ'] if pd.notna(output_df.loc[idx, 'MT_VM_PROJ']) else 0.01
+                                rf_ratio = (mt_dex_proj + mt_mm_proj) / max(mt_vm_proj, 0.01)
+                                
+                                # CAT_COUSSIN_1 (SAS lines 811-816)
+                                if code_cat_produit in [0, 6]:
+                                    cat_coussin_1 = 0  # CPG IA and CIG Boursier
+                                elif code_cat_produit == 7 and rf_ratio < 0.5:
+                                    cat_coussin_1 = 4  # RGS < 50%
+                                elif code_cat_produit == 7:
+                                    cat_coussin_1 = 5  # RGS >= 50%
+                                elif rf_ratio < 1/3:
+                                    cat_coussin_1 = 1  # < 1/3
+                                elif rf_ratio < 2/3:
+                                    cat_coussin_1 = 2  # < 2/3
+                                else:
+                                    cat_coussin_1 = 3  # >= 2/3
+                                
+                                # CAT_COUSSIN_2 (SAS lines 819-824)
+                                if code_cat_produit == 7 and pd.notna(vm_vg) and vm_vg < 0.7:
+                                    cat_coussin_2 = 4  # RGS < 70%
+                                elif code_cat_produit == 7 and pd.notna(vm_vg) and vm_vg < 0.9:
+                                    cat_coussin_2 = 5  # RGS < 90%
+                                elif code_cat_produit == 7:
+                                    cat_coussin_2 = 6  # RGS >= 90%
+                                elif pd.notna(duree) and duree <= 3:
+                                    cat_coussin_2 = 1  # année police 0-3
+                                elif pd.notna(duree) and duree <= 6:
+                                    cat_coussin_2 = 2  # année police 4-6
+                                else:
+                                    cat_coussin_2 = 3  # année police 7+
+                                
+                                match = coussin_df[
+                                    (coussin_df['CODE_CAT_PRODUIT'] == code_cat_produit) &
+                                    (coussin_df['CAT_COUSSIN_1'] == cat_coussin_1) &
+                                    (coussin_df['CAT_COUSSIN_2'] == cat_coussin_2)
+                                ]
+                                if len(match) > 0:
+                                    for col in coussin_cols:
+                                        if col in match.columns and col in output_df.columns:
+                                            val = match[col].iloc[0]
+                                            # Handle percentage strings like "87.15%"
+                                            if isinstance(val, str) and '%' in val:
+                                                try:
+                                                    val = float(val.replace('%', '').replace('(', '').replace(')', '').strip()) / 100.0
+                                                except:
+                                                    pass
+                                            output_df.loc[idx, col] = val
+                    
+                    # Calculate PC_COMMISSION_MAINTIEN, PC_COMMISSION_VENTE, PC_FRAIS_AN per SAS lines 718-720
+                    # PC_COMMISSION_MAINTIEN = (PC_COMMISSION_MAINTIEN_AC * (MT_VM-MT_RF)/MT_VM + PC_COMMISSION_MAINTIEN_RF * (MT_RF)/MT_VM) * Ajustement_commission
+                    ajustement_commission = acc_row.get('AJUSTEMENT_COMMISSION', 1.0) if pd.notna(acc_row.get('AJUSTEMENT_COMMISSION')) else 1.0
+                    mt_rf = acc_row.get('MT_RF', 0) if pd.notna(acc_row.get('MT_RF')) else 0
+                    mt_vm_init = acc_row.get('MT_VM', 0.01) if pd.notna(acc_row.get('MT_VM')) else 0.01
+                    
+                    for idx in range(1, len(output_df)):
+                        pc_maintien_rf = output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_RF'] if pd.notna(output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_RF']) else 0
+                        pc_maintien_ac = output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_AC'] if pd.notna(output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_AC']) else 0
+                        pc_vente_rf = output_df.loc[idx, 'PC_COMMISSION_VENTE_RF'] if pd.notna(output_df.loc[idx, 'PC_COMMISSION_VENTE_RF']) else 0
+                        pc_vente_ac = output_df.loc[idx, 'PC_COMMISSION_VENTE_AC'] if pd.notna(output_df.loc[idx, 'PC_COMMISSION_VENTE_AC']) else 0
+                        pc_frais_rf = output_df.loc[idx, 'PC_FRAIS_AN_RF'] if pd.notna(output_df.loc[idx, 'PC_FRAIS_AN_RF']) else 0
+                        pc_frais_ac = output_df.loc[idx, 'PC_FRAIS_AN_AC'] if pd.notna(output_df.loc[idx, 'PC_FRAIS_AN_AC']) else 0
+                        
+                        if mt_vm_init > 0:
+                            rf_ratio = mt_rf / mt_vm_init
+                            ac_ratio = (mt_vm_init - mt_rf) / mt_vm_init
+                            output_df.loc[idx, 'PC_COMMISSION_MAINTIEN'] = (pc_maintien_ac * ac_ratio + pc_maintien_rf * rf_ratio) * ajustement_commission
+                            output_df.loc[idx, 'PC_COMMISSION_VENTE'] = (pc_vente_ac * ac_ratio + pc_vente_rf * rf_ratio) * ajustement_commission
+                            output_df.loc[idx, 'PC_FRAIS_AN'] = pc_frais_ac * ac_ratio + pc_frais_rf * rf_ratio
 
                 output_example_gpu_path = output_path / "OUTPUT_EXAMPLE_GPU.csv"
                 output_df.to_csv(output_example_gpu_path, index=False)
