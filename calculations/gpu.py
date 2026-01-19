@@ -1380,7 +1380,13 @@ def save_results(
                         # Adjustment fields
                         w['rc'] = 0.0
                         # AJUST_NOUV_AFFAIRES already set above from discount calculation
-                        w['MT_VM_AV_RETRAIT_FRAIS'] = r.get('MT_VM_AV_RETRAIT', np.nan)
+                        # MT_VM_AV_RETRAIT_FRAIS = sum of all asset classes (before fees)
+                        mt_sp500 = r.get('MT_SP500', 0) if pd.notna(r.get('MT_SP500')) else 0
+                        mt_tsx = r.get('MT_TSX', 0) if pd.notna(r.get('MT_TSX')) else 0
+                        mt_eafe = r.get('MT_EAFE', 0) if pd.notna(r.get('MT_EAFE')) else 0
+                        mt_dex = r.get('MT_DEX', 0) if pd.notna(r.get('MT_DEX')) else 0
+                        mt_mm = r.get('MT_MM', 0) if pd.notna(r.get('MT_MM')) else 0
+                        w['MT_VM_AV_RETRAIT_FRAIS'] = mt_sp500 + mt_tsx + mt_eafe + mt_dex + mt_mm
                         
                         # Present value columns (VP_*) - calculated as base * TX_ACTUALISATION per SAS lines 736-786
                         tx_actual = w.get('TX_ACTUALISATION', 1.0)
