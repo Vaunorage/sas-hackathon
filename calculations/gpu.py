@@ -518,12 +518,24 @@ class ProcessBatchResult(TypedDict):
 def check_gpu_memory(batch_size: int, mem_per_account: float, batch_idx: int = 0):
     """Log GPU memory status and raise if insufficient for batch."""
     try:
+        # Force aggressive cleanup before checking memory
+        if batch_idx > 0:
+            cuda.synchronize()
+            gc.collect()
+            try:
+                import rmm
+                rmm.mr.get_current_device_resource().deallocate(0, 0)
+            except (ImportError, AttributeError):
+                pass
+            cuda.synchronize()
+        
         free_mem, _ = cuda.current_context().get_memory_info()
         estimated_mem = batch_size * mem_per_account
         logger.info(f"  Free GPU memory: {free_mem / 1024 ** 3:.2f} GB")
         logger.info(f"  Estimated batch memory: {estimated_mem / 1024 ** 3:.2f} GB")
         
-        if estimated_mem > free_mem * MEMORY_BATCH_THRESHOLD:
+        # Use 85% threshold to account for memory fragmentation
+        if estimated_mem > free_mem * 0.85:
             raise RuntimeError(
                 f"Insufficient GPU memory for batch {batch_idx + 1}. "
                 f"Need {estimated_mem / 1024**3:.2f} GB but only "
