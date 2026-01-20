@@ -489,7 +489,8 @@ def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projectio
         free_mem, total_mem = cuda.current_context().get_memory_info()
         print(f"  GPU free memory: {free_mem / 1024**3:.2f} GB")
         print(f"  GPU total memory: {total_mem / 1024**3:.2f} GB")
-        available_mem = max(0, (free_mem - lookup_overhead) * MEMORY_SAFETY_FACTOR)
+        # Use more conservative factor (55% instead of 60%) to account for memory fragmentation
+        available_mem = max(0, (free_mem - lookup_overhead) * 0.55)
     except NotImplementedError:
         print("  Warning: Cannot query GPU memory, using conservative estimate")
         available_mem = max(0, DEFAULT_GPU_MEMORY_GB * 1024**3 - lookup_overhead)
