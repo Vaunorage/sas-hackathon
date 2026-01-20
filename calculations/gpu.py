@@ -535,8 +535,8 @@ def check_gpu_memory(batch_size: int, mem_per_account: float, batch_idx: int = 0
         logger.info(f"  Free GPU memory: {free_mem / 1024 ** 3:.2f} GB")
         logger.info(f"  Estimated batch memory: {estimated_mem / 1024 ** 3:.2f} GB")
         
-        # Use 85% threshold to account for memory fragmentation
-        if estimated_mem > free_mem * 0.85:
+        # Check if we have enough memory (simple check: need < available)
+        if estimated_mem > free_mem:
             raise RuntimeError(
                 f"Insufficient GPU memory for batch {batch_idx + 1}. "
                 f"Need {estimated_mem / 1024**3:.2f} GB but only "
