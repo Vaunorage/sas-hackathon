@@ -438,6 +438,21 @@ def initialize_gpu():
         if not cuda.is_available():
             raise RuntimeError("CUDA is not available")
         
+        # Configure RMM to use CUDA memory resource (no pooling) for predictable memory release
+        try:
+            import rmm
+            rmm.reinitialize(managed_memory=False, pool_allocator=False)
+        except (ImportError, Exception):
+            pass
+        
+        # Configure CuPy to not use memory pool
+        try:
+            import cupy as cp
+            cp.cuda.set_allocator(None)  # Use default CUDA allocator
+            cp.cuda.set_pinned_memory_allocator(None)
+        except (ImportError, Exception):
+            pass
+        
         gpu = cuda.get_current_device()
         print(f"GPU Device: {gpu.name.decode()}")
         
