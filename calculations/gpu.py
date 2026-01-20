@@ -748,7 +748,11 @@ def process_batch(
         # Outer loop only - compute simple PV-based reserves from Kernel A cashflows
         logger.info("  Computing simple PV-based reserves from external scenarios...")
         h_metrics = None
+        
+        # Copy cashflows to host and immediately free GPU memory
         h_cashflows = d_cashflows.copy_to_host()
+        del d_cashflows  # Free GPU memory immediately
+        cuda.synchronize()
         
         # Compute simple reserve estimate by averaging cashflows across scenarios
         # h_cashflows shape: (batch, scenarios, years, 1)
@@ -764,9 +768,15 @@ def process_batch(
         batch_reserves_5chocs[:, 0] = batch_reserves
         
         del h_cashflows
+        gc.collect()
     
     # Cleanup
-    del d_batch_accounts, d_states, d_cashflows, d_ext_debug, d_debug_flux
+    del d_batch_accounts, d_states, d_ext_debug, d_debug_flux
+    if not run_nested_valuation:
+        # d_cashflows already deleted in outer-loop-only branch
+        pass
+    else:
+        del d_cashflows
     if d_metrics is not None:
         del d_metrics
     if d_int_debug is not None:
