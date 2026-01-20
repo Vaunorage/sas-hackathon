@@ -821,6 +821,10 @@ def process_batch(
         del h_metrics
     gc.collect()
     
+    # Clear CuPy array references to allow garbage collection
+    _clear_cupy_refs()
+    gc.collect()
+    
     # Force RMM/CuPy to release memory back to CUDA
     try:
         import cupy as cp
