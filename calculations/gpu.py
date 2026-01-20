@@ -551,9 +551,10 @@ def process_batch(
     debug_month: int = -1,
     debug_int_scenario: int = -1,
     debug_int_year: int = -1,
+    run_nested_valuation: bool = True,
 ) -> ProcessBatchResult:
     """
-    Process a single batch through both kernels.
+    Process a single batch through both kernels (or just Kernel A if run_nested_valuation=False).
     
     Args:
         batch_account_data: 2D array of account data for this batch (n_batch_accounts, n_features)
@@ -571,6 +572,7 @@ def process_batch(
         debug_month: Month (mois_eval) to debug (-1 = disabled)
         debug_int_scenario: Internal scenario to debug (-1 = disabled)
         debug_int_year: Internal year to debug (-1 = disabled)
+        run_nested_valuation: If True, run Kernel B (nested valuation). If False, only run Kernel A (outer loop)
     
     Returns:
         ProcessBatchResult with batch results
@@ -593,13 +595,17 @@ def process_batch(
         d_cashflows = _device_array_cupy(
             (current_batch_size, nb_ext_scenarios, nb_an_projection, 1)
         )
-        d_metrics = _device_array_cupy(
-            (current_batch_size, nb_ext_scenarios, nb_an_projection, NUM_CHOCS, METRICS_OUTPUT_SIZE)
-        )
+        # Only allocate metrics tensor if running nested valuation
+        if run_nested_valuation:
+            d_metrics = _device_array_cupy(
+                (current_batch_size, nb_ext_scenarios, nb_an_projection, NUM_CHOCS, METRICS_OUTPUT_SIZE)
+            )
+        else:
+            d_metrics = None
         
         # Allocate debug arrays (always allocate, use -1 flags to disable)
         enable_ext_debug = debug_account >= 0 or debug_scenario >= 0 or debug_year >= 0 or debug_month >= 0
-        enable_int_debug = enable_ext_debug  # Internal debug only if external debug is enabled
+        enable_int_debug = enable_ext_debug and run_nested_valuation  # Internal debug only if external debug is enabled AND running nested valuation
         
         if enable_ext_debug:
             logger.info(f"  Debug mode: account={debug_account}, scenario={debug_scenario}, year={debug_year}, month={debug_month}")
@@ -608,7 +614,10 @@ def process_batch(
         
         # Always allocate debug arrays (kernel uses -1 flags to skip writing)
         d_ext_debug = _device_array_cupy((EXT_DEBUG_SIZE,))
-        d_int_debug = _device_array_cupy((NUM_CHOCS, INT_DEBUG_SIZE))
+        if run_nested_valuation:
+            d_int_debug = _device_array_cupy((NUM_CHOCS, INT_DEBUG_SIZE))
+        else:
+            d_int_debug = None
         
         # Allocate debug flux array for single account/scenario flux capture
         # Shape: (n_years+1, freq_eval, FLUX_COMP_IDX_SIZE)
@@ -626,9 +635,11 @@ def process_batch(
             d_int_debug_ts = _to_device_contiguous(
                 np.zeros((NUM_CHOCS, nb_an_projection, INT_TS_DEBUG_IDX_SIZE), dtype=np.float32)
             )
-        else:
+        elif run_nested_valuation:
             # Always pass an array to the kernel to keep the CUDA signature stable.
             d_int_debug_ts = _to_device_contiguous(np.zeros((1, 1, INT_TS_DEBUG_IDX_SIZE), dtype=np.float32))
+        else:
+            d_int_debug_ts = None
     except Exception as e:
         raise RuntimeError(
             f"Failed to allocate GPU memory for batch {batch_idx+1}. "
@@ -672,41 +683,44 @@ def process_batch(
     logger.info(f"  Kernel A complete: {kernel_a_time:.2f}s")
     
     # === KERNEL B: NESTED VALUATOR WITH 5 CHOCS ===
-    logger.info(f"  Launching Kernel B (Five Chocs Nested Valuator)...")
-    total_nodes = current_batch_size * nb_ext_scenarios * nb_an_projection
-    threads_per_block_B = DEFAULT_THREADS_PER_BLOCK_1D
-    blocks_B = (total_nodes + threads_per_block_B - 1) // threads_per_block_B
-    
-    kernel_b_start = datetime.now()
-    
-    nested_valuation_kernel_five_chocs[blocks_B, threads_per_block_B](
-        d_states,
-        d_batch_accounts,
-        nb_int_scenarios,
-        nb_an_projection,
-        gpu_lookups['rn_returns'],
-        gpu_lookups['mortality'],
-        gpu_lookups['lapse'],
-        gpu_lookups['policy'],
-        gpu_lookups['commission'],
-        d_metrics,
-        d_int_debug,
-        d_int_debug_ts,
-        debug_int_scenario,
-        debug_int_year,
-        debug_account,
-        debug_scenario,
-        debug_year,
-        float(shock_capital_pct),
-    )
-    cuda.synchronize()
-    
-    kernel_b_time = (datetime.now() - kernel_b_start).total_seconds()
-    logger.info(f"  Kernel B complete: {kernel_b_time:.2f}s")
+    kernel_b_time = 0.0
+    if run_nested_valuation:
+        logger.info(f"  Launching Kernel B (Five Chocs Nested Valuator)...")
+        total_nodes = current_batch_size * nb_ext_scenarios * nb_an_projection
+        threads_per_block_B = DEFAULT_THREADS_PER_BLOCK_1D
+        blocks_B = (total_nodes + threads_per_block_B - 1) // threads_per_block_B
+        
+        kernel_b_start = datetime.now()
+        
+        nested_valuation_kernel_five_chocs[blocks_B, threads_per_block_B](
+            d_states,
+            d_batch_accounts,
+            nb_int_scenarios,
+            nb_an_projection,
+            gpu_lookups['rn_returns'],
+            gpu_lookups['mortality'],
+            gpu_lookups['lapse'],
+            gpu_lookups['policy'],
+            gpu_lookups['commission'],
+            d_metrics,
+            d_int_debug,
+            d_int_debug_ts,
+            debug_int_scenario,
+            debug_int_year,
+            debug_account,
+            debug_scenario,
+            debug_year,
+            float(shock_capital_pct),
+        )
+        cuda.synchronize()
+        
+        kernel_b_time = (datetime.now() - kernel_b_start).total_seconds()
+        logger.info(f"  Kernel B complete: {kernel_b_time:.2f}s")
+    else:
+        logger.info(f"  Kernel B skipped (run_nested_valuation=False - outer loop only)")
     
     # Copy results back
     logger.info("  Copying results to CPU...")
-    h_metrics = d_metrics.copy_to_host()
     
     # Copy debug arrays if enabled
     h_ext_debug = None
@@ -723,16 +737,32 @@ def process_batch(
         if enable_int_debug_ts:
             h_int_debug_ts = d_int_debug_ts.copy_to_host()
     
-    # Process metrics
-    batch_reserves_5chocs = h_metrics[:, :, :, :, METRICS_RESERVE_IDX].mean(axis=(1, 2))
-    batch_capital_5chocs = h_metrics[:, :, :, :, METRICS_CAPITAL_IDX].mean(axis=(1, 2))
-    batch_reserves = batch_reserves_5chocs[:, 0]
-    batch_capital = batch_capital_5chocs[:, 0]
+    # Process metrics (only if nested valuation was run)
+    if run_nested_valuation:
+        h_metrics = d_metrics.copy_to_host()
+        batch_reserves_5chocs = h_metrics[:, :, :, :, METRICS_RESERVE_IDX].mean(axis=(1, 2))
+        batch_capital_5chocs = h_metrics[:, :, :, :, METRICS_CAPITAL_IDX].mean(axis=(1, 2))
+        batch_reserves = batch_reserves_5chocs[:, 0]
+        batch_capital = batch_capital_5chocs[:, 0]
+    else:
+        # No nested valuation - return zeros for reserves/capital
+        h_metrics = None
+        batch_reserves = np.zeros(current_batch_size, dtype=np.float32)
+        batch_capital = np.zeros(current_batch_size, dtype=np.float32)
+        batch_reserves_5chocs = np.zeros((current_batch_size, NUM_CHOCS), dtype=np.float32)
+        batch_capital_5chocs = np.zeros((current_batch_size, NUM_CHOCS), dtype=np.float32)
     
     # Cleanup
-    del d_batch_accounts, d_states, d_cashflows, d_metrics, d_ext_debug, d_int_debug, d_int_debug_ts, d_debug_flux
+    del d_batch_accounts, d_states, d_cashflows, d_ext_debug, d_debug_flux
+    if d_metrics is not None:
+        del d_metrics
+    if d_int_debug is not None:
+        del d_int_debug
+    if d_int_debug_ts is not None:
+        del d_int_debug_ts
     cuda.synchronize()
-    del h_metrics
+    if h_metrics is not None:
+        del h_metrics
     gc.collect()
     
     try:
@@ -2077,7 +2107,8 @@ def run_projection_gpu_nested(
         debug_month: int = -1,
         debug_int_scenario: int = -1,
         debug_int_year: int = -1,
-        debug_only: bool = False):
+        debug_only: bool = False,
+        run_nested_valuation: bool = True):
     """
     Run GPU-accelerated nested stochastic projection using Two-Pass architecture.
     
@@ -2088,15 +2119,22 @@ def run_projection_gpu_nested(
     Args:
         debug_only: If True and debug_account >= 0, only process the single account 
                    specified by debug_account (filters population to that account only).
+        run_nested_valuation: If True (default), run both Kernel A and Kernel B (full nested valuation).
+                             If False, run only Kernel A (outer loop only - no nested valuation).
     """
     start_time = datetime.now()
-    print(f"Starting NESTED STOCHASTIC GPU projection at {start_time}")
+    print(f"Starting {'NESTED STOCHASTIC' if run_nested_valuation else 'OUTER LOOP ONLY'} GPU projection at {start_time}")
     print("=" * 80)
-    print(f"Architecture: Two-Pass (Generator → Valuator with 5 Chocs)")
+    if run_nested_valuation:
+        print(f"Architecture: Two-Pass (Generator → Valuator with 5 Chocs)")
+    else:
+        print(f"Architecture: Single-Pass (Generator Only - Outer Loop)")
     print(f"External scenarios: {nb_ext_scenarios}")
-    print(f"Internal scenarios per node: {nb_int_scenarios}")
+    if run_nested_valuation:
+        print(f"Internal scenarios per node: {nb_int_scenarios}")
     sys.stdout.flush()
-    print(f"Capital shock: {shock_capital_pct*100:.1f}%")
+    if run_nested_valuation:
+        print(f"Capital shock: {shock_capital_pct*100:.1f}%")
     sys.stdout.flush()
     enable_debug = debug_account >= 0 or debug_scenario >= 0 or debug_year >= 0 or debug_month >= 0
     if enable_debug:
@@ -2193,7 +2231,10 @@ def run_projection_gpu_nested(
 
     # Process batches
     print("\n" + "=" * 80)
-    print("RUNNING TWO-PASS NESTED STOCHASTIC PROJECTION")
+    if run_nested_valuation:
+        print("RUNNING TWO-PASS NESTED STOCHASTIC PROJECTION")
+    else:
+        print("RUNNING SINGLE-PASS OUTER LOOP PROJECTION (KERNEL A ONLY)")
     print("=" * 80)
     
     all_reserves = []
@@ -2233,6 +2274,7 @@ def run_projection_gpu_nested(
             debug_month=debug_month,
             debug_int_scenario=debug_int_scenario,
             debug_int_year=debug_int_year,
+            run_nested_valuation=run_nested_valuation,
         )
         
         # Accumulate results
@@ -2273,21 +2315,28 @@ def run_projection_gpu_nested(
     total_duration = (end_time - start_time).total_seconds()
     
     print("\n" + "=" * 80)
-    print("NESTED STOCHASTIC PROJECTION COMPLETE")
+    if run_nested_valuation:
+        print("NESTED STOCHASTIC PROJECTION COMPLETE")
+    else:
+        print("OUTER LOOP PROJECTION COMPLETE (NO NESTED VALUATION)")
     print("=" * 80)
     print(f"Total time: {total_duration:.2f}s ({total_duration/60:.2f} minutes)")
     print(f"Accounts processed: {n_accounts}")
     print(f"External scenarios: {nb_ext_scenarios}")
-    print(f"Internal scenarios per node: {nb_int_scenarios}")
-    print(f"Total nested simulations: {n_accounts * nb_ext_scenarios * nb_an_projection * nb_int_scenarios:,}")
-    print(f"\nResults Summary:")
-    print(f"  Total Best Estimate Reserve: ${results_df['RESERVE_BE'].sum():,.2f}")
-    print(f"  Total Capital Requirement:   ${results_df['CAPITAL_REQ'].sum():,.2f}")
-    print(f"  Total SCR (Capital - Reserve): ${results_df['SCR'].sum():,.2f}")
-    print(f"\n  Average per account:")
-    print(f"    Reserve: ${results_df['RESERVE_BE'].mean():,.2f}")
-    print(f"    Capital: ${results_df['CAPITAL_REQ'].mean():,.2f}")
-    print(f"    SCR:     ${results_df['SCR'].mean():,.2f}")
+    if run_nested_valuation:
+        print(f"Internal scenarios per node: {nb_int_scenarios}")
+        print(f"Total nested simulations: {n_accounts * nb_ext_scenarios * nb_an_projection * nb_int_scenarios:,}")
+        print(f"\nResults Summary:")
+        print(f"  Total Best Estimate Reserve: ${results_df['RESERVE_BE'].sum():,.2f}")
+        print(f"  Total Capital Requirement:   ${results_df['CAPITAL_REQ'].sum():,.2f}")
+        print(f"  Total SCR (Capital - Reserve): ${results_df['SCR'].sum():,.2f}")
+        print(f"\n  Average per account:")
+        print(f"    Reserve: ${results_df['RESERVE_BE'].mean():,.2f}")
+        print(f"    Capital: ${results_df['CAPITAL_REQ'].mean():,.2f}")
+        print(f"    SCR:     ${results_df['SCR'].mean():,.2f}")
+    else:
+        print(f"Total external simulations: {n_accounts * nb_ext_scenarios * nb_an_projection:,}")
+        print(f"\n⚠️  Note: Reserves and Capital are zero (nested valuation was skipped)")
     print("=" * 80)
     
     # Build debug params if debug is enabled
@@ -2399,6 +2448,8 @@ Examples:
                         help='Number of internal (risk-neutral) scenarios per node for nested mode (default: 100)')
     parser.add_argument('--shock', type=float, default=0.35,
                         help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
+    parser.add_argument('--outer-loop-only', action='store_true',
+                        help='Run only outer loop (Kernel A) without nested valuation (Kernel B). Faster but no reserves/capital.')
     
     # Debug filter parameters
     parser.add_argument('--debug-account', type=int, default=0,
@@ -2448,6 +2499,7 @@ Examples:
             debug_month=args.debug_month,
             debug_int_scenario=args.debug_int_scenario,
             debug_int_year=args.debug_int_year,
+            run_nested_valuation=not args.outer_loop_only,
         )
 
         if results:
