@@ -695,6 +695,11 @@ def process_batch(
     kernel_a_time = (datetime.now() - kernel_a_start).total_seconds()
     logger.info(f"  Kernel A complete: {kernel_a_time:.2f}s")
     
+    # Free states tensor immediately if not running nested valuation
+    if not run_nested_valuation:
+        del d_states
+        cuda.synchronize()
+    
     # === KERNEL B: NESTED VALUATOR WITH 5 CHOCS ===
     kernel_b_time = 0.0
     if run_nested_valuation:
@@ -784,12 +789,12 @@ def process_batch(
         gc.collect()
     
     # Cleanup
-    del d_batch_accounts, d_states, d_ext_debug, d_debug_flux
+    del d_batch_accounts, d_ext_debug, d_debug_flux
     if not run_nested_valuation:
-        # d_cashflows already deleted in outer-loop-only branch
+        # d_states and d_cashflows already deleted in outer-loop-only branch
         pass
     else:
-        del d_cashflows
+        del d_states, d_cashflows
     if d_metrics is not None:
         del d_metrics
     if d_int_debug is not None:
