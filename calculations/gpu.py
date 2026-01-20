@@ -806,11 +806,22 @@ def process_batch(
         del h_metrics
     gc.collect()
     
+    # Force RMM/CuPy to release memory back to CUDA
+    try:
+        import cupy as cp
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+    except (ImportError, AttributeError):
+        pass
+    
     try:
         import rmm
         rmm.mr.get_current_device_resource().deallocate(0, 0)
     except (ImportError, AttributeError):
         pass
+    
+    cuda.synchronize()
+    gc.collect()
     
     batch_time = (datetime.now() - batch_start).total_seconds()
     logger.info(f"  Batch complete: {batch_time:.2f}s (KernelA: {kernel_a_time:.2f}s, KernelB: {kernel_b_time:.2f}s)")
