@@ -745,12 +745,25 @@ def process_batch(
         batch_reserves = batch_reserves_5chocs[:, 0]
         batch_capital = batch_capital_5chocs[:, 0]
     else:
-        # No nested valuation - return zeros for reserves/capital
+        # Outer loop only - compute simple PV-based reserves from Kernel A cashflows
+        logger.info("  Computing simple PV-based reserves from external scenarios...")
         h_metrics = None
-        batch_reserves = np.zeros(current_batch_size, dtype=np.float32)
+        h_cashflows = d_cashflows.copy_to_host()
+        
+        # Compute simple reserve estimate by averaging cashflows across scenarios
+        # h_cashflows shape: (batch, scenarios, years, 1)
+        # Each cashflow is already discounted (includes TX_ACTUALISATION in Kernel A)
+        batch_reserves = h_cashflows[:, :, :, 0].sum(axis=2).mean(axis=1)  # Sum over years, avg over scenarios
+        
+        # No capital calculation without nested valuation
         batch_capital = np.zeros(current_batch_size, dtype=np.float32)
         batch_reserves_5chocs = np.zeros((current_batch_size, NUM_CHOCS), dtype=np.float32)
         batch_capital_5chocs = np.zeros((current_batch_size, NUM_CHOCS), dtype=np.float32)
+        
+        # Store base reserves in first choc position for consistency
+        batch_reserves_5chocs[:, 0] = batch_reserves
+        
+        del h_cashflows
     
     # Cleanup
     del d_batch_accounts, d_states, d_cashflows, d_ext_debug, d_debug_flux
@@ -2336,7 +2349,11 @@ def run_projection_gpu_nested(
         print(f"    SCR:     ${results_df['SCR'].mean():,.2f}")
     else:
         print(f"Total external simulations: {n_accounts * nb_ext_scenarios * nb_an_projection:,}")
-        print(f"\n⚠️  Note: Reserves and Capital are zero (nested valuation was skipped)")
+        print(f"\n📊 Reserves Summary (Simple PV from External Scenarios):")
+        print(f"  Total Reserve Estimate: ${results_df['RESERVE_BE'].sum():,.2f}")
+        print(f"  Average per account:    ${results_df['RESERVE_BE'].mean():,.2f}")
+        print(f"\n⚠️  Note: Capital is zero (requires nested valuation)")
+        print(f"⚠️  Reserves are approximate (real-world PV, not risk-neutral)")
     print("=" * 80)
     
     # Build debug params if debug is enabled
