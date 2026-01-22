@@ -789,7 +789,17 @@ def process_batch(
             h_int_debug_ts = d_int_debug_ts.copy_to_host()
     
     # Copy cashflows to host (always needed for SAS-compatible output)
+    import time as _time
+    _t0 = _time.time()
+    cuda.synchronize()  # Ensure GPU work is done before timing transfer
+    _t1 = _time.time()
+    logger.info(f"  GPU sync before cashflow copy: {_t1 - _t0:.2f}s")
+    
+    _t2 = _time.time()
     h_cashflows = d_cashflows.copy_to_host()
+    _t3 = _time.time()
+    cf_size_gb = h_cashflows.nbytes / (1024**3)
+    logger.info(f"  Cashflow copy_to_host: {_t3 - _t2:.2f}s for {cf_size_gb:.2f} GB ({cf_size_gb / (_t3 - _t2 + 0.001):.2f} GB/s)")
     
     # Process metrics (only if nested valuation was run)
     if run_nested_valuation:
