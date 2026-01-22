@@ -64,6 +64,23 @@ from calculations.constants import (
     INT_TS_DEBUG_IDX_SIZE,
     LOOKUP_TABLE_OVERHEAD_MB, DEFAULT_GPU_MEMORY_GB, MEMORY_SAFETY_FACTOR, MEMORY_BATCH_THRESHOLD,
     DEFAULT_THREADS_PER_BLOCK_1D,
+    # Cashflow output tensor indices (matching SAS output)
+    CF_OUT_IDX_FRAIS_ACQUIS, CF_OUT_IDX_COMM_VENTE, CF_OUT_IDX_PRIMES_GARANTIES,
+    CF_OUT_IDX_PRIMES_VARIABLES, CF_OUT_IDX_FRAIS_FIXES, CF_OUT_IDX_HON_GEST,
+    CF_OUT_IDX_COMM_MAINTIEN, CF_OUT_IDX_PREST_ECH, CF_OUT_IDX_PREST_MRV, CF_OUT_IDX_PREST_DECES,
+    CF_OUT_IDX_VP_FRAIS_ACQUIS, CF_OUT_IDX_VP_COMM_VENTE, CF_OUT_IDX_VP_PRIMES_GARANTIES,
+    CF_OUT_IDX_VP_PRIMES_VARIABLES, CF_OUT_IDX_VP_FRAIS_FIXES, CF_OUT_IDX_VP_HON_GEST,
+    CF_OUT_IDX_VP_COMM_MAINTIEN, CF_OUT_IDX_VP_PREST_ECH, CF_OUT_IDX_VP_PREST_MRV,
+    CF_OUT_IDX_VP_PREST_DECES, CF_OUT_IDX_VP_VALEUR_MARCHANDE,
+    CF_OUT_IDX_UNITE_COUVERTURE, CF_OUT_IDX_DEPOT_FUTUR, CF_OUT_IDX_REM_COMP_INV,
+    CF_OUT_IDX_VALEUR_MARCHANDE, CF_OUT_IDX_VALEUR_GARANTIE, CF_OUT_IDX_DEPOT_FUTUR_SURVIE,
+    CF_OUT_IDX_PASSIF_REDRESSE, CF_OUT_IDX_COUSSIN_CREDIT, CF_OUT_IDX_COUSSIN_MARCHE,
+    CF_OUT_IDX_COUSSIN_DEPENSE, CF_OUT_IDX_COUSSIN_DECHEANCE, CF_OUT_IDX_COUSSIN_MORTALITE,
+    CF_OUT_IDX_COUSSIN_DEPOT,
+    CF_OUT_IDX_VP_PASSIF_REDRESSE, CF_OUT_IDX_VP_COUSSIN_CREDIT, CF_OUT_IDX_VP_COUSSIN_MARCHE,
+    CF_OUT_IDX_VP_COUSSIN_DEPENSE, CF_OUT_IDX_VP_COUSSIN_DECHEANCE, CF_OUT_IDX_VP_COUSSIN_MORTALITE,
+    CF_OUT_IDX_VP_COUSSIN_DEPOT,
+    CF_OUT_IDX_SIZE,
 )
 
 os.environ['NUMBA_CUDA_ENABLE_PYNVJITLINK'] = '1'
@@ -480,8 +497,8 @@ def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projectio
     # State tensor: (Batch, Ext_Scenarios, Years, STATE_SIZE)
     state_mem_per_account = nb_ext_scenarios * nb_an_projection * STATE_SIZE * 4  # float32
     
-    # Cashflow tensor: (Batch, Ext_Scenarios, Years, 1)
-    cf_mem_per_account = nb_ext_scenarios * nb_an_projection * 1 * 4
+    # Cashflow tensor: (Batch, Ext_Scenarios, Years, CF_OUT_IDX_SIZE)
+    cf_mem_per_account = nb_ext_scenarios * nb_an_projection * CF_OUT_IDX_SIZE * 4
     
     # Metrics tensor: (Batch, Ext_Scenarios, Years, NUM_CHOCS, METRICS_OUTPUT_SIZE) - chocs × (Reserve & Capital)
     metrics_mem_per_account = nb_ext_scenarios * nb_an_projection * NUM_CHOCS * METRICS_OUTPUT_SIZE * 4
@@ -526,6 +543,7 @@ class ProcessBatchResult(TypedDict):
     batch_capital: np.ndarray
     batch_reserves_5chocs: np.ndarray
     batch_capital_5chocs: np.ndarray
+    batch_cashflows: Optional[np.ndarray]  # Full cashflow tensor (batch, scenarios, years, CF_OUT_IDX_SIZE)
     ext_debug: Optional[np.ndarray]  # Debug output from external kernel
     int_debug: Optional[np.ndarray]  # Debug output from internal kernel
     int_debug_ts: Optional[np.ndarray]  # Debug time series output from internal kernel
@@ -621,7 +639,7 @@ def process_batch(
             (current_batch_size, nb_ext_scenarios, nb_an_projection, STATE_SIZE)
         )
         d_cashflows = _device_array_cupy(
-            (current_batch_size, nb_ext_scenarios, nb_an_projection, 1)
+            (current_batch_size, nb_ext_scenarios, nb_an_projection, CF_OUT_IDX_SIZE)
         )
         # Only allocate metrics tensor if running nested valuation
         if run_nested_valuation:
@@ -770,6 +788,9 @@ def process_batch(
         if enable_int_debug_ts:
             h_int_debug_ts = d_int_debug_ts.copy_to_host()
     
+    # Copy cashflows to host (always needed for SAS-compatible output)
+    h_cashflows = d_cashflows.copy_to_host()
+    
     # Process metrics (only if nested valuation was run)
     if run_nested_valuation:
         h_metrics = d_metrics.copy_to_host()
@@ -782,15 +803,25 @@ def process_batch(
         logger.info("  Computing simple PV-based reserves from external scenarios...")
         h_metrics = None
         
-        # Copy cashflows to host and immediately free GPU memory
-        h_cashflows = d_cashflows.copy_to_host()
         del d_cashflows  # Free GPU memory immediately
         cuda.synchronize()
         
-        # Compute simple reserve estimate by averaging cashflows across scenarios
-        # h_cashflows shape: (batch, scenarios, years, 1)
-        # Each cashflow is already discounted (includes TX_ACTUALISATION in Kernel A)
-        batch_reserves = h_cashflows[:, :, :, 0].sum(axis=2).mean(axis=1)  # Sum over years, avg over scenarios
+        # Compute simple reserve estimate by summing VP cashflows across years, avg over scenarios
+        # h_cashflows shape: (batch, scenarios, years, CF_OUT_IDX_SIZE)
+        # Sum VP cashflows: VP_FRAIS_ACQUIS + VP_COMM_VENTE + VP_PRIMES_GARANTIES + ... + VP_PREST_DECES
+        vp_total = (
+            h_cashflows[:, :, :, CF_OUT_IDX_VP_FRAIS_ACQUIS] +
+            h_cashflows[:, :, :, CF_OUT_IDX_VP_COMM_VENTE] +
+            h_cashflows[:, :, :, CF_OUT_IDX_VP_PRIMES_GARANTIES] +
+            h_cashflows[:, :, :, CF_OUT_IDX_VP_PRIMES_VARIABLES] +
+            h_cashflows[:, :, :, CF_OUT_IDX_VP_FRAIS_FIXES] +
+            h_cashflows[:, :, :, CF_OUT_IDX_VP_HON_GEST] +
+            h_cashflows[:, :, :, CF_OUT_IDX_VP_COMM_MAINTIEN] +
+            h_cashflows[:, :, :, CF_OUT_IDX_VP_PREST_ECH] +
+            h_cashflows[:, :, :, CF_OUT_IDX_VP_PREST_MRV] +
+            h_cashflows[:, :, :, CF_OUT_IDX_VP_PREST_DECES]
+        )
+        batch_reserves = vp_total.sum(axis=2).mean(axis=1)  # Sum over years, avg over scenarios
         
         # No capital calculation without nested valuation
         batch_capital = np.zeros(current_batch_size, dtype=np.float32)
@@ -800,7 +831,6 @@ def process_batch(
         # Store base reserves in first choc position for consistency
         batch_reserves_5chocs[:, 0] = batch_reserves
         
-        del h_cashflows
         gc.collect()
     
     # Cleanup
@@ -850,6 +880,7 @@ def process_batch(
         'batch_capital': batch_capital,
         'batch_reserves_5chocs': batch_reserves_5chocs,
         'batch_capital_5chocs': batch_capital_5chocs,
+        'batch_cashflows': h_cashflows,
         'ext_debug': h_ext_debug,
         'int_debug': h_int_debug,
         'int_debug_ts': h_int_debug_ts,
@@ -936,6 +967,8 @@ def save_results(
     debug_flux: Optional[np.ndarray] = None,
     population_df: Optional[pd.DataFrame] = None,
     lookup_data: Optional[Dict[str, pd.DataFrame]] = None,
+    all_cashflows: Optional[List[np.ndarray]] = None,
+    nb_an_projection: int = 0,
 ):
     """
     Save all results (final simulation results and debug output) to CSV files.
@@ -1008,6 +1041,94 @@ def save_results(
     print(f"  Total Capital Req:  ${vp_flux_total_df['VP_CAPITAL_REQ'].iloc[0]:,.2f}")
     print(f"  Total SCR:          ${vp_flux_total_df['VP_SCR'].iloc[0]:,.2f}")
     saved_files.append("VP_FLUX_TOTAL_GPU.csv (portfolio totals)")
+
+    # 1b. FLUX_PROJETES_GPU.csv - Full SAS-compatible cashflow output (mean across scenarios)
+    if all_cashflows is not None and len(all_cashflows) > 0 and population_ids is not None:
+        print(f"\n✓ [FLUX_PROJETES] Saving full cashflow output (SAS-compatible)...")
+        
+        # Concatenate all batch cashflows
+        # Each batch has shape: (batch_size, n_scenarios, n_years, CF_OUT_IDX_SIZE)
+        full_cashflows = np.concatenate(all_cashflows, axis=0)
+        
+        # Take mean across scenarios (axis=1) to match SAS proc summary
+        # Result shape: (n_accounts, n_years, CF_OUT_IDX_SIZE)
+        mean_cashflows = full_cashflows.mean(axis=1)
+        
+        # Build DataFrame rows
+        flux_rows = []
+        n_total_accounts = mean_cashflows.shape[0]
+        n_years_out = mean_cashflows.shape[1]
+        
+        for acc_idx in range(min(n_total_accounts, len(population_ids))):
+            id_compte = int(population_ids[acc_idx])
+            for year_idx in range(n_years_out):
+                an_eval = year_idx + 1  # an_eval starts at 1
+                cf = mean_cashflows[acc_idx, year_idx, :]
+                
+                # Skip if all zeros (no data)
+                if np.all(cf == 0):
+                    continue
+                
+                flux_rows.append({
+                    'ID_COMPTE': id_compte,
+                    'AN_EVAL': an_eval,
+                    'MOIS_EVAL': 12,  # Annual output (mois_eval=12)
+                    # Non-discounted cashflows
+                    'FRAIS_ACQUIS': float(cf[CF_OUT_IDX_FRAIS_ACQUIS]),
+                    'COMM_VENTE': float(cf[CF_OUT_IDX_COMM_VENTE]),
+                    'PRIMES_GARANTIES': float(cf[CF_OUT_IDX_PRIMES_GARANTIES]),
+                    'PRIMES_VARIABLES': float(cf[CF_OUT_IDX_PRIMES_VARIABLES]),
+                    'FRAIS_FIXES': float(cf[CF_OUT_IDX_FRAIS_FIXES]),
+                    'HON_GEST': float(cf[CF_OUT_IDX_HON_GEST]),
+                    'COMM_MAINTIEN': float(cf[CF_OUT_IDX_COMM_MAINTIEN]),
+                    'PREST_ECH': float(cf[CF_OUT_IDX_PREST_ECH]),
+                    'PREST_MRV': float(cf[CF_OUT_IDX_PREST_MRV]),
+                    'PREST_DECES': float(cf[CF_OUT_IDX_PREST_DECES]),
+                    # Present value cashflows
+                    'VP_FRAIS_ACQUIS': float(cf[CF_OUT_IDX_VP_FRAIS_ACQUIS]),
+                    'VP_COMM_VENTE': float(cf[CF_OUT_IDX_VP_COMM_VENTE]),
+                    'VP_PRIMES_GARANTIES': float(cf[CF_OUT_IDX_VP_PRIMES_GARANTIES]),
+                    'VP_PRIMES_VARIABLES': float(cf[CF_OUT_IDX_VP_PRIMES_VARIABLES]),
+                    'VP_FRAIS_FIXES': float(cf[CF_OUT_IDX_VP_FRAIS_FIXES]),
+                    'VP_HON_GEST': float(cf[CF_OUT_IDX_VP_HON_GEST]),
+                    'VP_COMM_MAINTIEN': float(cf[CF_OUT_IDX_VP_COMM_MAINTIEN]),
+                    'VP_PREST_ECH': float(cf[CF_OUT_IDX_VP_PREST_ECH]),
+                    'VP_PREST_MRV': float(cf[CF_OUT_IDX_VP_PREST_MRV]),
+                    'VP_PREST_DECES': float(cf[CF_OUT_IDX_VP_PREST_DECES]),
+                    'VP_VALEUR_MARCHANDE': float(cf[CF_OUT_IDX_VP_VALEUR_MARCHANDE]),
+                    # Coverage and values
+                    'UNITE_COUVERTURE': float(cf[CF_OUT_IDX_UNITE_COUVERTURE]),
+                    'DEPOT_FUTUR': float(cf[CF_OUT_IDX_DEPOT_FUTUR]),
+                    'REM_COMP_INV': float(cf[CF_OUT_IDX_REM_COMP_INV]),
+                    'VALEUR_MARCHANDE': float(cf[CF_OUT_IDX_VALEUR_MARCHANDE]),
+                    'VALEUR_GARANTIE': float(cf[CF_OUT_IDX_VALEUR_GARANTIE]),
+                    'DEPOT_FUTUR_SURVIE': float(cf[CF_OUT_IDX_DEPOT_FUTUR_SURVIE]),
+                    # Cushions (non-discounted)
+                    'PASSIF_REDRESSE': float(cf[CF_OUT_IDX_PASSIF_REDRESSE]),
+                    'COUSSIN_CREDIT': float(cf[CF_OUT_IDX_COUSSIN_CREDIT]),
+                    'COUSSIN_MARCHE': float(cf[CF_OUT_IDX_COUSSIN_MARCHE]),
+                    'COUSSIN_DEPENSE': float(cf[CF_OUT_IDX_COUSSIN_DEPENSE]),
+                    'COUSSIN_DECHEANCE': float(cf[CF_OUT_IDX_COUSSIN_DECHEANCE]),
+                    'COUSSIN_MORTALITE': float(cf[CF_OUT_IDX_COUSSIN_MORTALITE]),
+                    'COUSSIN_DEPOT': float(cf[CF_OUT_IDX_COUSSIN_DEPOT]),
+                    # Cushions (present value)
+                    'VP_PASSIF_REDRESSE': float(cf[CF_OUT_IDX_VP_PASSIF_REDRESSE]),
+                    'VP_COUSSIN_CREDIT': float(cf[CF_OUT_IDX_VP_COUSSIN_CREDIT]),
+                    'VP_COUSSIN_MARCHE': float(cf[CF_OUT_IDX_VP_COUSSIN_MARCHE]),
+                    'VP_COUSSIN_DEPENSE': float(cf[CF_OUT_IDX_VP_COUSSIN_DEPENSE]),
+                    'VP_COUSSIN_DECHEANCE': float(cf[CF_OUT_IDX_VP_COUSSIN_DECHEANCE]),
+                    'VP_COUSSIN_MORTALITE': float(cf[CF_OUT_IDX_VP_COUSSIN_MORTALITE]),
+                    'VP_COUSSIN_DEPOT': float(cf[CF_OUT_IDX_VP_COUSSIN_DEPOT]),
+                })
+        
+        if flux_rows:
+            flux_projetes_full_df = pd.DataFrame(flux_rows)
+            flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
+            flux_projetes_full_df.to_csv(flux_projetes_path, index=False, sep=';')
+            print(f"  Saved FLUX_PROJETES_GPU.csv")
+            print(f"  Contains {len(flux_projetes_full_df)} rows ({n_total_accounts} accounts × up to {n_years_out} years)")
+            print(f"  Columns: {len(flux_projetes_full_df.columns)} (matches SAS CALCULS_SOMMAIRE structure)")
+            saved_files.append("FLUX_PROJETES_GPU.csv (full SAS-compatible cashflows)")
 
     # Save debug flux for single account/scenario if available
     if debug_flux is not None and debug_params is not None:
@@ -1085,10 +1206,10 @@ def save_results(
         
         if rows:
             flux_projetes_df = pd.DataFrame(rows)
-            flux_projetes_path = output_path / "FLUX_PROJETES_GPU.csv"
-            flux_projetes_df.to_csv(flux_projetes_path, index=False, sep=';')
-            print(f"✓ Saved FLUX_PROJETES_GPU.csv (debug: account={debug_account_idx}, scenario={debug_scenario_idx}, ID_COMPTE={id_compte})")
-            saved_files.append("FLUX_PROJETES_GPU.csv (single account/scenario flux)")
+            flux_projetes_debug_path = output_path / "FLUX_PROJETES_GPU_DEBUG.csv"
+            flux_projetes_df.to_csv(flux_projetes_debug_path, index=False, sep=';')
+            print(f"✓ Saved FLUX_PROJETES_GPU_DEBUG.csv (debug: account={debug_account_idx}, scenario={debug_scenario_idx}, ID_COMPTE={id_compte})")
+            saved_files.append("FLUX_PROJETES_GPU_DEBUG.csv (single account/scenario flux)")
 
             example_header = None
             example_path = Path(__file__).resolve().parents[1] / "output_example.csv"
@@ -1903,7 +2024,7 @@ def save_results(
     # 2. DEBUG OUTPUT (if enabled)
     # ===========================================
     
-    # Note: EXT_DEBUG_GPU.csv removed - redundant with FLUX_PROJETES_GPU.csv
+    # Note: EXT_DEBUG_GPU.csv removed - redundant with FLUX_PROJETES_GPU_DEBUG.csv
     
     if int_debug is not None:
         print(f"\n✓ [DEBUG] Saving internal kernel debug output...")
@@ -1957,7 +2078,7 @@ def save_results(
         'saved_files': saved_files,
         'vp_flux_total': vp_flux_total_df,
         'chocs_summary': chocs_summary_df if results_5chocs_df is not None else None,
-        'ext_debug_df': None,  # Removed - redundant with FLUX_PROJETES_GPU.csv
+        'ext_debug_df': None,  # Removed - redundant with FLUX_PROJETES_GPU_DEBUG.csv
         'int_debug_df': int_debug_df if int_debug is not None else None,
         'int_debug_ts_df': None,  # Removed - rarely needed
         'flux_projetes_df': flux_projetes_df,
@@ -2312,6 +2433,7 @@ def run_projection_gpu_nested(
     all_capital = []
     all_reserves_5chocs = []
     all_capital_5chocs = []
+    all_cashflows = []  # Accumulate cashflows for FLUX_PROJETES_GPU.csv
     ext_debug_result = None
     int_debug_result = None
     int_debug_ts_result = None
@@ -2353,6 +2475,10 @@ def run_projection_gpu_nested(
         all_capital.extend(batch_result['batch_capital'])
         all_reserves_5chocs.extend(batch_result['batch_reserves_5chocs'])
         all_capital_5chocs.extend(batch_result['batch_capital_5chocs'])
+        
+        # Accumulate cashflows for FLUX_PROJETES_GPU.csv
+        if batch_result.get('batch_cashflows') is not None:
+            all_cashflows.append(batch_result['batch_cashflows'])
         
         # Store debug output (only one batch will have it if account filter is used)
         if batch_result['ext_debug'] is not None:
@@ -2472,6 +2598,8 @@ def run_projection_gpu_nested(
         debug_flux=debug_flux_result,
         population_df=data.get('population'),
         lookup_data=data,
+        all_cashflows=all_cashflows,
+        nb_an_projection=nb_an_projection,
     )
     
     return ProjectionResult(
