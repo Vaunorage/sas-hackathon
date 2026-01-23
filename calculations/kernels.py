@@ -921,7 +921,102 @@ def external_generator_kernel(
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_CAT_COUSSIN_1] = float(cat_coussin_1)
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_CAT_COUSSIN_2] = float(cat_coussin_2)
 
-            # === SAVE STATE TO GLOBAL MEMORY ===
+            # === CALCULATE ALL SAS CASHFLOW VARIABLES (every month) ===
+            # Present value calculations (matching SAS lines 542, 560, 599, 618, 724, 727, 736, 741, 745, 754, 785, 868-874)
+            VP_PRIMES_GARANTIES = PRIMES_GARANTIES * TX_ACTUALISATION
+            VP_PREST_DECES = PREST_DECES * TX_ACTUALISATION
+            VP_PREST_ECH = PREST_ECH * TX_ACTUALISATION
+            VP_PREST_MRV = PREST_MRV * TX_ACTUALISATION
+            VP_FRAIS_ACQUIS = frais_acquis * TX_ACTUALISATION
+            VP_COMM_VENTE = comm_vente * TX_ACTUALISATION
+            VP_FRAIS_FIXES = FRAIS_FIXES * TX_ACTUALISATION
+            VP_HON_GEST = HON_GEST * TX_ACTUALISATION
+            VP_COMM_MAINTIEN = COMM_MAINTIEN * TX_ACTUALISATION
+            VP_PRIMES_VARIABLES = PRIMES_VARIABLES * TX_ACTUALISATION
+            VP_VALEUR_MARCHANDE = VALEUR_MARCHANDE * TX_ACTUALISATION / freq_eval
+            
+            # Cushion present values (SAS lines 868-874)
+            VP_PASSIF_REDRESSE = PASSIF_REDRESSE * TX_ACTUALISATION / freq_eval
+            VP_COUSSIN_CREDIT = COUSSIN_CREDIT * TX_ACTUALISATION / freq_eval
+            VP_COUSSIN_MARCHE = COUSSIN_MARCHE * TX_ACTUALISATION / freq_eval
+            VP_COUSSIN_DEPENSE = COUSSIN_DEPENSE * TX_ACTUALISATION / freq_eval
+            VP_COUSSIN_DECHEANCE = COUSSIN_DECHEANCE * TX_ACTUALISATION / freq_eval
+            VP_COUSSIN_MORTALITE = COUSSIN_MORTALITE * TX_ACTUALISATION / freq_eval
+            VP_COUSSIN_DEPOT = COUSSIN_DEPOT * TX_ACTUALISATION / freq_eval
+            
+            # Additional SAS variables (lines 768, 774, 780, 781, 791)
+            # UNITE_COUVERTURE = MAX(MT_VM_PROJ, MT_GAR_DECES_PROJ+MT_BONI_DECES_PROJ, RETRAIT) * TX_SURVIE
+            uc_max = MT_VM_PROJ
+            if MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ > uc_max:
+                uc_max = MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ
+            if RETRAIT > uc_max:
+                uc_max = RETRAIT
+            UNITE_COUVERTURE = uc_max * TX_SURVIE
+            
+            VALEUR_GARANTIE = MT_GAR_DECES_PROJ * TX_SURVIE
+            DEPOT_FUTUR_SURVIE = depot_futur * TX_SURVIE
+            
+            # REM_COMP_INV = ((RETRAIT - PREST_MRV) + MT_VM_AP_RETRAIT_DEPOT * (1 - TX_SURVIE/TX_SURVIE_DEB)) * TX_SURVIE_DEB
+            tx_ratio = TX_SURVIE / TX_SURVIE_DEB if TX_SURVIE_DEB != 0.0 else 0.0
+            REM_COMP_INV = ((RETRAIT + PREST_MRV) + MT_VM_PROJ * (1.0 - tx_ratio)) * TX_SURVIE_DEB
+            
+            # === ACCUMULATE CASHFLOWS INTO ANNUAL OUTPUT (every month) ===
+            # Cashflows are accumulated across all 12 months of each year
+            if an_eval >= 1 and an_eval <= n_years:
+                out_idx = an_eval - 1
+                if out_idx < output_cashflows.shape[2]:
+                    # Non-discounted cashflows (accumulate)
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_FRAIS_ACQUIS] += frais_acquis
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COMM_VENTE] += comm_vente
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PRIMES_GARANTIES] += PRIMES_GARANTIES
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PRIMES_VARIABLES] += PRIMES_VARIABLES
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_FRAIS_FIXES] += FRAIS_FIXES
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_HON_GEST] += HON_GEST
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COMM_MAINTIEN] += COMM_MAINTIEN
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PREST_ECH] += PREST_ECH
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PREST_MRV] += PREST_MRV
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PREST_DECES] += PREST_DECES
+                    
+                    # Present value cashflows (accumulate)
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_FRAIS_ACQUIS] += VP_FRAIS_ACQUIS
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COMM_VENTE] += VP_COMM_VENTE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PRIMES_GARANTIES] += VP_PRIMES_GARANTIES
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PRIMES_VARIABLES] += VP_PRIMES_VARIABLES
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_FRAIS_FIXES] += VP_FRAIS_FIXES
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_HON_GEST] += VP_HON_GEST
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COMM_MAINTIEN] += VP_COMM_MAINTIEN
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PREST_ECH] += VP_PREST_ECH
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PREST_MRV] += VP_PREST_MRV
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PREST_DECES] += VP_PREST_DECES
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_VALEUR_MARCHANDE] += VP_VALEUR_MARCHANDE
+                    
+                    # Coverage and values (accumulate)
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_UNITE_COUVERTURE] += UNITE_COUVERTURE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_DEPOT_FUTUR] += depot_futur
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_REM_COMP_INV] += REM_COMP_INV
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VALEUR_MARCHANDE] += VALEUR_MARCHANDE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VALEUR_GARANTIE] += VALEUR_GARANTIE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_DEPOT_FUTUR_SURVIE] += DEPOT_FUTUR_SURVIE
+                    
+                    # Cushions non-discounted (accumulate)
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PASSIF_REDRESSE] += PASSIF_REDRESSE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_CREDIT] += COUSSIN_CREDIT
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_MARCHE] += COUSSIN_MARCHE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_DEPENSE] += COUSSIN_DEPENSE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_DECHEANCE] += COUSSIN_DECHEANCE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_MORTALITE] += COUSSIN_MORTALITE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_DEPOT] += COUSSIN_DEPOT
+                    
+                    # Cushions present value (accumulate)
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PASSIF_REDRESSE] += VP_PASSIF_REDRESSE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_CREDIT] += VP_COUSSIN_CREDIT
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_MARCHE] += VP_COUSSIN_MARCHE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DEPENSE] += VP_COUSSIN_DEPENSE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DECHEANCE] += VP_COUSSIN_DECHEANCE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_MORTALITE] += VP_COUSSIN_MORTALITE
+                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DEPOT] += VP_COUSSIN_DEPOT
+
+            # === SAVE STATE TO GLOBAL MEMORY (only at year-end) ===
             if mois_eval == 12 and an_eval >= 1 and an_eval <= n_years:
                 out_idx = an_eval - 1
                 if out_idx < output_states.shape[2]:
@@ -946,97 +1041,6 @@ def external_generator_kernel(
                     output_states[account_idx, scenario_idx, out_idx, STATE_IDX_ANNEE_REELLE] = float(annee_reelle)
                     output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MOIS_EVAL] = float(mois_eval)
                     output_states[account_idx, scenario_idx, out_idx, STATE_IDX_PC_GAR_DECES_1] = PC_GAR_DECES_1
-
-                # === CALCULATE ALL SAS CASHFLOW VARIABLES ===
-                # Present value calculations (matching SAS lines 542, 560, 599, 618, 724, 727, 736, 741, 745, 754, 785, 868-874)
-                VP_PRIMES_GARANTIES = PRIMES_GARANTIES * TX_ACTUALISATION
-                VP_PREST_DECES = PREST_DECES * TX_ACTUALISATION
-                VP_PREST_ECH = PREST_ECH * TX_ACTUALISATION
-                VP_PREST_MRV = PREST_MRV * TX_ACTUALISATION
-                VP_FRAIS_ACQUIS = frais_acquis * TX_ACTUALISATION
-                VP_COMM_VENTE = comm_vente * TX_ACTUALISATION
-                VP_FRAIS_FIXES = FRAIS_FIXES * TX_ACTUALISATION
-                VP_HON_GEST = HON_GEST * TX_ACTUALISATION
-                VP_COMM_MAINTIEN = COMM_MAINTIEN * TX_ACTUALISATION
-                VP_PRIMES_VARIABLES = PRIMES_VARIABLES * TX_ACTUALISATION
-                VP_VALEUR_MARCHANDE = VALEUR_MARCHANDE * TX_ACTUALISATION / freq_eval
-                
-                # Cushion present values (SAS lines 868-874)
-                VP_PASSIF_REDRESSE = PASSIF_REDRESSE * TX_ACTUALISATION / freq_eval
-                VP_COUSSIN_CREDIT = COUSSIN_CREDIT * TX_ACTUALISATION / freq_eval
-                VP_COUSSIN_MARCHE = COUSSIN_MARCHE * TX_ACTUALISATION / freq_eval
-                VP_COUSSIN_DEPENSE = COUSSIN_DEPENSE * TX_ACTUALISATION / freq_eval
-                VP_COUSSIN_DECHEANCE = COUSSIN_DECHEANCE * TX_ACTUALISATION / freq_eval
-                VP_COUSSIN_MORTALITE = COUSSIN_MORTALITE * TX_ACTUALISATION / freq_eval
-                VP_COUSSIN_DEPOT = COUSSIN_DEPOT * TX_ACTUALISATION / freq_eval
-                
-                # Additional SAS variables (lines 768, 774, 780, 781, 791)
-                # UNITE_COUVERTURE = MAX(MT_VM_PROJ, MT_GAR_DECES_PROJ+MT_BONI_DECES_PROJ, RETRAIT) * TX_SURVIE
-                uc_max = MT_VM_PROJ
-                if MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ > uc_max:
-                    uc_max = MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ
-                if RETRAIT > uc_max:
-                    uc_max = RETRAIT
-                UNITE_COUVERTURE = uc_max * TX_SURVIE
-                
-                VALEUR_GARANTIE = MT_GAR_DECES_PROJ * TX_SURVIE
-                DEPOT_FUTUR_SURVIE = depot_futur * TX_SURVIE
-                
-                # REM_COMP_INV = ((RETRAIT - PREST_MRV) + MT_VM_AP_RETRAIT_DEPOT * (1 - TX_SURVIE/TX_SURVIE_DEB)) * TX_SURVIE_DEB
-                tx_ratio = TX_SURVIE / TX_SURVIE_DEB if TX_SURVIE_DEB != 0.0 else 0.0
-                REM_COMP_INV = ((RETRAIT + PREST_MRV) + MT_VM_PROJ * (1.0 - tx_ratio)) * TX_SURVIE_DEB
-                
-                # === WRITE ALL CASHFLOW OUTPUTS ===
-                # Non-discounted cashflows
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_FRAIS_ACQUIS] = frais_acquis
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COMM_VENTE] = comm_vente
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PRIMES_GARANTIES] = PRIMES_GARANTIES
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PRIMES_VARIABLES] = PRIMES_VARIABLES
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_FRAIS_FIXES] = FRAIS_FIXES
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_HON_GEST] = HON_GEST
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COMM_MAINTIEN] = COMM_MAINTIEN
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PREST_ECH] = PREST_ECH
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PREST_MRV] = PREST_MRV
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PREST_DECES] = PREST_DECES
-                
-                # Present value cashflows
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_FRAIS_ACQUIS] = VP_FRAIS_ACQUIS
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COMM_VENTE] = VP_COMM_VENTE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PRIMES_GARANTIES] = VP_PRIMES_GARANTIES
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PRIMES_VARIABLES] = VP_PRIMES_VARIABLES
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_FRAIS_FIXES] = VP_FRAIS_FIXES
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_HON_GEST] = VP_HON_GEST
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COMM_MAINTIEN] = VP_COMM_MAINTIEN
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PREST_ECH] = VP_PREST_ECH
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PREST_MRV] = VP_PREST_MRV
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PREST_DECES] = VP_PREST_DECES
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_VALEUR_MARCHANDE] = VP_VALEUR_MARCHANDE
-                
-                # Coverage and values
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_UNITE_COUVERTURE] = UNITE_COUVERTURE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_DEPOT_FUTUR] = depot_futur
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_REM_COMP_INV] = REM_COMP_INV
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VALEUR_MARCHANDE] = VALEUR_MARCHANDE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VALEUR_GARANTIE] = VALEUR_GARANTIE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_DEPOT_FUTUR_SURVIE] = DEPOT_FUTUR_SURVIE
-                
-                # Cushions (non-discounted)
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PASSIF_REDRESSE] = PASSIF_REDRESSE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_CREDIT] = COUSSIN_CREDIT
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_MARCHE] = COUSSIN_MARCHE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_DEPENSE] = COUSSIN_DEPENSE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_DECHEANCE] = COUSSIN_DECHEANCE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_MORTALITE] = COUSSIN_MORTALITE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_DEPOT] = COUSSIN_DEPOT
-                
-                # Cushions (present value)
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PASSIF_REDRESSE] = VP_PASSIF_REDRESSE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_CREDIT] = VP_COUSSIN_CREDIT
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_MARCHE] = VP_COUSSIN_MARCHE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DEPENSE] = VP_COUSSIN_DEPENSE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DECHEANCE] = VP_COUSSIN_DECHEANCE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_MORTALITE] = VP_COUSSIN_MORTALITE
-                output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DEPOT] = VP_COUSSIN_DEPOT
 
                 # === SAVE DEBUG OUTPUT (only if filter matches) ===
                 if debug_output is not None:
