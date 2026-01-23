@@ -788,13 +788,51 @@ def process_batch(
         if enable_int_debug_ts:
             h_int_debug_ts = d_int_debug_ts.copy_to_host()
     
-    # Copy cashflows to host (always needed for SAS-compatible output)
+    # ==========================================================================
+    # GPU-BASED AGGREGATIONS (SAS-compatible outputs)
+    # Compute aggregations on GPU before copying to minimize data transfer
+    # ==========================================================================
     import time as _time
     _t0 = _time.time()
-    cuda.synchronize()  # Ensure GPU work is done before timing transfer
+    cuda.synchronize()  # Ensure GPU work is done before timing
     _t1 = _time.time()
-    logger.info(f"  GPU sync before cashflow copy: {_t1 - _t0:.2f}s")
+    logger.info(f"  GPU sync before aggregations: {_t1 - _t0:.2f}s")
     
+    # Convert d_cashflows to CuPy array for GPU aggregations
+    # d_cashflows shape: (batch, scenarios, years, CF_OUT_IDX_SIZE)
+    try:
+        d_cf_cupy = cp.asarray(d_cashflows)
+        
+        # --- VP_FLUX_COMPTE: Mean across scenarios, then sum across years ---
+        # Result: (batch, CF_OUT_IDX_SIZE) - one row per account with summed VP values
+        _t_vp_start = _time.time()
+        # Step 1: Mean across scenarios (axis=1)
+        cf_mean_scenarios = cp.mean(d_cf_cupy, axis=1)  # (batch, years, CF_OUT_IDX_SIZE)
+        # Step 2: Sum across years (axis=1) to get total VP per account
+        vp_flux_compte_gpu = cp.sum(cf_mean_scenarios, axis=1)  # (batch, CF_OUT_IDX_SIZE)
+        h_vp_flux_compte = cp.asnumpy(vp_flux_compte_gpu)  # Copy small result to host
+        _t_vp_end = _time.time()
+        logger.info(f"  VP_FLUX_COMPTE GPU aggregation: {_t_vp_end - _t_vp_start:.4f}s")
+        
+        # --- FLUX_PROJETE: Mean across scenarios, sum across accounts ---
+        # Result: (years, CF_OUT_IDX_SIZE) - one row per year with summed values
+        _t_flux_start = _time.time()
+        # Step 1: Mean across scenarios (already computed above as cf_mean_scenarios)
+        # Step 2: Sum across accounts (axis=0)
+        flux_projete_gpu = cp.sum(cf_mean_scenarios, axis=0)  # (years, CF_OUT_IDX_SIZE)
+        h_flux_projete = cp.asnumpy(flux_projete_gpu)  # Copy small result to host
+        _t_flux_end = _time.time()
+        logger.info(f"  FLUX_PROJETE GPU aggregation: {_t_flux_end - _t_flux_start:.4f}s")
+        
+        # Clean up intermediate GPU arrays
+        del cf_mean_scenarios, vp_flux_compte_gpu, flux_projete_gpu, d_cf_cupy
+        
+    except Exception as e:
+        logger.warning(f"  GPU aggregation failed, falling back to CPU: {e}")
+        h_vp_flux_compte = None
+        h_flux_projete = None
+    
+    # Copy full cashflows to host (still needed for FLUX_PROJETES_GPU.csv detailed output)
     _t2 = _time.time()
     h_cashflows = d_cashflows.copy_to_host()
     _t3 = _time.time()
@@ -891,6 +929,8 @@ def process_batch(
         'batch_reserves_5chocs': batch_reserves_5chocs,
         'batch_capital_5chocs': batch_capital_5chocs,
         'batch_cashflows': h_cashflows,
+        'batch_vp_flux_compte': h_vp_flux_compte,  # GPU-aggregated VP by account
+        'batch_flux_projete': h_flux_projete,      # GPU-aggregated flux by year
         'ext_debug': h_ext_debug,
         'int_debug': h_int_debug,
         'int_debug_ts': h_int_debug_ts,
@@ -1069,6 +1109,165 @@ def write_cashflows_batch(
     return 0
 
 
+def write_vp_flux_compte_batch(
+    output_path: Path,
+    batch_vp_flux_compte: np.ndarray,
+    population_ids: np.ndarray,
+    start_idx: int,
+    is_first_batch: bool = False,
+):
+    """
+    Write a batch of VP_FLUX_COMPTE (VP by account) to CSV incrementally.
+    
+    This matches SAS: PROC SUMMARY ... CLASS ID_COMPTE; VAR VP_*; OUTPUT SUM=
+    
+    Args:
+        output_path: Directory to save CSV file
+        batch_vp_flux_compte: VP aggregates per account (batch_size, CF_OUT_IDX_SIZE)
+        population_ids: Array of account IDs
+        start_idx: Starting index in population_ids for this batch
+        is_first_batch: If True, write header; otherwise append
+    """
+    if batch_vp_flux_compte is None:
+        return 0
+    
+    batch_size = batch_vp_flux_compte.shape[0]
+    
+    rows = []
+    for batch_idx in range(batch_size):
+        acc_idx = start_idx + batch_idx
+        if acc_idx >= len(population_ids):
+            break
+        id_compte = int(population_ids[acc_idx])
+        vp = batch_vp_flux_compte[batch_idx, :]
+        
+        rows.append({
+            'ID_COMPTE': id_compte,
+            # VP columns (matching SAS VP_FLUX_COMPTE output)
+            'VP_FRAIS_ACQUIS': float(vp[CF_OUT_IDX_VP_FRAIS_ACQUIS]),
+            'VP_COMM_VENTE': float(vp[CF_OUT_IDX_VP_COMM_VENTE]),
+            'VP_PRIMES_GARANTIES': float(vp[CF_OUT_IDX_VP_PRIMES_GARANTIES]),
+            'VP_PRIMES_VARIABLES': float(vp[CF_OUT_IDX_VP_PRIMES_VARIABLES]),
+            'VP_FRAIS_FIXES': float(vp[CF_OUT_IDX_VP_FRAIS_FIXES]),
+            'VP_HON_GEST': float(vp[CF_OUT_IDX_VP_HON_GEST]),
+            'VP_COMM_MAINTIEN': float(vp[CF_OUT_IDX_VP_COMM_MAINTIEN]),
+            'VP_PREST_ECH': float(vp[CF_OUT_IDX_VP_PREST_ECH]),
+            'VP_PREST_MRV': float(vp[CF_OUT_IDX_VP_PREST_MRV]),
+            'VP_PREST_DECES': float(vp[CF_OUT_IDX_VP_PREST_DECES]),
+            'VP_PASSIF_REDRESSE': float(vp[CF_OUT_IDX_VP_PASSIF_REDRESSE]),
+            'VP_COUSSIN_CREDIT': float(vp[CF_OUT_IDX_VP_COUSSIN_CREDIT]),
+            'VP_COUSSIN_MARCHE': float(vp[CF_OUT_IDX_VP_COUSSIN_MARCHE]),
+            'VP_COUSSIN_DEPENSE': float(vp[CF_OUT_IDX_VP_COUSSIN_DEPENSE]),
+            'VP_COUSSIN_DECHEANCE': float(vp[CF_OUT_IDX_VP_COUSSIN_DECHEANCE]),
+            'VP_COUSSIN_MORTALITE': float(vp[CF_OUT_IDX_VP_COUSSIN_MORTALITE]),
+            'VP_COUSSIN_DEPOT': float(vp[CF_OUT_IDX_VP_COUSSIN_DEPOT]),
+            'VP_VALEUR_MARCHANDE': float(vp[CF_OUT_IDX_VP_VALEUR_MARCHANDE]),
+        })
+    
+    if rows:
+        df = pd.DataFrame(rows)
+        vp_path = output_path / "VP_FLUX_COMPTE_GPU.csv"
+        
+        if is_first_batch:
+            df.to_csv(vp_path, index=False, sep=';', mode='w')
+        else:
+            df.to_csv(vp_path, index=False, sep=';', mode='a', header=False)
+        
+        return len(rows)
+    return 0
+
+
+def accumulate_flux_projete(
+    accumulated: Optional[np.ndarray],
+    batch_flux_projete: np.ndarray,
+) -> np.ndarray:
+    """
+    Accumulate FLUX_PROJETE across batches (sum by year).
+    
+    This matches SAS: PROC SUMMARY ... CLASS AN_EVAL MOIS_EVAL; OUTPUT SUM=
+    
+    Args:
+        accumulated: Previously accumulated flux (years, CF_OUT_IDX_SIZE) or None
+        batch_flux_projete: This batch's flux by year (years, CF_OUT_IDX_SIZE)
+    
+    Returns:
+        Updated accumulated flux
+    """
+    if batch_flux_projete is None:
+        return accumulated
+    
+    if accumulated is None:
+        return batch_flux_projete.copy()
+    else:
+        return accumulated + batch_flux_projete
+
+
+def write_flux_projete(
+    output_path: Path,
+    flux_projete: np.ndarray,
+    nb_an_projection: int,
+):
+    """
+    Write final FLUX_PROJETE (flux by year) to CSV.
+    
+    This matches SAS: PROC SUMMARY ... CLASS AN_EVAL MOIS_EVAL; OUTPUT SUM=
+    
+    Args:
+        output_path: Directory to save CSV file
+        flux_projete: Aggregated flux by year (years, CF_OUT_IDX_SIZE)
+        nb_an_projection: Number of projection years
+    """
+    if flux_projete is None:
+        return 0
+    
+    rows = []
+    n_years = min(flux_projete.shape[0], nb_an_projection)
+    
+    for year_idx in range(n_years):
+        an_eval = year_idx + 1  # an_eval starts at 1
+        cf = flux_projete[year_idx, :]
+        
+        # Skip if all zeros
+        if np.all(cf == 0):
+            continue
+        
+        rows.append({
+            'AN_EVAL': an_eval,
+            'MOIS_EVAL': 12,  # Annual output
+            # Non-discounted cashflows
+            'FRAIS_ACQUIS': float(cf[CF_OUT_IDX_FRAIS_ACQUIS]),
+            'COMM_VENTE': float(cf[CF_OUT_IDX_COMM_VENTE]),
+            'PRIMES_GARANTIES': float(cf[CF_OUT_IDX_PRIMES_GARANTIES]),
+            'PRIMES_VARIABLES': float(cf[CF_OUT_IDX_PRIMES_VARIABLES]),
+            'FRAIS_FIXES': float(cf[CF_OUT_IDX_FRAIS_FIXES]),
+            'HON_GEST': float(cf[CF_OUT_IDX_HON_GEST]),
+            'COMM_MAINTIEN': float(cf[CF_OUT_IDX_COMM_MAINTIEN]),
+            'PREST_ECH': float(cf[CF_OUT_IDX_PREST_ECH]),
+            'PREST_MRV': float(cf[CF_OUT_IDX_PREST_MRV]),
+            'PREST_DECES': float(cf[CF_OUT_IDX_PREST_DECES]),
+            'UNITE_COUVERTURE': float(cf[CF_OUT_IDX_UNITE_COUVERTURE]),
+            'DEPOT_FUTUR': float(cf[CF_OUT_IDX_DEPOT_FUTUR]),
+            'REM_COMP_INV': float(cf[CF_OUT_IDX_REM_COMP_INV]),
+            'VALEUR_MARCHANDE': float(cf[CF_OUT_IDX_VALEUR_MARCHANDE]),
+            'VALEUR_GARANTIE': float(cf[CF_OUT_IDX_VALEUR_GARANTIE]),
+            'DEPOT_FUTUR_SURVIE': float(cf[CF_OUT_IDX_DEPOT_FUTUR_SURVIE]),
+            'PASSIF_REDRESSE': float(cf[CF_OUT_IDX_PASSIF_REDRESSE]),
+            'COUSSIN_CREDIT': float(cf[CF_OUT_IDX_COUSSIN_CREDIT]),
+            'COUSSIN_MARCHE': float(cf[CF_OUT_IDX_COUSSIN_MARCHE]),
+            'COUSSIN_DEPENSE': float(cf[CF_OUT_IDX_COUSSIN_DEPENSE]),
+            'COUSSIN_DECHEANCE': float(cf[CF_OUT_IDX_COUSSIN_DECHEANCE]),
+            'COUSSIN_MORTALITE': float(cf[CF_OUT_IDX_COUSSIN_MORTALITE]),
+            'COUSSIN_DEPOT': float(cf[CF_OUT_IDX_COUSSIN_DEPOT]),
+        })
+    
+    if rows:
+        df = pd.DataFrame(rows)
+        flux_path = output_path / "FLUX_PROJETE_GPU.csv"
+        df.to_csv(flux_path, index=False, sep=';', mode='w')
+        return len(rows)
+    return 0
+
+
 def save_results(
     output_path: Path,
     results_df: pd.DataFrame,
@@ -1084,6 +1283,8 @@ def save_results(
     population_df: Optional[pd.DataFrame] = None,
     lookup_data: Optional[Dict[str, pd.DataFrame]] = None,
     total_cashflow_rows: int = 0,
+    total_vp_flux_compte_rows: int = 0,
+    total_flux_projete_rows: int = 0,
 ):
     """
     Save all results (final simulation results and debug output) to CSV files.
@@ -1160,8 +1361,20 @@ def save_results(
     # 1b. FLUX_PROJETES_GPU.csv - already written incrementally during batch processing
     if total_cashflow_rows > 0:
         print(f"\n✓ [FLUX_PROJETES] FLUX_PROJETES_GPU.csv written incrementally during batch processing")
-        print(f"  Contains {total_cashflow_rows} rows (SAS-compatible cashflows)")
-        saved_files.append("FLUX_PROJETES_GPU.csv (full SAS-compatible cashflows)")
+        print(f"  Contains {total_cashflow_rows} rows (SAS DONNEES_COMPTE equivalent - MEAN by account/year)")
+        saved_files.append("FLUX_PROJETES_GPU.csv (SAS DONNEES_COMPTE - cashflows by account/year)")
+    
+    # 1c. VP_FLUX_COMPTE_GPU.csv - already written incrementally during batch processing
+    if total_vp_flux_compte_rows > 0:
+        print(f"\n✓ [VP_FLUX_COMPTE] VP_FLUX_COMPTE_GPU.csv written incrementally during batch processing")
+        print(f"  Contains {total_vp_flux_compte_rows} rows (SAS VP_FLUX_COMPTE equivalent - SUM VP by account)")
+        saved_files.append("VP_FLUX_COMPTE_GPU.csv (SAS VP_FLUX_COMPTE - VP sums by account)")
+    
+    # 1d. FLUX_PROJETE_GPU.csv - already written after batch processing
+    if total_flux_projete_rows > 0:
+        print(f"\n✓ [FLUX_PROJETE] FLUX_PROJETE_GPU.csv written after batch processing")
+        print(f"  Contains {total_flux_projete_rows} rows (SAS FLUX_PROJETE equivalent - SUM by year)")
+        saved_files.append("FLUX_PROJETE_GPU.csv (SAS FLUX_PROJETE - totals by year)")
 
     # Save debug flux for single account/scenario if available
     if debug_flux is not None and debug_params is not None:
@@ -2471,6 +2684,8 @@ def run_projection_gpu_nested(
     int_debug_ts_result = None
     debug_flux_result = None
     total_cashflow_rows = 0  # Track rows written to FLUX_PROJETES_GPU.csv
+    total_vp_flux_compte_rows = 0  # Track rows written to VP_FLUX_COMPTE_GPU.csv
+    accumulated_flux_projete = None  # Accumulate FLUX_PROJETE across batches
     
     # Extract population IDs early for incremental cashflow writing
     population_ids = data['population']['ID_COMPTE'].values
@@ -2525,6 +2740,26 @@ def run_projection_gpu_nested(
             # Free memory immediately
             del batch_result['batch_cashflows']
         
+        # Write VP_FLUX_COMPTE incrementally (GPU-aggregated VP by account)
+        if batch_result.get('batch_vp_flux_compte') is not None:
+            vp_rows_written = write_vp_flux_compte_batch(
+                output_path=output_path,
+                batch_vp_flux_compte=batch_result['batch_vp_flux_compte'],
+                population_ids=population_ids,
+                start_idx=start_idx,
+                is_first_batch=(i == 0),
+            )
+            total_vp_flux_compte_rows += vp_rows_written
+            del batch_result['batch_vp_flux_compte']
+        
+        # Accumulate FLUX_PROJETE across batches (GPU-aggregated flux by year)
+        if batch_result.get('batch_flux_projete') is not None:
+            accumulated_flux_projete = accumulate_flux_projete(
+                accumulated_flux_projete,
+                batch_result['batch_flux_projete']
+            )
+            del batch_result['batch_flux_projete']
+        
         # Store debug output (only one batch will have it if account filter is used)
         if batch_result['ext_debug'] is not None:
             ext_debug_result = batch_result['ext_debug']
@@ -2542,6 +2777,20 @@ def run_projection_gpu_nested(
     # Log cashflow file status
     if total_cashflow_rows > 0:
         logger.info(f"  Written {total_cashflow_rows} rows to FLUX_PROJETES_GPU.csv")
+    
+    # Log VP_FLUX_COMPTE file status
+    if total_vp_flux_compte_rows > 0:
+        logger.info(f"  Written {total_vp_flux_compte_rows} rows to VP_FLUX_COMPTE_GPU.csv")
+    
+    # Write final FLUX_PROJETE (accumulated across all batches)
+    total_flux_projete_rows = 0
+    if accumulated_flux_projete is not None:
+        total_flux_projete_rows = write_flux_projete(
+            output_path=output_path,
+            flux_projete=accumulated_flux_projete,
+            nb_an_projection=nb_an_projection,
+        )
+        logger.info(f"  Written {total_flux_projete_rows} rows to FLUX_PROJETE_GPU.csv")
     
     # Create results DataFrames
     results_df, results_5chocs_df, sensitivities_df = create_results_dataframes(
@@ -2645,6 +2894,8 @@ def run_projection_gpu_nested(
         population_df=data.get('population'),
         lookup_data=data,
         total_cashflow_rows=total_cashflow_rows,
+        total_vp_flux_compte_rows=total_vp_flux_compte_rows,
+        total_flux_projete_rows=total_flux_projete_rows,
     )
     
     return ProjectionResult(
