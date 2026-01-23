@@ -801,6 +801,7 @@ def process_batch(
     # Convert d_cashflows to CuPy array for GPU aggregations
     # d_cashflows shape: (batch, scenarios, years, CF_OUT_IDX_SIZE)
     try:
+        import cupy as cp
         d_cf_cupy = cp.asarray(d_cashflows)
         
         # --- VP_FLUX_COMPTE: Mean across scenarios, then sum across years ---
