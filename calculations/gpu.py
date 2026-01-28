@@ -639,7 +639,7 @@ def process_batch(
             (current_batch_size, nb_ext_scenarios, nb_an_projection, STATE_SIZE)
         )
         d_cashflows = _device_array_cupy(
-            (current_batch_size, nb_ext_scenarios, nb_an_projection, CF_OUT_IDX_SIZE)
+            (current_batch_size, nb_ext_scenarios, nb_an_projection * 12, CF_OUT_IDX_SIZE)
         )
         # Only allocate metrics tensor if running nested valuation
         if run_nested_valuation:
@@ -804,23 +804,23 @@ def process_batch(
         import cupy as cp
         d_cf_cupy = cp.asarray(d_cashflows)
         
-        # --- VP_FLUX_COMPTE: Mean across scenarios, then sum across years ---
+        # --- VP_FLUX_COMPTE: Mean across scenarios, then sum across all months ---
         # Result: (batch, CF_OUT_IDX_SIZE) - one row per account with summed VP values
         _t_vp_start = _time.time()
         # Step 1: Mean across scenarios (axis=1)
-        cf_mean_scenarios = cp.mean(d_cf_cupy, axis=1)  # (batch, years, CF_OUT_IDX_SIZE)
-        # Step 2: Sum across years (axis=1) to get total VP per account
+        cf_mean_scenarios = cp.mean(d_cf_cupy, axis=1)  # (batch, months, CF_OUT_IDX_SIZE) where months=years*12
+        # Step 2: Sum across all months (axis=1) to get total VP per account
         vp_flux_compte_gpu = cp.sum(cf_mean_scenarios, axis=1)  # (batch, CF_OUT_IDX_SIZE)
         h_vp_flux_compte = cp.asnumpy(vp_flux_compte_gpu)  # Copy small result to host
         _t_vp_end = _time.time()
         logger.info(f"  VP_FLUX_COMPTE GPU aggregation: {_t_vp_end - _t_vp_start:.4f}s")
         
         # --- FLUX_PROJETE: Mean across scenarios, sum across accounts ---
-        # Result: (years, CF_OUT_IDX_SIZE) - one row per year with summed values
+        # Result: (months, CF_OUT_IDX_SIZE) - one row per month with summed values across all accounts
         _t_flux_start = _time.time()
         # Step 1: Mean across scenarios (already computed above as cf_mean_scenarios)
         # Step 2: Sum across accounts (axis=0)
-        flux_projete_gpu = cp.sum(cf_mean_scenarios, axis=0)  # (years, CF_OUT_IDX_SIZE)
+        flux_projete_gpu = cp.sum(cf_mean_scenarios, axis=0)  # (months, CF_OUT_IDX_SIZE) where months=years*12
         h_flux_projete = cp.asnumpy(flux_projete_gpu)  # Copy small result to host
         _t_flux_end = _time.time()
         logger.info(f"  FLUX_PROJETE GPU aggregation: {_t_flux_end - _t_flux_start:.4f}s")
@@ -1022,11 +1022,11 @@ def write_cashflows_batch(
         is_first_batch: If True, write header; otherwise append
     """
     # Take mean across scenarios (axis=1) to match SAS proc summary
-    # Result shape: (batch_size, n_years, CF_OUT_IDX_SIZE)
+    # Result shape: (batch_size, n_months, CF_OUT_IDX_SIZE) where n_months = n_years * 12
     mean_cashflows = batch_cashflows.mean(axis=1)
     
     batch_size = mean_cashflows.shape[0]
-    n_years_out = mean_cashflows.shape[1]
+    n_months_out = mean_cashflows.shape[1]
     
     flux_rows = []
     for batch_idx in range(batch_size):
@@ -1035,9 +1035,11 @@ def write_cashflows_batch(
             break
         id_compte = int(population_ids[acc_idx])
         
-        for year_idx in range(n_years_out):
-            an_eval = year_idx + 1  # an_eval starts at 1
-            cf = mean_cashflows[batch_idx, year_idx, :]
+        for month_idx in range(n_months_out):
+            # Calculate year and month from monthly index
+            an_eval = (month_idx // 12) + 1  # Year starts at 1
+            mois_eval = (month_idx % 12) + 1  # Month 1-12
+            cf = mean_cashflows[batch_idx, month_idx, :]
             
             # Skip if all zeros (no data)
             if np.all(cf == 0):
@@ -1046,7 +1048,7 @@ def write_cashflows_batch(
             flux_rows.append({
                 'ID_COMPTE': id_compte,
                 'AN_EVAL': an_eval,
-                'MOIS_EVAL': 12,  # Annual output (mois_eval=12)
+                'MOIS_EVAL': mois_eval,  # Monthly output (mois_eval=1-12)
                 # Non-discounted cashflows
                 'FRAIS_ACQUIS': float(cf[CF_OUT_IDX_FRAIS_ACQUIS]),
                 'COMM_VENTE': float(cf[CF_OUT_IDX_COMM_VENTE]),
@@ -1209,24 +1211,26 @@ def write_flux_projete(
     nb_an_projection: int,
 ):
     """
-    Write final FLUX_PROJETE (flux by year) to CSV.
+    Write final FLUX_PROJETE (flux by year/month) to CSV.
     
     This matches SAS: PROC SUMMARY ... CLASS AN_EVAL MOIS_EVAL; OUTPUT SUM=
     
     Args:
         output_path: Directory to save CSV file
-        flux_projete: Aggregated flux by year (years, CF_OUT_IDX_SIZE)
+        flux_projete: Aggregated flux by month (months, CF_OUT_IDX_SIZE) where months = years * 12
         nb_an_projection: Number of projection years
     """
     if flux_projete is None:
         return 0
     
     rows = []
-    n_years = min(flux_projete.shape[0], nb_an_projection)
+    n_months = min(flux_projete.shape[0], nb_an_projection * 12)
     
-    for year_idx in range(n_years):
-        an_eval = year_idx + 1  # an_eval starts at 1
-        cf = flux_projete[year_idx, :]
+    for month_idx in range(n_months):
+        # Calculate year and month from monthly index
+        an_eval = (month_idx // 12) + 1  # Year starts at 1
+        mois_eval = (month_idx % 12) + 1  # Month 1-12
+        cf = flux_projete[month_idx, :]
         
         # Skip if all zeros
         if np.all(cf == 0):
@@ -1234,7 +1238,7 @@ def write_flux_projete(
         
         rows.append({
             'AN_EVAL': an_eval,
-            'MOIS_EVAL': 12,  # Annual output
+            'MOIS_EVAL': mois_eval,  # Monthly output (1-12)
             # Non-discounted cashflows
             'FRAIS_ACQUIS': float(cf[CF_OUT_IDX_FRAIS_ACQUIS]),
             'COMM_VENTE': float(cf[CF_OUT_IDX_COMM_VENTE]),
