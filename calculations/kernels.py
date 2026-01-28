@@ -303,9 +303,10 @@ def external_generator_kernel(
             if not keep:
                 continue
 
-            # Check if policy is still active
+            # Check if policy is still active (SAS line 294: deletes row but continues loop)
+            # When TX_SURVIE=0, we continue the loop but skip calculations (outputs zeros)
             if TX_SURVIE == 0 or (MT_VM_PROJ == 0 and I_PRODUIT_REGR == 0):
-                break
+                continue
 
             # Calculate duration from issue date
             current_date = annee_reelle + mois_eval / 12.0
