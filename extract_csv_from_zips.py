@@ -227,6 +227,7 @@ if __name__ == "__main__":
             zip_data_dir / "data_3.zip",
             zip_data_dir / "data_4.zip",
             zip_data_dir / "data_5.zip",
+            zip_data_dir / "test-benoit.zip",
         ]
     
     # Define destination folder (you can change this)
@@ -239,7 +240,21 @@ if __name__ == "__main__":
     print(f"Destination: {destination_folder}")
     print(f"{'='*60}")
     
-    extract_csv_from_zips(zip_files, destination_folder)
+    # Separate test-benoit.zip from other files
+    test_benoit_zip = zip_data_dir / "test-benoit.zip"
+    regular_zip_files = [zf for zf in zip_files if zf.name != "test-benoit.zip"]
+    
+    # Extract regular zip files to data_in
+    if regular_zip_files:
+        extract_csv_from_zips(regular_zip_files, destination_folder)
+    
+    # Extract test-benoit.zip to separate folder
+    if test_benoit_zip.exists():
+        test_benoit_destination = base_dir / "data_in_test_benoit"
+        print(f"\n{'='*60}")
+        print(f"Extracting test-benoit.zip to separate folder:")
+        print(f"{'='*60}")
+        extract_csv_from_zips([test_benoit_zip], test_benoit_destination)
 
     rendements_int_src = zip_data_dir / "rendements_int.csv"
     rendements_int_dst = destination_folder / "RENDEMENTS_INT.csv"
