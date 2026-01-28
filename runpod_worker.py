@@ -312,6 +312,25 @@ def handler(job):
                 output['flux_projetes'] = result.flux_projetes_df.to_dict(orient='records')
                 print(f"  ✓ Converted flux_projetes: {len(result.flux_projetes_df)} rows")
             
+            # --- 6. Auto-export all CSV files from output directory ---
+            # This ensures any new output files are automatically included
+            output['output_files'] = {}
+            if output_path.exists():
+                for csv_file in output_path.glob('*.csv'):
+                    try:
+                        # Use a normalized key name (lowercase, no extension)
+                        key = csv_file.stem.lower()
+                        # Skip if already exported via DataFrame
+                        if key in ['vp_flux_compte_gpu', 'vp_flux_total_gpu', 'vp_flux_5chocs_detailed_gpu', 
+                                   'vp_flux_5chocs_summary_gpu', 'vp_flux_sensitivities_gpu', 'flux_projete_gpu',
+                                   'ext_debug_gpu', 'int_debug_gpu', 'int_debug_ts_gpu']:
+                            continue
+                        df = pd.read_csv(csv_file)
+                        output['output_files'][csv_file.name] = df.to_dict(orient='records')
+                        print(f"  ✓ Auto-exported {csv_file.name}: {len(df)} rows")
+                    except Exception as e:
+                        print(f"  ⚠ Could not export {csv_file.name}: {e}")
+            
             # Restore original kernel after job completes
             if custom_kernel_applied:
                 restore_original_kernel()

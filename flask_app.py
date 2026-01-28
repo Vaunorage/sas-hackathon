@@ -192,9 +192,18 @@ PORT_HEALTH = int(os.getenv('PORT_HEALTH', str(PORT)))  # Health check port (def
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'csv'}
 
+# Editable calculation files
+CALCULATION_FILES = {
+    'kernels.py': 'GPU kernel functions for actuarial calculations',
+    'gpu.py': 'Main GPU projection orchestration and data loading',
+    'constants.py': 'Actuarial constants and configuration values',
+    'utils.py': 'Utility functions for data processing'
+}
+CALCULATIONS_PATH = HERE / 'calculations'
+
 # Database configuration
 USE_NEONDB = os.getenv('USE_NEONDB', 'true').lower() == 'true'
-NEONDB_URL = os.getenv('NEONDB_URL', '')
+NEONDB_URL = os.getenv('NEONDB_URL', 'postgresql://neondb_owner:npg_U8nuV5Zzbsge@ep-spring-hall-a448t160-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require')
 
 # Determine which database to use
 if USE_NEONDB and PSYCOPG_AVAILABLE and NEONDB_URL:
@@ -525,6 +534,19 @@ def init_db():
         )
     """
     
+    # New table for all calculation file versions
+    calc_file_versions_table = f"""
+        CREATE TABLE IF NOT EXISTS calc_file_versions (
+            id {id_column},
+            filename TEXT NOT NULL,
+            version_name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            description TEXT,
+            content TEXT NOT NULL,
+            is_active INTEGER DEFAULT 0
+        )
+    """
+    
     with get_db_cursor() as (cursor, conn):
         # Create tables
         cursor.execute(jobs_table)
@@ -540,6 +562,7 @@ def init_db():
         cursor.execute(int_debug_table)
         cursor.execute(int_debug_ts_table)
         cursor.execute(kernel_versions_table)
+        cursor.execute(calc_file_versions_table)
         
         # Create indexes
         cursor.execute("""
@@ -586,6 +609,11 @@ def init_db():
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_int_debug_ts_job_id 
             ON int_debug_ts(job_id)
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_calc_file_versions_filename 
+            ON calc_file_versions(filename)
         """)
         
         # Handle migrations for SQLite only (PostgreSQL schema has all columns from start)
@@ -1251,6 +1279,20 @@ def poll_runpod_results(job_id: str, run_request):
                                         print(f"  ✓ Saved flux_projetes: {len(df)} rows")
                                     except Exception as e:
                                         print(f"  ✗ Failed to save flux_projetes: {e}")
+                                
+                                # Save any auto-exported output files to job's output folder
+                                if results_data.get('output_files'):
+                                    try:
+                                        job_output_folder = UPLOAD_FOLDER / job_id / 'output'
+                                        job_output_folder.mkdir(parents=True, exist_ok=True)
+                                        for filename, records in results_data['output_files'].items():
+                                            df = pd.DataFrame(records)
+                                            output_path = job_output_folder / filename
+                                            df.to_csv(output_path, index=False)
+                                            print(f"  ✓ Saved output file: {filename} ({len(df)} rows)")
+                                        saved_any = True
+                                    except Exception as e:
+                                        print(f"  ✗ Failed to save output files: {e}")
                             
                             if saved_any:
                                 print(f"✓ Job {job_id} completed and results saved to database!")
@@ -3137,6 +3179,343 @@ def restore_kernel_backup():
         })
     except Exception as e:
         return jsonify({'error': f'Failed to restore: {e}'}), 500
+
+
+# =============================================================================
+# API ROUTES - CALCULATION FILES MANAGEMENT (Multi-file editor)
+# =============================================================================
+
+@app.route('/admin/calcfiles', methods=['GET'])
+def list_calc_files():
+    """
+    List all editable calculation files with their descriptions and sizes.
+    """
+    files = []
+    for filename, description in CALCULATION_FILES.items():
+        file_path = CALCULATIONS_PATH / filename
+        backup_path = CALCULATIONS_PATH / f"{filename}.backup"
+        
+        file_info = {
+            'filename': filename,
+            'description': description,
+            'exists': file_path.exists(),
+            'size': file_path.stat().st_size if file_path.exists() else 0,
+            'has_backup': backup_path.exists()
+        }
+        
+        # Get active version info from database
+        ph = get_placeholder()
+        active_version = fetch_one(
+            f"SELECT id, version_name, created_at FROM calc_file_versions WHERE filename = {ph} AND is_active = 1",
+            (filename,)
+        )
+        if active_version:
+            file_info['active_version'] = active_version
+        
+        files.append(file_info)
+    
+    return jsonify({
+        'files': files,
+        'count': len(files),
+        'path': str(CALCULATIONS_PATH)
+    })
+
+
+@app.route('/admin/calcfiles/<filename>', methods=['GET'])
+def get_calc_file(filename):
+    """
+    Get the content of a specific calculation file.
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    file_path = CALCULATIONS_PATH / filename
+    if not file_path.exists():
+        return jsonify({'error': f'{filename} not found'}), 404
+    
+    return jsonify({
+        'filename': filename,
+        'description': CALCULATION_FILES[filename],
+        'path': str(file_path),
+        'content': file_path.read_text(),
+        'size': file_path.stat().st_size
+    })
+
+
+@app.route('/admin/calcfiles/<filename>', methods=['POST'])
+def update_calc_file(filename):
+    """
+    Update a calculation file content, save to database, and optionally restart.
+    
+    JSON body:
+    {
+        "password": "admin123",
+        "content": "... new file content ...",
+        "version_name": "v1.0",  // optional
+        "description": "Fixed bug",  // optional
+        "restart": true,  // optional, default true
+        "validate_syntax": true  // optional, default true - check Python syntax
+    }
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    if not request.is_json:
+        return jsonify({'error': 'JSON body required'}), 400
+    
+    data = request.json
+    password = data.get('password')
+    if password != ADMIN_PASSWORD:
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    content = data.get('content')
+    if not content:
+        return jsonify({'error': 'content is required'}), 400
+    
+    # Validate Python syntax if requested (default: True)
+    if data.get('validate_syntax', True):
+        try:
+            compile(content, filename, 'exec')
+        except SyntaxError as e:
+            return jsonify({
+                'error': f'Syntax error at line {e.lineno}: {e.msg}',
+                'validation_failed': True,
+                'line': e.lineno,
+                'offset': e.offset
+            }), 400
+    
+    version_name = data.get('version_name', f"v_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
+    description = data.get('description', '')
+    
+    file_path = CALCULATIONS_PATH / filename
+    backup_path = CALCULATIONS_PATH / f"{filename}.backup"
+    
+    try:
+        # Backup current file
+        if file_path.exists():
+            backup_path.write_text(file_path.read_text())
+        
+        # Mark previous versions as not active
+        ph = get_placeholder()
+        execute_sql(f"UPDATE calc_file_versions SET is_active = 0 WHERE filename = {ph} AND is_active = 1", (filename,))
+        
+        # Save new version to database
+        execute_sql(
+            f"""INSERT INTO calc_file_versions (filename, version_name, created_at, description, content, is_active)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+            (filename, version_name, datetime.utcnow().isoformat(), description, content, 1)
+        )
+        
+        # Write new content to file
+        file_path.write_text(content)
+        
+        should_restart = data.get('restart', True)
+        
+        if should_restart:
+            import sys
+            def restart_server():
+                import time
+                time.sleep(1)
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            
+            thread = threading.Thread(target=restart_server)
+            thread.daemon = True
+            thread.start()
+            
+            return jsonify({
+                'success': True,
+                'message': f'{filename} updated, server restarting...',
+                'filename': filename,
+                'version_name': version_name,
+                'backup': str(backup_path)
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': f'{filename} updated (restart=false)',
+                'filename': filename,
+                'version_name': version_name,
+                'backup': str(backup_path)
+            })
+    
+    except Exception as e:
+        # Restore backup on failure
+        if backup_path.exists():
+            file_path.write_text(backup_path.read_text())
+        return jsonify({'error': f'Failed to update {filename}: {e}'}), 500
+
+
+@app.route('/admin/calcfiles/<filename>/versions', methods=['GET'])
+def list_calc_file_versions(filename):
+    """
+    List all saved versions of a specific calculation file.
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    ph = get_placeholder()
+    rows = fetch_all(
+        f"SELECT id, version_name, created_at, description, is_active FROM calc_file_versions WHERE filename = {ph} ORDER BY created_at DESC",
+        (filename,)
+    )
+    return jsonify({
+        'filename': filename,
+        'versions': rows,
+        'count': len(rows)
+    })
+
+
+@app.route('/admin/calcfiles/<filename>/versions/<int:version_id>', methods=['GET'])
+def get_calc_file_version(filename, version_id):
+    """
+    Get a specific version of a calculation file.
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    ph = get_placeholder()
+    row = fetch_one(
+        f"SELECT * FROM calc_file_versions WHERE filename = {ph} AND id = {ph}",
+        (filename, version_id)
+    )
+    if not row:
+        return jsonify({'error': 'Version not found'}), 404
+    
+    return jsonify(row)
+
+
+@app.route('/admin/calcfiles/<filename>/versions/<int:version_id>/activate', methods=['POST'])
+def activate_calc_file_version(filename, version_id):
+    """
+    Activate a specific version: write it to file and restart.
+    
+    JSON body:
+    {
+        "password": "admin123"
+    }
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    password = request.json.get('password') if request.is_json else None
+    if password != ADMIN_PASSWORD:
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    ph = get_placeholder()
+    row = fetch_one(
+        f"SELECT * FROM calc_file_versions WHERE filename = {ph} AND id = {ph}",
+        (filename, version_id)
+    )
+    if not row:
+        return jsonify({'error': 'Version not found'}), 404
+    
+    file_path = CALCULATIONS_PATH / filename
+    backup_path = CALCULATIONS_PATH / f"{filename}.backup"
+    
+    try:
+        # Backup current file
+        if file_path.exists():
+            backup_path.write_text(file_path.read_text())
+        
+        # Update active status in database
+        execute_sql(f"UPDATE calc_file_versions SET is_active = 0 WHERE filename = {ph} AND is_active = 1", (filename,))
+        execute_sql(f"UPDATE calc_file_versions SET is_active = 1 WHERE id = {ph}", (version_id,))
+        
+        # Write content to file
+        file_path.write_text(row['content'])
+        
+        # Restart
+        import sys
+        def restart_server():
+            import time
+            time.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        
+        thread = threading.Thread(target=restart_server)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': f"Activated version '{row['version_name']}' for {filename}, server restarting...",
+            'filename': filename,
+            'version_name': row['version_name']
+        })
+    except Exception as e:
+        return jsonify({'error': f'Failed to activate version: {e}'}), 500
+
+
+@app.route('/admin/calcfiles/<filename>/versions/<int:version_id>', methods=['DELETE'])
+def delete_calc_file_version(filename, version_id):
+    """
+    Delete a version from the database.
+    
+    JSON body:
+    {
+        "password": "admin123"
+    }
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    password = request.json.get('password') if request.is_json else None
+    if password != ADMIN_PASSWORD:
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    ph = get_placeholder()
+    row = fetch_one(
+        f"SELECT is_active FROM calc_file_versions WHERE filename = {ph} AND id = {ph}",
+        (filename, version_id)
+    )
+    if not row:
+        return jsonify({'error': 'Version not found'}), 404
+    
+    if row['is_active']:
+        return jsonify({'error': 'Cannot delete the active version'}), 400
+    
+    execute_sql(f"DELETE FROM calc_file_versions WHERE id = {ph}", (version_id,))
+    return jsonify({'success': True, 'message': 'Version deleted'})
+
+
+@app.route('/admin/calcfiles/<filename>/restore', methods=['POST'])
+def restore_calc_file_backup(filename):
+    """
+    Restore a calculation file from its backup and restart.
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    password = request.json.get('password') if request.is_json else None
+    if password != ADMIN_PASSWORD:
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    file_path = CALCULATIONS_PATH / filename
+    backup_path = CALCULATIONS_PATH / f"{filename}.backup"
+    
+    if not backup_path.exists():
+        return jsonify({'error': f'No backup file found for {filename}'}), 404
+    
+    try:
+        file_path.write_text(backup_path.read_text())
+        
+        # Restart
+        import sys
+        def restart_server():
+            import time
+            time.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        
+        thread = threading.Thread(target=restart_server)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Restored {filename} from backup, server restarting...'
+        })
+    except Exception as e:
+        return jsonify({'error': f'Failed to restore: {e}'}), 500
+
 
 # =============================================================================
 # MAIN
