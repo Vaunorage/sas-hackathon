@@ -1280,11 +1280,10 @@ def poll_runpod_results(job_id: str, run_request):
                                     except Exception as e:
                                         print(f"  ✗ Failed to save flux_projetes: {e}")
                                 
-                                # Save any auto-exported output files to job's output folder
+                                # Save any auto-exported output files to job's results folder
                                 if results_data.get('output_files'):
                                     try:
-                                        job_output_folder = UPLOAD_FOLDER / job_id / 'output'
-                                        job_output_folder.mkdir(parents=True, exist_ok=True)
+                                        job_output_folder = get_job_results_folder(job_id)
                                         for filename, records in results_data['output_files'].items():
                                             df = pd.DataFrame(records)
                                             output_path = job_output_folder / filename
@@ -1453,6 +1452,8 @@ def trigger_runpod_job(job_id: str):
             runpod_input['debug_int_year'] = params.get('debug_int_year')
         if params.get('debug_only'):
             runpod_input['debug_only'] = params.get('debug_only')
+        if params.get('external_only'):
+            runpod_input['external_only'] = params.get('external_only')
         
         # Add custom kernel code if provided
         if params.get('kernel_code'):
@@ -2012,6 +2013,7 @@ def create_job_endpoint():
             'debug_int_scenario': int(form_data.get('debug_int_scenario')) if form_data.get('debug_int_scenario') else None,
             'debug_int_year': int(form_data.get('debug_int_year')) if form_data.get('debug_int_year') else None,
             'debug_only': form_data.get('debug_only', '').lower() in ('true', '1', 'yes', 'on'),
+            'external_only': form_data.get('external_only', '').lower() in ('true', '1', 'yes', 'on'),
         }
         
         # Add custom kernel code if provided
@@ -2403,13 +2405,29 @@ def list_job_files(job_id: str):
         results_folder = get_job_results_folder(job_id)
         if results_folder.exists():
             output_file_metadata = {
+                'FLUX_PROJETE_GPU.csv': {
+                    'type': 'internal',
+                    'description': 'External projection cash flows (detailed)'
+                },
                 'FLUX_PROJETES_GPU.csv': {
                     'type': 'internal',
                     'description': 'Projected cash flows by time period (year/month)'
                 },
+                'FLUX_PROJETES_GPU_DEBUG.csv': {
+                    'type': 'debug',
+                    'description': 'Debug version of projected cash flows'
+                },
+                'OUTPUT_EXAMPLE_GPU.csv': {
+                    'type': 'other',
+                    'description': 'Example output data'
+                },
                 'VP_FLUX_COMPTE_GPU.csv': {
                     'type': 'detailed',
                     'description': 'Present values by account'
+                },
+                'VP_FLUX_COMPTE_GPU_NEW.csv': {
+                    'type': 'detailed',
+                    'description': 'Present values by account (new format)'
                 },
                 'VP_FLUX_TOTAL_GPU.csv': {
                     'type': 'summary',

@@ -621,6 +621,16 @@ input[type="password"] {
                                 <input type="number" id="shock_capital_pct" name="shock_capital_pct" value="35" min="0" max="100" step="1">
                             </div>
 
+                            <div class="form-group" style="margin-top: 10px;">
+                                <label>
+                                    <input type="checkbox" id="external_only">
+                                    <strong>External Loop Only</strong>
+                                </label>
+                                <p style="font-size: 11px; color: #666; margin: 3px 0 0 20px;">
+                                    Skip internal scenarios (nested valuation). Faster for testing external projections.
+                                </p>
+                            </div>
+
                             <button type="submit" class="btn btn-primary" id="submit-btn" style="margin-top: 15px; width: 100%; padding: 12px;">🚀 Create Job</button>
                             <div id="create-message" style="margin-top: 10px;"></div>
                         </div>
@@ -968,7 +978,7 @@ input[type="password"] {
                 return 'debug';
             }
 
-            if (table === 'flux_projetes' || name === 'FLUX_PROJETES' || name === 'FLUX_PROJETES_GPU.CSV') {
+            if (table === 'flux_projetes' || name === 'FLUX_PROJETES' || name === 'FLUX_PROJETES_GPU.CSV' || name === 'FLUX_PROJETE_GPU.CSV') {
                 return 'external_cashflows';
             }
 
@@ -2053,11 +2063,13 @@ input[type="password"] {
                 const debugIntScenario = document.getElementById('debug_int_scenario').value;
                 const debugIntYear = document.getElementById('debug_int_year').value;
                 const debugOnly = document.getElementById('debug_only').checked;
+                const externalOnly = document.getElementById('external_only').checked;
                 
                 formData.append('nb_an_projection', nbAnProjection);
                 formData.append('nb_scenarios', nbScenarios);
                 formData.append('nb_int_scenarios', nbIntScenarios);
                 formData.append('shock_capital_pct', shockCapitalPct);
+                if (externalOnly) formData.append('external_only', 'true');
                 if (maxAccounts) formData.append('max_accounts', maxAccounts);
                 if (debugAccount) formData.append('debug_account', debugAccount);
                 if (debugScenario) formData.append('debug_scenario', debugScenario);
