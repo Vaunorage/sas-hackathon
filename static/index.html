@@ -1493,75 +1493,27 @@ input[type="password"] {
                 return '<p style="color: #666; font-style: italic;">No results available yet. Job may still be running or failed.</p>';
             }
             
-            // Group files by type
-            const filesByType = {
-                summary: [],
-                account_results: [],
-                external_cashflows: [],
-                five_chocs: [],
-                sensitivities: [],
-                debug: [],
-                input: [],
-                other: []
-            };
+            let html = '<div><h4>📁 Output Files</h4>';
             
             resultFiles.forEach(file => {
                 const f = normalizeResultFile(file);
-                const category = getUiFileCategory(f);
-                if (!filesByType[category]) filesByType[category] = [];
-                filesByType[category].push(f);
-            });
-            
-            const typeLabels = {
-                summary: '📊 Portfolio Summary',
-                account_results: '📋 Account Results',
-                external_cashflows: '🧾 External Projection Cashflows',
-                five_chocs: '⚡ Five Chocs',
-                sensitivities: '📐 Sensitivities (Greeks)',
-                debug: '🐛 Debug',
-                input: '📎 Input Files',
-                other: '📄 Other'
-            };
-
-            const typeItemIcons = {
-                summary: '📊',
-                account_results: '📋',
-                external_cashflows: '🧾',
-                five_chocs: '⚡',
-                sensitivities: '📐',
-                debug: '🐛',
-                input: '📎',
-                other: '📄'
-            };
-            
-            let html = '<div>';
-            
-            Object.entries(filesByType).forEach(([type, files]) => {
-                if (files.length > 0) {
-                    html += `<div>`;
-                    html += `<h4>${typeLabels[type]}</h4>`;
-                    files.forEach(file => {
-                        const fileName = file.name;
-                        const rowCount = file.row_count ? `(${file.row_count.toLocaleString()} rows)` : '';
-                        const fileSize = file.size ? `(${(file.size / 1024).toFixed(2)} KB)` : '';
-                        const sizeInfo = rowCount || fileSize;
-                        const description = file.description ? `<div style="font-size: 12px; color: #666;">${file.description}</div>` : '';
-                        const icon = typeItemIcons[type] || '📄';
-                        html += `
-                            <div style="padding: 10px; border: 1px solid #ccc; margin-bottom: 8px; background: #fff;">
-                                <div>
-                                    <strong style="font-size: 14px;">${icon} ${fileName}</strong> ${sizeInfo}
-                                    ${description}
-                                </div>
-                                <div style="margin-top: 8px;">
-                                    <button class="file-preview-btn" onclick="previewFile('${jobId}', '${fileName}')">👁️ Preview</button>
-                                    <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${fileName}')">⬇️ Download CSV</button>
-                                </div>
-                            </div>
-                        `;
-                    });
-                    html += '</div>';
-                }
+                const fileName = f.name;
+                const rowCount = f.row_count ? `(${f.row_count.toLocaleString()} rows)` : '';
+                const fileSize = f.size ? `(${(f.size / 1024).toFixed(2)} KB)` : '';
+                const sizeInfo = rowCount || fileSize;
+                const description = f.description ? `<div style="font-size: 12px; color: #666;">${f.description}</div>` : '';
+                html += `
+                    <div style="padding: 10px; border: 1px solid #ccc; margin-bottom: 8px; background: #fff;">
+                        <div>
+                            <strong style="font-size: 14px;">📄 ${fileName}</strong> ${sizeInfo}
+                            ${description}
+                        </div>
+                        <div style="margin-top: 8px;">
+                            <button class="file-preview-btn" onclick="previewFile('${jobId}', '${fileName}')">👁️ Preview</button>
+                            <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${fileName}')">⬇️ Download CSV</button>
+                        </div>
+                    </div>
+                `;
             });
             
             html += '</div>';
