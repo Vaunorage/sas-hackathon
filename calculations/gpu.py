@@ -833,7 +833,7 @@ def process_batch(
         h_vp_flux_compte = None
         h_flux_projete = None
     
-    # Copy full cashflows to host (still needed for FLUX_PROJETES_GPU.csv detailed output)
+    # Copy full cashflows to host (still needed for FLUX_PROJETE_GPU.csv detailed output)
     _t2 = _time.time()
     h_cashflows = d_cashflows.copy_to_host()
     _t3 = _time.time()
@@ -1012,7 +1012,7 @@ def write_cashflows_batch(
     is_first_batch: bool = False,
 ):
     """
-    Write a batch of cashflows to FLUX_PROJETES_GPU.csv incrementally.
+    Write a batch of cashflows to FLUX_PROJETE_GPU.csv incrementally.
     
     Args:
         output_path: Directory to save CSV file
@@ -1099,7 +1099,7 @@ def write_cashflows_batch(
     
     if flux_rows:
         df = pd.DataFrame(flux_rows)
-        flux_path = output_path / "FLUX_PROJETES_GPU.csv"
+        flux_path = output_path / "FLUX_PROJETE_GPU.csv"
         
         if is_first_batch:
             # Write with header
@@ -1267,7 +1267,7 @@ def write_flux_projete(
     
     if rows:
         df = pd.DataFrame(rows)
-        flux_path = output_path / "FLUX_PROJETE_GPU.csv"
+        flux_path = output_path / "FLUX_PROJETES_GPU.csv"
         df.to_csv(flux_path, index=False, sep=';', mode='w')
         return len(rows)
     return 0
@@ -1363,11 +1363,11 @@ def save_results(
     print(f"  Total SCR:          ${vp_flux_total_df['VP_SCR'].iloc[0]:,.2f}")
     saved_files.append("VP_FLUX_TOTAL_GPU.csv (portfolio totals)")
 
-    # 1b. FLUX_PROJETES_GPU.csv - already written incrementally during batch processing
+    # 1b. FLUX_PROJETE_GPU.csv - already written incrementally during batch processing
     if total_cashflow_rows > 0:
-        print(f"\n✓ [FLUX_PROJETES] FLUX_PROJETES_GPU.csv written incrementally during batch processing")
+        print(f"\n✓ [FLUX_PROJETE] FLUX_PROJETE_GPU.csv written incrementally during batch processing")
         print(f"  Contains {total_cashflow_rows} rows (SAS DONNEES_COMPTE equivalent - MEAN by account/year)")
-        saved_files.append("FLUX_PROJETES_GPU.csv (SAS DONNEES_COMPTE - cashflows by account/year)")
+        saved_files.append("FLUX_PROJETE_GPU.csv (SAS DONNEES_COMPTE - cashflows by account/year)")
     
     # 1c. VP_FLUX_COMPTE_GPU.csv - already written incrementally during batch processing
     if total_vp_flux_compte_rows > 0:
@@ -1375,11 +1375,11 @@ def save_results(
         print(f"  Contains {total_vp_flux_compte_rows} rows (SAS VP_FLUX_COMPTE equivalent - SUM VP by account)")
         saved_files.append("VP_FLUX_COMPTE_GPU.csv (SAS VP_FLUX_COMPTE - VP sums by account)")
     
-    # 1d. FLUX_PROJETE_GPU.csv - already written after batch processing
+    # 1d. FLUX_PROJETES_GPU.csv - already written after batch processing
     if total_flux_projete_rows > 0:
-        print(f"\n✓ [FLUX_PROJETE] FLUX_PROJETE_GPU.csv written after batch processing")
+        print(f"\n✓ [FLUX_PROJETES] FLUX_PROJETES_GPU.csv written after batch processing")
         print(f"  Contains {total_flux_projete_rows} rows (SAS FLUX_PROJETE equivalent - SUM by year)")
-        saved_files.append("FLUX_PROJETE_GPU.csv (SAS FLUX_PROJETE - totals by year)")
+        saved_files.append("FLUX_PROJETES_GPU.csv (SAS FLUX_PROJETE - totals by year)")
 
     # Save debug flux for single account/scenario if available
     if debug_flux is not None and debug_params is not None:
@@ -2688,7 +2688,7 @@ def run_projection_gpu_nested(
     int_debug_result = None
     int_debug_ts_result = None
     debug_flux_result = None
-    total_cashflow_rows = 0  # Track rows written to FLUX_PROJETES_GPU.csv
+    total_cashflow_rows = 0  # Track rows written to FLUX_PROJETE_GPU.csv
     total_vp_flux_compte_rows = 0  # Track rows written to VP_FLUX_COMPTE_GPU.csv
     accumulated_flux_projete = None  # Accumulate FLUX_PROJETE across batches
     
@@ -2781,7 +2781,7 @@ def run_projection_gpu_nested(
     
     # Log cashflow file status
     if total_cashflow_rows > 0:
-        logger.info(f"  Written {total_cashflow_rows} rows to FLUX_PROJETES_GPU.csv")
+        logger.info(f"  Written {total_cashflow_rows} rows to FLUX_PROJETE_GPU.csv")
     
     # Log VP_FLUX_COMPTE file status
     if total_vp_flux_compte_rows > 0:
@@ -2795,7 +2795,7 @@ def run_projection_gpu_nested(
             flux_projete=accumulated_flux_projete,
             nb_an_projection=nb_an_projection,
         )
-        logger.info(f"  Written {total_flux_projete_rows} rows to FLUX_PROJETE_GPU.csv")
+        logger.info(f"  Written {total_flux_projete_rows} rows to FLUX_PROJETES_GPU.csv")
     
     # Create results DataFrames
     results_df, results_5chocs_df, sensitivities_df = create_results_dataframes(
