@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any, Tuple
 import pandas as pd
 from contextlib import contextmanager
 
-from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask import Flask, request, jsonify, send_file, send_from_directory, session
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
@@ -169,6 +169,7 @@ app.config['UPLOAD_FOLDER'] = HERE / 'uploads'
 app.config['RESULTS_FOLDER'] = HERE / 'results'
 app.config['DATABASE'] = HERE / 'jobs.db'
 app.config['DEFAULT_DATA_FOLDER'] = HERE/ 'data_in'
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', os.urandom(24).hex())
 
 # Create directories if they don't exist
 app.config['UPLOAD_FOLDER'].mkdir(exist_ok=True)
@@ -1862,6 +1863,38 @@ def create_runpod_job_endpoint():
     return jsonify({'job_id': job_id, 'status': 'pending'}), 202
 
 # =============================================================================
+# API ROUTES - AUTHENTICATION
+# =============================================================================
+
+@app.route('/auth/login', methods=['POST'])
+def login():
+    """Authenticate user and create session"""
+    data = request.get_json()
+    password = data.get('password')
+    
+    if password == ADMIN_PASSWORD:
+        session['authenticated'] = True
+        return jsonify({'success': True, 'message': 'Authentication successful'})
+    else:
+        return jsonify({'success': False, 'error': 'Invalid password'}), 401
+
+@app.route('/auth/logout', methods=['POST'])
+def logout():
+    """Clear authentication session"""
+    session.pop('authenticated', None)
+    return jsonify({'success': True, 'message': 'Logged out successfully'})
+
+@app.route('/auth/status', methods=['GET'])
+def auth_status():
+    """Check if user is authenticated"""
+    return jsonify({'authenticated': session.get('authenticated', False)})
+
+# Helper function to check authentication
+def check_auth(password=None):
+    """Check if user is authenticated via session or password"""
+    return session.get('authenticated', False) or password == ADMIN_PASSWORD
+
+# =============================================================================
 # API ROUTES - HEALTH & STATUS
 # =============================================================================
 
@@ -2145,7 +2178,7 @@ def get_job_files_fast(job_id: str) -> dict:
                     'type': 'input'
                 })
     
-    # Get result files from database tables
+    # Get result files from database tables - single query for all counts
     result_files = []
     table_metadata = {
         'flux_projetes': {'name': 'FLUX_PROJETES', 'type': 'internal', 'desc': 'Projected cash flows'},
@@ -2159,20 +2192,37 @@ def get_job_files_fast(job_id: str) -> dict:
         'int_debug_ts': {'name': 'INT_DEBUG_TS', 'type': 'debug', 'desc': 'Internal debug TS'},
     }
     
-    for table_name, meta in table_metadata.items():
-        try:
-            sql = f"SELECT COUNT(*) as count FROM {table_name} WHERE job_id = {ph}"
-            result = fetch_one(sql, (job_id,))
-            if result and result['count'] > 0:
-                result_files.append({
-                    'name': meta['name'],
-                    'type': meta['type'],
-                    'description': f"{meta['desc']} ({result['count']} rows)",
-                    'row_count': result['count'],
-                    'table': table_name
-                })
-        except Exception:
-            pass
+    # Build a single UNION ALL query to get all counts at once (much faster than 9 separate queries)
+    try:
+        union_parts = []
+        for table_name in table_metadata.keys():
+            union_parts.append(f"SELECT '{table_name}' as tbl, COUNT(*) as cnt FROM {table_name} WHERE job_id = {ph}")
+        
+        combined_sql = " UNION ALL ".join(union_parts)
+        
+        with get_db_cursor() as (cursor, conn):
+            # Execute with job_id repeated for each table
+            params = tuple([job_id] * len(table_metadata))
+            cursor.execute(combined_sql, params)
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                if DATABASE_TYPE == 'postgresql':
+                    tbl, cnt = row['tbl'], row['cnt']
+                else:
+                    tbl, cnt = row['tbl'], row['cnt']
+                
+                if cnt > 0:
+                    meta = table_metadata[tbl]
+                    result_files.append({
+                        'name': meta['name'],
+                        'type': meta['type'],
+                        'description': f"{meta['desc']} ({cnt} rows)",
+                        'row_count': cnt,
+                        'table': tbl
+                    })
+    except Exception as e:
+        print(f"Warning: Failed to get table counts: {e}")
     
     # Check results folder for CSV files
     results_folder = get_job_results_folder(job_id)
@@ -2702,7 +2752,7 @@ def clear_database():
             }), 401
         
         # Verify password
-        if password != ADMIN_PASSWORD:
+        if not check_auth(password):
             return jsonify({
                 'error': 'Invalid password',
                 'message': 'The provided password is incorrect'
@@ -2781,7 +2831,7 @@ def validate_kernel_file():
     
     data = request.json
     password = data.get('password')
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     content = data.get('content')
@@ -2912,7 +2962,7 @@ def update_kernel_file():
     
     data = request.json
     password = data.get('password')
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     content = data.get('content')
@@ -3095,7 +3145,7 @@ def activate_kernel_version(version_id):
     }
     """
     password = request.json.get('password') if request.is_json else None
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     ph = get_placeholder()
@@ -3148,7 +3198,7 @@ def delete_kernel_version(version_id):
     }
     """
     password = request.json.get('password') if request.is_json else None
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     ph = get_placeholder()
@@ -3168,7 +3218,7 @@ def restore_kernel_backup():
     Restore kernels.py from file backup and restart.
     """
     password = request.json.get('password') if request.is_json else None
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     kernels_path = HERE / 'calculations' / 'kernels.py'
@@ -3283,7 +3333,7 @@ def update_calc_file(filename):
     
     data = request.json
     password = data.get('password')
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     content = data.get('content')
@@ -3416,7 +3466,7 @@ def activate_calc_file_version(filename, version_id):
         return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
     
     password = request.json.get('password') if request.is_json else None
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     ph = get_placeholder()
@@ -3477,7 +3527,7 @@ def delete_calc_file_version(filename, version_id):
         return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
     
     password = request.json.get('password') if request.is_json else None
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     ph = get_placeholder()
@@ -3504,7 +3554,7 @@ def restore_calc_file_backup(filename):
         return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
     
     password = request.json.get('password') if request.is_json else None
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     file_path = CALCULATIONS_PATH / filename

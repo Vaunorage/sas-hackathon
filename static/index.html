@@ -409,32 +409,126 @@ input[type="password"] {
 
 /* Kernel Editor Styles */
 .kernel-editor-container {
-    border: 2px inset #808080;
+    border: 1px solid #2d2d2d;
     margin: 10px 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    background: #1e1e1e;
 }
 
 .CodeMirror {
-    height: 500px;
-    font-size: 13px;
+    height: 600px;
+    font-size: 14px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
     border: none;
+    line-height: 1.5;
+}
+
+.CodeMirror-gutters {
+    background: #1e1e1e;
+    border-right: 1px solid #3e3e3e;
+}
+
+.CodeMirror-linenumber {
+    color: #858585;
+    padding: 0 8px;
 }
 
 .kernel-editor-toolbar {
-    background: #e0e0e0;
-    padding: 5px 10px;
-    border-bottom: 1px solid #999;
+    background: #2d2d2d;
+    padding: 8px 12px;
+    border-bottom: 1px solid #3e3e3e;
     font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
 }
 
 .kernel-editor-toolbar button {
-    margin-right: 5px;
-    padding: 3px 8px;
-    font-size: 11px;
+    margin-right: 8px;
+    padding: 5px 12px;
+    font-size: 12px;
+    background: #3e3e3e;
+    color: #d4d4d4;
+    border: 1px solid #555;
+    cursor: pointer;
+    border-radius: 3px;
+}
+
+.kernel-editor-toolbar button:hover {
+    background: #4e4e4e;
+    border-color: #666;
 }
 
 .kernel-editor-toolbar span {
-    margin-left: 15px;
-    color: #666;
+    color: #858585;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 11px;
+}
+
+.kernel-editor-toolbar .toolbar-left {
+    display: flex;
+    align-items: center;
+}
+
+.kernel-editor-toolbar .toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.kernel-editor-toolbar .toolbar-separator {
+    width: 1px;
+    height: 18px;
+    background: #555;
+    margin: 0 8px;
+}
+
+/* CodeMirror dialog styling for dark theme */
+.CodeMirror-dialog {
+    background: #2d2d2d;
+    border-bottom: 1px solid #3e3e3e;
+    padding: 8px 12px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    color: #d4d4d4;
+}
+
+.CodeMirror-dialog input {
+    background: #1e1e1e;
+    border: 1px solid #555;
+    color: #d4d4d4;
+    padding: 4px 8px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    margin: 0 5px;
+    outline: none;
+}
+
+.CodeMirror-dialog input:focus {
+    border-color: #007acc;
+}
+
+.CodeMirror-dialog button {
+    background: #3e3e3e;
+    border: 1px solid #555;
+    color: #d4d4d4;
+    padding: 4px 10px;
+    cursor: pointer;
+    margin-left: 5px;
+    border-radius: 3px;
+}
+
+.CodeMirror-dialog button:hover {
+    background: #4e4e4e;
+}
+
+/* Search match highlighting */
+.cm-searching {
+    background-color: rgba(255, 255, 0, 0.4) !important;
+}
+
+.CodeMirror-selection-highlight-scrollbar {
+    background-color: rgba(255, 255, 0, 0.5);
 }
 
 .kernel-versions-list {
@@ -570,6 +664,20 @@ input[type="password"] {
     </style>
 </head>
 <body>
+    <!-- Login Modal -->
+    <div id="login-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 10000; justify-content: center; align-items: center;">
+        <div style="background: #fff; padding: 30px; border: 3px solid #000080; width: 400px; box-shadow: 5px 5px 0 #000;">
+            <h2 style="margin-top: 0; color: #000080;">🔒 Authentication Required</h2>
+            <p>Please enter the admin password to access the application.</p>
+            <div style="margin: 20px 0;">
+                <label for="login-password" style="display: block; margin-bottom: 5px; font-weight: bold;">Password:</label>
+                <input type="password" id="login-password" style="width: 100%; padding: 8px; border: 2px solid #000; font-size: 14px;">
+            </div>
+            <div id="login-error" style="color: red; margin: 10px 0; display: none;"></div>
+            <button onclick="attemptLogin()" style="width: 100%; padding: 12px; background: #000080; color: #fff; border: 2px solid #000; font-size: 16px; font-weight: bold; cursor: pointer;">Login</button>
+        </div>
+    </div>
+
     <div class="container">
         <div class="header">
             <h1>GPU Actuarial Projections</h1>
@@ -762,15 +870,11 @@ input[type="password"] {
                 
                 <!-- File Selector and Password in one row -->
                 <div class="form-row" style="margin-bottom: 10px;">
-                    <div class="form-group" style="flex: 2;">
+                    <div class="form-group" style="flex: 1;">
                         <label for="calc-file-select">File:</label>
                         <select id="calc-file-select" onchange="onCalcFileSelect()" style="width: 100%; padding: 8px; border: 1px solid #000; font-size: 14px;">
                             <option value="">-- Select a file --</option>
                         </select>
-                    </div>
-                    <div class="form-group" style="flex: 1;">
-                        <label for="kernel-password">Password:</label>
-                        <input type="password" id="kernel-password" placeholder="Admin password">
                     </div>
                     <div class="form-group" style="flex: 0; align-self: flex-end; display: flex; gap: 5px;">
                         <button type="button" class="btn btn-secondary" onclick="loadCalcFileContent()" title="Reload file from disk">↻</button>
@@ -787,8 +891,25 @@ input[type="password"] {
                     <label id="editor-file-label">File Content:</label>
                     <div class="kernel-editor-container">
                         <div class="kernel-editor-toolbar">
-                            <button type="button" onclick="kernelEditorFind()" title="Find (Ctrl+F)">🔍 Find</button>
-                            <span id="kernel-editor-position" style="margin-left: auto;">Line: 1, Col: 1</span>
+                            <div class="toolbar-left">
+                                <button type="button" onclick="kernelEditorUndo()" title="Undo (Ctrl+Z)">↶ Undo</button>
+                                <button type="button" onclick="kernelEditorRedo()" title="Redo (Ctrl+Y)">↷ Redo</button>
+                                <span class="toolbar-separator"></span>
+                                <button type="button" onclick="kernelEditorFind()" title="Find (Ctrl+F)">🔍 Find</button>
+                                <button type="button" onclick="kernelEditorReplace()" title="Find & Replace (Ctrl+H)">🔄 Replace</button>
+                                <span class="toolbar-separator"></span>
+                                <button type="button" onclick="kernelEditorGoToLine()" title="Go to Line (Ctrl+G)">⤵ Go to Line</button>
+                                <span class="toolbar-separator"></span>
+                                <button type="button" onclick="kernelEditorFoldAll()" title="Fold All">⊟ Fold All</button>
+                                <button type="button" onclick="kernelEditorUnfoldAll()" title="Unfold All">⊞ Unfold All</button>
+                                <span class="toolbar-separator"></span>
+                                <button type="button" onclick="kernelEditorFormat()" title="Auto-indent selection (Ctrl+])">⇥ Indent</button>
+                            </div>
+                            <div class="toolbar-right">
+                                <span id="kernel-editor-position">Ln 1, Col 1</span>
+                                <span class="toolbar-separator"></span>
+                                <span id="kernel-editor-mode">Python</span>
+                            </div>
                         </div>
                         <textarea id="kernel-content"></textarea>
                     </div>
@@ -920,6 +1041,85 @@ input[type="password"] {
         const API_BASE = window.location.origin;
         let selectedJobId = null;
         let isLoadingDetails = false;  // Flag to prevent auto-refresh interference
+        let isAuthenticated = false;
+        
+        // Authentication functions
+        async function checkAuthStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/auth/status`, {
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                isAuthenticated = data.authenticated;
+                
+                if (!isAuthenticated) {
+                    showLoginModal();
+                } else {
+                    hideLoginModal();
+                }
+                return isAuthenticated;
+            } catch (error) {
+                console.error('Auth check failed:', error);
+                showLoginModal();
+                return false;
+            }
+        }
+        
+        function showLoginModal() {
+            const modal = document.getElementById('login-modal');
+            modal.style.display = 'flex';
+            document.getElementById('login-password').focus();
+        }
+        
+        function hideLoginModal() {
+            const modal = document.getElementById('login-modal');
+            modal.style.display = 'none';
+        }
+        
+        async function attemptLogin() {
+            const password = document.getElementById('login-password').value;
+            const errorDiv = document.getElementById('login-error');
+            
+            try {
+                const response = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ password })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    isAuthenticated = true;
+                    hideLoginModal();
+                    document.getElementById('login-password').value = '';
+                    errorDiv.style.display = 'none';
+                    // Refresh the page content
+                    if (typeof refreshJobs === 'function') refreshJobs();
+                } else {
+                    errorDiv.textContent = data.error || 'Invalid password';
+                    errorDiv.style.display = 'block';
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Login failed: ' + error.message;
+                errorDiv.style.display = 'block';
+            }
+        }
+        
+        // Allow Enter key to submit login
+        document.addEventListener('DOMContentLoaded', () => {
+            const loginInput = document.getElementById('login-password');
+            if (loginInput) {
+                loginInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        attemptLogin();
+                    }
+                });
+            }
+            // Check auth on page load
+            checkAuthStatus();
+        });
         
         // Cache for job details and files to avoid redundant API calls
         const jobDetailsCache = new Map();
@@ -1241,21 +1441,12 @@ input[type="password"] {
                     `;
                 }).join('');
                 
-                // Reload details for expanded jobs
-                if (selectedJobId) {
-                    const selectedJob = data.jobs.find(j => j.job_id === selectedJobId);
-                    if (selectedJob && selectedJob.status === 'running') {
-                        // Refresh details for running job to show progress
-                        loadJobDetails(selectedJobId);
-                    } else if (expandedContent && !expandedContent.includes('Loading details...')) {
-                        // Restore content for non-running jobs (only if actually loaded)
-                        const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
-                        if (detailsDiv) {
-                            detailsDiv.innerHTML = expandedContent;
-                        }
-                    } else {
-                        // No cached content or still loading - load details
-                        loadJobDetails(selectedJobId);
+                // Restore details for expanded jobs (don't trigger new loads from auto-refresh)
+                if (selectedJobId && expandedContent) {
+                    const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
+                    if (detailsDiv) {
+                        // Always restore the cached content first to prevent flicker
+                        detailsDiv.innerHTML = expandedContent;
                     }
                 }
             } catch (error) {
@@ -1438,15 +1629,7 @@ input[type="password"] {
                     
                     if (job.total_batches > 0) {
                         const progressPercent = job.progress_percent || 0;
-                        progressHTML = `
-                            <div style="margin: 15px 0;">
-                                <strong>Progress:</strong>
-                                <div class="progress-container">
-                                    <div class="progress-text">Batch ${job.current_batch || 0} / ${job.total_batches} (${progressPercent.toFixed(1)}%)</div>
-                                    <div class="progress-bar" style="width: ${progressPercent}%;"></div>
-                                </div>
-                            </div>
-                        `;
+                        progressHTML = `<p><strong>Progress:</strong> Batch ${job.current_batch || 0} / ${job.total_batches} (${progressPercent.toFixed(1)}%)</p>`;
                     } else {
                         progressHTML = `<p style="color: #0074bc; font-size: 13px; margin: 10px 0;"><em>⏳ Initializing batch processing...</em></p>`;
                     }
@@ -2070,8 +2253,8 @@ input[type="password"] {
             }
         });
 
-        // Auto-refresh jobs every 10 seconds
-        setInterval(loadJobs, 10000);
+        // Auto-refresh jobs every 30 seconds (reduced frequency to prevent UI flickering)
+        setInterval(loadJobs, 30000);
 
         // Initialize
         checkHealth();
@@ -2159,6 +2342,37 @@ input[type="password"] {
             if (kernelEditor) {
                 for (let i = 0; i < kernelEditor.lineCount(); i++) {
                     kernelEditor.unfoldCode(i);
+                }
+            }
+        }
+        
+        function kernelEditorGoToLine() {
+            if (kernelEditor) {
+                const line = prompt('Go to line:', '1');
+                if (line !== null && line !== '') {
+                    const lineNum = parseInt(line, 10) - 1;
+                    if (!isNaN(lineNum) && lineNum >= 0 && lineNum < kernelEditor.lineCount()) {
+                        kernelEditor.setCursor(lineNum, 0);
+                        kernelEditor.scrollIntoView({line: lineNum, ch: 0}, 100);
+                        kernelEditor.focus();
+                    }
+                }
+            }
+        }
+        
+        function kernelEditorFormat() {
+            if (kernelEditor) {
+                const selection = kernelEditor.getSelection();
+                if (selection) {
+                    kernelEditor.execCommand('indentAuto');
+                } else {
+                    // Auto-indent entire document
+                    const totalLines = kernelEditor.lineCount();
+                    kernelEditor.operation(() => {
+                        for (let i = 0; i < totalLines; i++) {
+                            kernelEditor.indentLine(i, 'smart');
+                        }
+                    });
                 }
             }
         }
@@ -2277,14 +2491,8 @@ input[type="password"] {
                 return;
             }
             
-            const password = document.getElementById('kernel-password').value;
             const content = kernelEditor ? kernelEditor.getValue() : document.getElementById('kernel-content').value;
             const messageDiv = document.getElementById('kernel-message');
-            
-            if (!password) {
-                messageDiv.innerHTML = '<div class="error">Admin password is required</div>';
-                return;
-            }
             
             if (!content.trim()) {
                 messageDiv.innerHTML = '<div class="error">File content cannot be empty</div>';
@@ -2297,8 +2505,9 @@ input[type="password"] {
                 const response = await fetch(`${API_BASE}/admin/calcfiles/${currentCalcFile}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify({
-                        password: password,
+                        password: 'session',  // Backend will use session auth
                         content: content,
                         restart: false,
                         validate_syntax: true
