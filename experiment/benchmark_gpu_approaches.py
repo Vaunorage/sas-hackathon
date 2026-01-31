@@ -13,7 +13,8 @@ from datetime import datetime
 import warnings
 
 # Suppress Numba performance warnings for cleaner output
-warnings.filterwarnings('ignore', category=cuda.NumbaPerformanceWarning)
+from numba.core.errors import NumbaPerformanceWarning
+warnings.filterwarnings('ignore', category=NumbaPerformanceWarning)
 
 # =============================================================================
 # CONSTANTS
