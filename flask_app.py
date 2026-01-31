@@ -1217,18 +1217,24 @@ def poll_runpod_results(job_id: str, run_request):
                         return
                     
                     # Check if output contains results
+                    print(f"  DEBUG: Checking output structure...")
+                    print(f"  DEBUG: output is dict: {isinstance(output, dict)}")
+                    print(f"  DEBUG: output keys: {list(output.keys()) if isinstance(output, dict) else 'N/A'}")
+                    
                     if output and isinstance(output, dict):
                         # RunPod worker returns {'results': {...}} where the inner dict contains the actual data
                         results_data = None
                         if 'results' in output and isinstance(output['results'], dict):
                             results_data = output['results']
                             print(f"  Processing results from RunPod worker (nested format)...")
-                            print(f"  Results data keys: {results_data.keys() if isinstance(results_data, dict) else 'N/A'}")
+                            print(f"  Results data keys: {list(results_data.keys())}")
+                            print(f"  DEBUG: results_data has 'results': {'results' in results_data}")
+                            print(f"  DEBUG: results_data has 'output_files': {'output_files' in results_data}")
                         elif 'results' in output:
                             # Legacy format: results directly at top level
                             results_data = output
                             print(f"  Processing results from RunPod worker (legacy format)...")
-                            print(f"  Results data keys: {results_data.keys() if isinstance(results_data, dict) else 'N/A'}")
+                            print(f"  Results data keys: {list(results_data.keys()) if isinstance(results_data, dict) else 'N/A'}")
                         
                         if results_data and isinstance(results_data, dict):
                             
@@ -1340,11 +1346,13 @@ def poll_runpod_results(job_id: str, run_request):
                                 except Exception as e:
                                     print(f"  ✗ Failed to save output files: {e}")
                             
+                            print(f"  DEBUG: saved_any = {saved_any}")
                             if saved_any:
                                 print(f"✓ Job {job_id} completed and results saved to database!")
                             else:
                                 print(f"⚠ Job {job_id} completed but no DataFrame results were saved")
                                 print(f"  Results data structure: {type(results_data)}")
+                                print(f"  Available keys in results_data: {list(results_data.keys())}")
                             
                             # Clear progress message and mark as completed
                             ph = get_placeholder()
