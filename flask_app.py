@@ -1378,25 +1378,27 @@ def poll_runpod_results(job_id: str, run_request):
                 elif status == "FAILED":
                     error_msg = "RunPod job failed"
                     error_details = []
+                    worker_output_raw = None
                     
                     try:
                         output = run_request.output()
+                        worker_output_raw = output
                         print(f"  FAILED job output type: {type(output)}")
                         print(f"  FAILED job output: {output}")
                         
                         if output and isinstance(output, dict):
                             # Check for error in main output
                             if 'error' in output:
-                                error_msg = output['error']
+                                error_msg = f"Worker Error:\n{output['error']}"
                                 if 'traceback' in output:
                                     error_msg += f"\n\nWorker Traceback:\n{output['traceback']}"
                             elif 'message' in output:
-                                error_msg = f"RunPod error: {output['message']}"
+                                error_msg = f"RunPod Error:\n{output['message']}"
                             
                             # Check for error in nested 'output' field (some workers return this structure)
                             if 'output' in output and isinstance(output['output'], dict):
                                 if 'error' in output['output']:
-                                    error_msg = output['output']['error']
+                                    error_msg = f"Worker Error:\n{output['output']['error']}"
                                     if 'traceback' in output['output']:
                                         error_msg += f"\n\nWorker Traceback:\n{output['output']['traceback']}"
                             
@@ -1408,7 +1410,7 @@ def poll_runpod_results(job_id: str, run_request):
                             if 'status' in output:
                                 error_details.append(f"Worker status: {output['status']}")
                         elif output:
-                            error_msg = f"RunPod job failed with output: {str(output)[:500]}"
+                            error_msg = f"RunPod job failed with output:\n{str(output)[:2000]}"
                         
                         # Try to get more details from the request object
                         try:
@@ -1425,13 +1427,18 @@ def poll_runpod_results(job_id: str, run_request):
                     if error_details:
                         error_msg += f"\n\nAdditional context:\n" + "\n".join(f"- {detail}" for detail in error_details)
                     
-                    # Add helpful troubleshooting info
-                    error_msg += "\n\nPossible causes:\n"
-                    error_msg += "- Worker ran out of memory or GPU resources\n"
-                    error_msg += "- Worker timeout (check if job is too large)\n"
-                    error_msg += "- Invalid input data or parameters\n"
-                    error_msg += "- Worker initialization failure\n"
-                    error_msg += "\nCheck RunPod dashboard for worker logs: https://www.runpod.io/console/serverless"
+                    # Add raw output for debugging if no structured error was found
+                    if worker_output_raw and error_msg == "RunPod job failed":
+                        error_msg += f"\n\nRaw worker output:\n{str(worker_output_raw)[:2000]}"
+                    
+                    # Only add generic troubleshooting if we have no specific error
+                    if error_msg == "RunPod job failed":
+                        error_msg += "\n\nPossible causes:\n"
+                        error_msg += "- Worker ran out of memory or GPU resources\n"
+                        error_msg += "- Worker timeout (check if job is too large)\n"
+                        error_msg += "- Invalid input data or parameters\n"
+                        error_msg += "- Worker initialization failure\n"
+                        error_msg += "\nCheck RunPod dashboard for worker logs: https://www.runpod.io/console/serverless"
                     
                     update_job_status(job_id, 'failed', error_message=error_msg)
                     print(f"✗ Job {job_id} failed: {error_msg}")
