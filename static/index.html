@@ -1657,8 +1657,9 @@ input[type="password"] {
                 }
                 
                 // Format error message with proper line breaks and stack trace formatting
+                // Only show error section for failed jobs (not running jobs with progress messages)
                 let errorHTML = '';
-                if (job.error_message) {
+                if (job.error_message && job.status === 'failed') {
                     const errorMsg = job.error_message;
                     // Format error message: preserve line breaks and format stack traces
                     const formattedError = errorMsg
@@ -1675,12 +1676,19 @@ input[type="password"] {
                     `;
                 }
                 
+                // Show progress message for running jobs
+                let progressMessageHTML = '';
+                if (job.error_message && job.status === 'running') {
+                    progressMessageHTML = `<p style="color: #0074bc; font-size: 13px; margin: 10px 0;"><em>${job.error_message}</em></p>`;
+                }
+                
                 detailsDiv.innerHTML = `
                     <div style="margin-bottom: 20px;">
                         ${parametersHTML}
                         <p><strong>Started:</strong> ${job.started_at ? new Date(job.started_at).toLocaleString() : 'Not started yet'}</p>
                         <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'Not completed yet'}</p>
                         ${progressHTML}
+                        ${progressMessageHTML}
                         ${cancelButton}
                         ${errorHTML}
                         ${fileSourceHTML}
