@@ -1179,120 +1179,127 @@ def poll_runpod_results(job_id: str, run_request):
                     
                     # Check if output contains results
                     if output and isinstance(output, dict):
-                        if 'results' in output:
-                            # Convert results to DataFrame format and save to database
+                        # RunPod worker returns {'results': {...}} where the inner dict contains the actual data
+                        results_data = None
+                        if 'results' in output and isinstance(output['results'], dict):
                             results_data = output['results']
-                            print(f"  Processing results from RunPod worker...")
+                            print(f"  Processing results from RunPod worker (nested format)...")
                             print(f"  Results data keys: {results_data.keys() if isinstance(results_data, dict) else 'N/A'}")
+                        elif 'results' in output:
+                            # Legacy format: results directly at top level
+                            results_data = output
+                            print(f"  Processing results from RunPod worker (legacy format)...")
+                            print(f"  Results data keys: {results_data.keys() if isinstance(results_data, dict) else 'N/A'}")
+                        
+                        if results_data and isinstance(results_data, dict):
                             
                             # Save legacy JSON format
                             update_job_results_data(job_id, output)
                             
                             # Convert JSON results back to DataFrames and save to proper tables
                             saved_any = False
-                            if isinstance(results_data, dict):
-                                # Save per-account results (reserves/capital/SCR)
-                                if results_data.get('results'):
-                                    try:
-                                        df = pd.DataFrame(results_data['results'])
-                                        save_nested_results(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved nested_results: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save nested_results: {e}")
-                                
-                                # Save portfolio summary (vp_flux_total)
-                                if results_data.get('vp_flux_total'):
-                                    try:
-                                        df = pd.DataFrame(results_data['vp_flux_total'])
-                                        save_nested_summary(job_id, df)
-                                        saved_any = True
-                                        total_pv = df['VP_RESERVE_BE'].iloc[0] if 'VP_RESERVE_BE' in df.columns else 0.0
-                                        print(f"  ✓ Saved nested_summary (vp_flux_total): Total Reserve BE = ${total_pv:,.2f}")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save nested_summary: {e}")
-                                
-                                # Save five chocs results
-                                if results_data.get('results_5chocs'):
-                                    try:
-                                        df = pd.DataFrame(results_data['results_5chocs'])
-                                        save_five_chocs_results(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved five_chocs_results: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save five_chocs_results: {e}")
-                                
-                                # Save sensitivities (Greeks/deltas)
-                                if results_data.get('sensitivities'):
-                                    try:
-                                        df = pd.DataFrame(results_data['sensitivities'])
-                                        save_sensitivities(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved sensitivities: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save sensitivities: {e}")
-                                
-                                # Save chocs summary
-                                if results_data.get('chocs_summary'):
-                                    try:
-                                        df = pd.DataFrame(results_data['chocs_summary'])
-                                        save_chocs_summary(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved chocs_summary: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save chocs_summary: {e}")
-                                
-                                # Save external debug output
-                                if results_data.get('ext_debug'):
-                                    try:
-                                        df = pd.DataFrame(results_data['ext_debug'])
-                                        save_ext_debug(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved ext_debug: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save ext_debug: {e}")
-                                
-                                # Save internal debug output
-                                if results_data.get('int_debug'):
-                                    try:
-                                        df = pd.DataFrame(results_data['int_debug'])
-                                        save_int_debug(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved int_debug: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save int_debug: {e}")
+                            # Save per-account results (reserves/capital/SCR)
+                            if results_data.get('results'):
+                                try:
+                                    df = pd.DataFrame(results_data['results'])
+                                    save_nested_results(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved nested_results: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save nested_results: {e}")
+                            
+                            # Save portfolio summary (vp_flux_total)
+                            if results_data.get('vp_flux_total'):
+                                try:
+                                    df = pd.DataFrame(results_data['vp_flux_total'])
+                                    save_nested_summary(job_id, df)
+                                    saved_any = True
+                                    total_pv = df['VP_RESERVE_BE'].iloc[0] if 'VP_RESERVE_BE' in df.columns else 0.0
+                                    print(f"  ✓ Saved nested_summary (vp_flux_total): Total Reserve BE = ${total_pv:,.2f}")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save nested_summary: {e}")
+                            
+                            # Save five chocs results
+                            if results_data.get('results_5chocs'):
+                                try:
+                                    df = pd.DataFrame(results_data['results_5chocs'])
+                                    save_five_chocs_results(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved five_chocs_results: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save five_chocs_results: {e}")
+                            
+                            # Save sensitivities (Greeks/deltas)
+                            if results_data.get('sensitivities'):
+                                try:
+                                    df = pd.DataFrame(results_data['sensitivities'])
+                                    save_sensitivities(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved sensitivities: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save sensitivities: {e}")
+                            
+                            # Save chocs summary
+                            if results_data.get('chocs_summary'):
+                                try:
+                                    df = pd.DataFrame(results_data['chocs_summary'])
+                                    save_chocs_summary(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved chocs_summary: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save chocs_summary: {e}")
+                            
+                            # Save external debug output
+                            if results_data.get('ext_debug'):
+                                try:
+                                    df = pd.DataFrame(results_data['ext_debug'])
+                                    save_ext_debug(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved ext_debug: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save ext_debug: {e}")
+                            
+                            # Save internal debug output
+                            if results_data.get('int_debug'):
+                                try:
+                                    df = pd.DataFrame(results_data['int_debug'])
+                                    save_int_debug(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved int_debug: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save int_debug: {e}")
 
-                                if results_data.get('int_debug_ts'):
-                                    try:
-                                        df = pd.DataFrame(results_data['int_debug_ts'])
-                                        save_int_debug_ts(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved int_debug_ts: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save int_debug_ts: {e}")
-                                
-                                # Save flux_projetes (FLUX_PROJETES_GPU.csv data)
-                                if results_data.get('flux_projetes'):
-                                    try:
-                                        df = pd.DataFrame(results_data['flux_projetes'])
-                                        save_flux_projetes(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved flux_projetes: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save flux_projetes: {e}")
-                                
-                                # Save any auto-exported output files to job's results folder
-                                if results_data.get('output_files'):
-                                    try:
-                                        job_output_folder = get_job_results_folder(job_id)
-                                        for filename, records in results_data['output_files'].items():
-                                            df = pd.DataFrame(records)
-                                            output_path = job_output_folder / filename
-                                            df.to_csv(output_path, index=False)
-                                            print(f"  ✓ Saved output file: {filename} ({len(df)} rows)")
-                                        saved_any = True
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save output files: {e}")
+                            if results_data.get('int_debug_ts'):
+                                try:
+                                    df = pd.DataFrame(results_data['int_debug_ts'])
+                                    save_int_debug_ts(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved int_debug_ts: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save int_debug_ts: {e}")
+                            
+                            # Save flux_projetes (FLUX_PROJETES_GPU.csv data)
+                            if results_data.get('flux_projetes'):
+                                try:
+                                    df = pd.DataFrame(results_data['flux_projetes'])
+                                    save_flux_projetes(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved flux_projetes: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save flux_projetes: {e}")
+                            
+                            # Save any auto-exported output files to job's results folder
+                            if results_data.get('output_files'):
+                                try:
+                                    job_output_folder = get_job_results_folder(job_id)
+                                    for filename, records in results_data['output_files'].items():
+                                        df = pd.DataFrame(records)
+                                        output_path = job_output_folder / filename
+                                        df.to_csv(output_path, index=False)
+                                        print(f"  ✓ Saved output file: {filename} ({len(df)} rows)")
+                                    saved_any = True
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save output files: {e}")
                             
                             if saved_any:
                                 print(f"✓ Job {job_id} completed and results saved to database!")
@@ -1323,20 +1330,62 @@ def poll_runpod_results(job_id: str, run_request):
                     
                 elif status == "FAILED":
                     error_msg = "RunPod job failed"
+                    error_details = []
+                    
                     try:
                         output = run_request.output()
+                        print(f"  FAILED job output type: {type(output)}")
                         print(f"  FAILED job output: {output}")
+                        
                         if output and isinstance(output, dict):
+                            # Check for error in main output
                             if 'error' in output:
                                 error_msg = output['error']
                                 if 'traceback' in output:
-                                    error_msg += f"\n\nTraceback:\n{output['traceback']}"
+                                    error_msg += f"\n\nWorker Traceback:\n{output['traceback']}"
                             elif 'message' in output:
                                 error_msg = f"RunPod error: {output['message']}"
+                            
+                            # Check for error in nested 'output' field (some workers return this structure)
+                            if 'output' in output and isinstance(output['output'], dict):
+                                if 'error' in output['output']:
+                                    error_msg = output['output']['error']
+                                    if 'traceback' in output['output']:
+                                        error_msg += f"\n\nWorker Traceback:\n{output['output']['traceback']}"
+                            
+                            # Collect additional context
+                            if 'delayTime' in output:
+                                error_details.append(f"Delay time: {output['delayTime']}ms")
+                            if 'executionTime' in output:
+                                error_details.append(f"Execution time: {output['executionTime']}ms")
+                            if 'status' in output:
+                                error_details.append(f"Worker status: {output['status']}")
                         elif output:
                             error_msg = f"RunPod job failed with output: {str(output)[:500]}"
+                        
+                        # Try to get more details from the request object
+                        try:
+                            if hasattr(run_request, 'status_code'):
+                                error_details.append(f"Status code: {run_request.status_code}")
+                        except:
+                            pass
+                            
                     except Exception as e:
                         error_msg = f"RunPod job failed (could not retrieve output: {e})"
+                        error_details.append(f"Output retrieval error: {str(e)}")
+                    
+                    # Append additional context if available
+                    if error_details:
+                        error_msg += f"\n\nAdditional context:\n" + "\n".join(f"- {detail}" for detail in error_details)
+                    
+                    # Add helpful troubleshooting info
+                    error_msg += "\n\nPossible causes:\n"
+                    error_msg += "- Worker ran out of memory or GPU resources\n"
+                    error_msg += "- Worker timeout (check if job is too large)\n"
+                    error_msg += "- Invalid input data or parameters\n"
+                    error_msg += "- Worker initialization failure\n"
+                    error_msg += "\nCheck RunPod dashboard for worker logs: https://www.runpod.io/console/serverless"
+                    
                     update_job_status(job_id, 'failed', error_message=error_msg)
                     print(f"✗ Job {job_id} failed: {error_msg}")
                     return
