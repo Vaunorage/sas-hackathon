@@ -1158,12 +1158,51 @@ def poll_runpod_results(job_id: str, run_request):
                     update_job_progress(job_id, 0, 1, 0)
                     update_job_status(job_id, 'running', progress_message="⏳ Job queued on RunPod, waiting for GPU worker...")
                 elif status == "IN_PROGRESS":
-                    # Show generic progress message with elapsed time
-                    # Note: Do NOT call run_request.output() here as it blocks until completion
-                    minutes = int(elapsed_time / 60)
-                    seconds = int(elapsed_time % 60)
-                    msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
-                    update_job_status(job_id, 'running', progress_message=msg)
+                    # Try to get actual progress from RunPod stream
+                    try:
+                        # Get the stream of progress updates (non-blocking)
+                        stream = run_request.stream()
+                        if stream:
+                            # Stream returns a generator of progress updates
+                            # Get the most recent one without blocking
+                            latest_progress = None
+                            for progress_update in stream:
+                                latest_progress = progress_update
+                            
+                            if latest_progress:
+                                print(f"  Progress update from worker: {latest_progress}")
+                                # Parse progress message like "Processing batch 5/20 (25%)"
+                                msg = str(latest_progress)
+                                
+                                # Try to extract batch numbers from the message
+                                import re
+                                match = re.search(r'batch (\d+)/(\d+)', msg, re.IGNORECASE)
+                                if match:
+                                    current_batch = int(match.group(1))
+                                    total_batches = int(match.group(2))
+                                    progress_percent = (current_batch / total_batches) * 100 if total_batches > 0 else 0
+                                    update_job_progress(job_id, current_batch, total_batches, progress_percent)
+                                
+                                update_job_status(job_id, 'running', progress_message=f"🚀 {msg}")
+                            else:
+                                # No progress update available, show elapsed time
+                                minutes = int(elapsed_time / 60)
+                                seconds = int(elapsed_time % 60)
+                                msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
+                                update_job_status(job_id, 'running', progress_message=msg)
+                        else:
+                            # Stream not available, show elapsed time
+                            minutes = int(elapsed_time / 60)
+                            seconds = int(elapsed_time % 60)
+                            msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
+                            update_job_status(job_id, 'running', progress_message=msg)
+                    except Exception as e:
+                        # If stream fails, fall back to elapsed time
+                        print(f"  Could not get progress stream: {e}")
+                        minutes = int(elapsed_time / 60)
+                        seconds = int(elapsed_time % 60)
+                        msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
+                        update_job_status(job_id, 'running', progress_message=msg)
                 
                 if status == "COMPLETED":
                     # Get the output
