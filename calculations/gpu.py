@@ -1029,6 +1029,34 @@ def create_results_dataframes(
     return results_df, results_5chocs_df, sensitivities_df
 
 
+FLUX_COLUMNS = [
+    'ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL',
+    'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_GARANTIES', 'PRIMES_VARIABLES',
+    'FRAIS_FIXES', 'HON_GEST', 'COMM_MAINTIEN', 'PREST_ECH', 'PREST_MRV', 'PREST_DECES',
+    'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+    'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH', 'VP_PREST_MRV', 'VP_PREST_DECES',
+    'VP_VALEUR_MARCHANDE', 'UNITE_COUVERTURE', 'DEPOT_FUTUR', 'REM_COMP_INV',
+    'VALEUR_MARCHANDE', 'VALEUR_GARANTIE', 'DEPOT_FUTUR_SURVIE',
+    'PASSIF_REDRESSE', 'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE',
+    'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
+    'VP_PASSIF_REDRESSE', 'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE',
+    'VP_COUSSIN_DECHEANCE', 'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT',
+]
+
+FLUX_CF_INDICES = [
+    CF_OUT_IDX_FRAIS_ACQUIS, CF_OUT_IDX_COMM_VENTE, CF_OUT_IDX_PRIMES_GARANTIES, CF_OUT_IDX_PRIMES_VARIABLES,
+    CF_OUT_IDX_FRAIS_FIXES, CF_OUT_IDX_HON_GEST, CF_OUT_IDX_COMM_MAINTIEN, CF_OUT_IDX_PREST_ECH, CF_OUT_IDX_PREST_MRV, CF_OUT_IDX_PREST_DECES,
+    CF_OUT_IDX_VP_FRAIS_ACQUIS, CF_OUT_IDX_VP_COMM_VENTE, CF_OUT_IDX_VP_PRIMES_GARANTIES, CF_OUT_IDX_VP_PRIMES_VARIABLES,
+    CF_OUT_IDX_VP_FRAIS_FIXES, CF_OUT_IDX_VP_HON_GEST, CF_OUT_IDX_VP_COMM_MAINTIEN, CF_OUT_IDX_VP_PREST_ECH, CF_OUT_IDX_VP_PREST_MRV, CF_OUT_IDX_VP_PREST_DECES,
+    CF_OUT_IDX_VP_VALEUR_MARCHANDE, CF_OUT_IDX_UNITE_COUVERTURE, CF_OUT_IDX_DEPOT_FUTUR, CF_OUT_IDX_REM_COMP_INV,
+    CF_OUT_IDX_VALEUR_MARCHANDE, CF_OUT_IDX_VALEUR_GARANTIE, CF_OUT_IDX_DEPOT_FUTUR_SURVIE,
+    CF_OUT_IDX_PASSIF_REDRESSE, CF_OUT_IDX_COUSSIN_CREDIT, CF_OUT_IDX_COUSSIN_MARCHE, CF_OUT_IDX_COUSSIN_DEPENSE,
+    CF_OUT_IDX_COUSSIN_DECHEANCE, CF_OUT_IDX_COUSSIN_MORTALITE, CF_OUT_IDX_COUSSIN_DEPOT,
+    CF_OUT_IDX_VP_PASSIF_REDRESSE, CF_OUT_IDX_VP_COUSSIN_CREDIT, CF_OUT_IDX_VP_COUSSIN_MARCHE, CF_OUT_IDX_VP_COUSSIN_DEPENSE,
+    CF_OUT_IDX_VP_COUSSIN_DECHEANCE, CF_OUT_IDX_VP_COUSSIN_MORTALITE, CF_OUT_IDX_VP_COUSSIN_DEPOT,
+]
+
+
 def write_cashflows_batch(
     output_path: Path,
     batch_mean_cashflows: np.ndarray,
@@ -1039,7 +1067,7 @@ def write_cashflows_batch(
     """
     Write a batch of cashflows to FLUX_PROJETE_GPU.csv incrementally.
     
-    Uses vectorized NumPy operations for performance (~100x faster than Python loops).
+    Uses direct numpy array operations and file writing for maximum speed.
     
     Args:
         output_path: Directory to save CSV file
@@ -1077,66 +1105,49 @@ def write_cashflows_batch(
     cf_flat = cf_flat[non_zero_mask]
     
     # Vectorized: compute ID_COMPTE, AN_EVAL, MOIS_EVAL
-    id_compte = population_ids[start_idx + acc_flat]
-    an_eval = (month_flat // 12) + 1
-    mois_eval = (month_flat % 12) + 1
+    id_compte = population_ids[start_idx + acc_flat].astype(np.int64)
+    an_eval = ((month_flat // 12) + 1).astype(np.int32)
+    mois_eval = ((month_flat % 12) + 1).astype(np.int32)
     
-    # Build DataFrame directly from arrays (vectorized column extraction)
-    df = pd.DataFrame({
-        'ID_COMPTE': id_compte,
-        'AN_EVAL': an_eval,
-        'MOIS_EVAL': mois_eval,
-        'FRAIS_ACQUIS': cf_flat[:, CF_OUT_IDX_FRAIS_ACQUIS],
-        'COMM_VENTE': cf_flat[:, CF_OUT_IDX_COMM_VENTE],
-        'PRIMES_GARANTIES': cf_flat[:, CF_OUT_IDX_PRIMES_GARANTIES],
-        'PRIMES_VARIABLES': cf_flat[:, CF_OUT_IDX_PRIMES_VARIABLES],
-        'FRAIS_FIXES': cf_flat[:, CF_OUT_IDX_FRAIS_FIXES],
-        'HON_GEST': cf_flat[:, CF_OUT_IDX_HON_GEST],
-        'COMM_MAINTIEN': cf_flat[:, CF_OUT_IDX_COMM_MAINTIEN],
-        'PREST_ECH': cf_flat[:, CF_OUT_IDX_PREST_ECH],
-        'PREST_MRV': cf_flat[:, CF_OUT_IDX_PREST_MRV],
-        'PREST_DECES': cf_flat[:, CF_OUT_IDX_PREST_DECES],
-        'VP_FRAIS_ACQUIS': cf_flat[:, CF_OUT_IDX_VP_FRAIS_ACQUIS],
-        'VP_COMM_VENTE': cf_flat[:, CF_OUT_IDX_VP_COMM_VENTE],
-        'VP_PRIMES_GARANTIES': cf_flat[:, CF_OUT_IDX_VP_PRIMES_GARANTIES],
-        'VP_PRIMES_VARIABLES': cf_flat[:, CF_OUT_IDX_VP_PRIMES_VARIABLES],
-        'VP_FRAIS_FIXES': cf_flat[:, CF_OUT_IDX_VP_FRAIS_FIXES],
-        'VP_HON_GEST': cf_flat[:, CF_OUT_IDX_VP_HON_GEST],
-        'VP_COMM_MAINTIEN': cf_flat[:, CF_OUT_IDX_VP_COMM_MAINTIEN],
-        'VP_PREST_ECH': cf_flat[:, CF_OUT_IDX_VP_PREST_ECH],
-        'VP_PREST_MRV': cf_flat[:, CF_OUT_IDX_VP_PREST_MRV],
-        'VP_PREST_DECES': cf_flat[:, CF_OUT_IDX_VP_PREST_DECES],
-        'VP_VALEUR_MARCHANDE': cf_flat[:, CF_OUT_IDX_VP_VALEUR_MARCHANDE],
-        'UNITE_COUVERTURE': cf_flat[:, CF_OUT_IDX_UNITE_COUVERTURE],
-        'DEPOT_FUTUR': cf_flat[:, CF_OUT_IDX_DEPOT_FUTUR],
-        'REM_COMP_INV': cf_flat[:, CF_OUT_IDX_REM_COMP_INV],
-        'VALEUR_MARCHANDE': cf_flat[:, CF_OUT_IDX_VALEUR_MARCHANDE],
-        'VALEUR_GARANTIE': cf_flat[:, CF_OUT_IDX_VALEUR_GARANTIE],
-        'DEPOT_FUTUR_SURVIE': cf_flat[:, CF_OUT_IDX_DEPOT_FUTUR_SURVIE],
-        'PASSIF_REDRESSE': cf_flat[:, CF_OUT_IDX_PASSIF_REDRESSE],
-        'COUSSIN_CREDIT': cf_flat[:, CF_OUT_IDX_COUSSIN_CREDIT],
-        'COUSSIN_MARCHE': cf_flat[:, CF_OUT_IDX_COUSSIN_MARCHE],
-        'COUSSIN_DEPENSE': cf_flat[:, CF_OUT_IDX_COUSSIN_DEPENSE],
-        'COUSSIN_DECHEANCE': cf_flat[:, CF_OUT_IDX_COUSSIN_DECHEANCE],
-        'COUSSIN_MORTALITE': cf_flat[:, CF_OUT_IDX_COUSSIN_MORTALITE],
-        'COUSSIN_DEPOT': cf_flat[:, CF_OUT_IDX_COUSSIN_DEPOT],
-        'VP_PASSIF_REDRESSE': cf_flat[:, CF_OUT_IDX_VP_PASSIF_REDRESSE],
-        'VP_COUSSIN_CREDIT': cf_flat[:, CF_OUT_IDX_VP_COUSSIN_CREDIT],
-        'VP_COUSSIN_MARCHE': cf_flat[:, CF_OUT_IDX_VP_COUSSIN_MARCHE],
-        'VP_COUSSIN_DEPENSE': cf_flat[:, CF_OUT_IDX_VP_COUSSIN_DEPENSE],
-        'VP_COUSSIN_DECHEANCE': cf_flat[:, CF_OUT_IDX_VP_COUSSIN_DECHEANCE],
-        'VP_COUSSIN_MORTALITE': cf_flat[:, CF_OUT_IDX_VP_COUSSIN_MORTALITE],
-        'VP_COUSSIN_DEPOT': cf_flat[:, CF_OUT_IDX_VP_COUSSIN_DEPOT],
-    })
+    # Extract only the columns we need from cf_flat (much faster than pandas)
+    n_rows = len(id_compte)
+    n_cf_cols = len(FLUX_CF_INDICES)
     
-    # Write to CSV with optimized settings (float_format speeds up conversion significantly)
+    # Build output array: [ID_COMPTE, AN_EVAL, MOIS_EVAL, ...cf_columns...]
+    # Use object dtype for mixed int/float, then convert to strings efficiently
+    output_data = np.empty((n_rows, 3 + n_cf_cols), dtype=np.float64)
+    output_data[:, 0] = id_compte
+    output_data[:, 1] = an_eval
+    output_data[:, 2] = mois_eval
+    for i, idx in enumerate(FLUX_CF_INDICES):
+        output_data[:, 3 + i] = cf_flat[:, idx]
+    
     flux_path = output_path / "FLUX_PROJETE_GPU.csv"
-    if is_first_batch:
-        df.to_csv(flux_path, index=False, sep=';', mode='w', float_format='%.6g')
-    else:
-        df.to_csv(flux_path, index=False, sep=';', mode='a', header=False, float_format='%.6g')
     
-    return len(df)
+    # Write using numpy savetxt (much faster than pandas to_csv)
+    with open(flux_path, 'a' if not is_first_batch else 'w') as f:
+        if is_first_batch:
+            f.write(';'.join(FLUX_COLUMNS) + '\n')
+        # Use fmt to control precision - integers for first 3 cols, floats for rest
+        fmt = ['%d', '%d', '%d'] + ['%.6g'] * n_cf_cols
+        np.savetxt(f, output_data, delimiter=';', fmt=fmt)
+    
+    return n_rows
+
+
+VP_FLUX_COLUMNS = [
+    'ID_COMPTE', 'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+    'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH', 'VP_PREST_MRV', 'VP_PREST_DECES',
+    'VP_PASSIF_REDRESSE', 'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE',
+    'VP_COUSSIN_DECHEANCE', 'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT', 'VP_VALEUR_MARCHANDE',
+]
+
+VP_FLUX_INDICES = [
+    CF_OUT_IDX_VP_FRAIS_ACQUIS, CF_OUT_IDX_VP_COMM_VENTE, CF_OUT_IDX_VP_PRIMES_GARANTIES, CF_OUT_IDX_VP_PRIMES_VARIABLES,
+    CF_OUT_IDX_VP_FRAIS_FIXES, CF_OUT_IDX_VP_HON_GEST, CF_OUT_IDX_VP_COMM_MAINTIEN, CF_OUT_IDX_VP_PREST_ECH, CF_OUT_IDX_VP_PREST_MRV, CF_OUT_IDX_VP_PREST_DECES,
+    CF_OUT_IDX_VP_PASSIF_REDRESSE, CF_OUT_IDX_VP_COUSSIN_CREDIT, CF_OUT_IDX_VP_COUSSIN_MARCHE, CF_OUT_IDX_VP_COUSSIN_DEPENSE,
+    CF_OUT_IDX_VP_COUSSIN_DECHEANCE, CF_OUT_IDX_VP_COUSSIN_MORTALITE, CF_OUT_IDX_VP_COUSSIN_DEPOT, CF_OUT_IDX_VP_VALEUR_MARCHANDE,
+]
 
 
 def write_vp_flux_compte_batch(
@@ -1149,7 +1160,7 @@ def write_vp_flux_compte_batch(
     """
     Write a batch of VP_FLUX_COMPTE (VP by account) to CSV incrementally.
     
-    Uses vectorized NumPy operations for performance.
+    Uses direct numpy savetxt for maximum speed.
     
     This matches SAS: PROC SUMMARY ... CLASS ID_COMPTE; VAR VP_*; OUTPUT SUM=
     
@@ -1170,39 +1181,25 @@ def write_vp_flux_compte_batch(
         return 0
     
     # Vectorized: extract account IDs
-    id_compte = population_ids[start_idx:end_idx]
+    id_compte = population_ids[start_idx:end_idx].astype(np.int64)
     vp = batch_vp_flux_compte[:actual_batch_size]
     
-    # Build DataFrame directly from arrays (vectorized)
-    df = pd.DataFrame({
-        'ID_COMPTE': id_compte,
-        'VP_FRAIS_ACQUIS': vp[:, CF_OUT_IDX_VP_FRAIS_ACQUIS],
-        'VP_COMM_VENTE': vp[:, CF_OUT_IDX_VP_COMM_VENTE],
-        'VP_PRIMES_GARANTIES': vp[:, CF_OUT_IDX_VP_PRIMES_GARANTIES],
-        'VP_PRIMES_VARIABLES': vp[:, CF_OUT_IDX_VP_PRIMES_VARIABLES],
-        'VP_FRAIS_FIXES': vp[:, CF_OUT_IDX_VP_FRAIS_FIXES],
-        'VP_HON_GEST': vp[:, CF_OUT_IDX_VP_HON_GEST],
-        'VP_COMM_MAINTIEN': vp[:, CF_OUT_IDX_VP_COMM_MAINTIEN],
-        'VP_PREST_ECH': vp[:, CF_OUT_IDX_VP_PREST_ECH],
-        'VP_PREST_MRV': vp[:, CF_OUT_IDX_VP_PREST_MRV],
-        'VP_PREST_DECES': vp[:, CF_OUT_IDX_VP_PREST_DECES],
-        'VP_PASSIF_REDRESSE': vp[:, CF_OUT_IDX_VP_PASSIF_REDRESSE],
-        'VP_COUSSIN_CREDIT': vp[:, CF_OUT_IDX_VP_COUSSIN_CREDIT],
-        'VP_COUSSIN_MARCHE': vp[:, CF_OUT_IDX_VP_COUSSIN_MARCHE],
-        'VP_COUSSIN_DEPENSE': vp[:, CF_OUT_IDX_VP_COUSSIN_DEPENSE],
-        'VP_COUSSIN_DECHEANCE': vp[:, CF_OUT_IDX_VP_COUSSIN_DECHEANCE],
-        'VP_COUSSIN_MORTALITE': vp[:, CF_OUT_IDX_VP_COUSSIN_MORTALITE],
-        'VP_COUSSIN_DEPOT': vp[:, CF_OUT_IDX_VP_COUSSIN_DEPOT],
-        'VP_VALEUR_MARCHANDE': vp[:, CF_OUT_IDX_VP_VALEUR_MARCHANDE],
-    })
+    # Build output array
+    n_vp_cols = len(VP_FLUX_INDICES)
+    output_data = np.empty((actual_batch_size, 1 + n_vp_cols), dtype=np.float64)
+    output_data[:, 0] = id_compte
+    for i, idx in enumerate(VP_FLUX_INDICES):
+        output_data[:, 1 + i] = vp[:, idx]
     
     vp_path = output_path / "VP_FLUX_COMPTE_GPU.csv"
-    if is_first_batch:
-        df.to_csv(vp_path, index=False, sep=';', mode='w', float_format='%.6g')
-    else:
-        df.to_csv(vp_path, index=False, sep=';', mode='a', header=False, float_format='%.6g')
     
-    return len(df)
+    with open(vp_path, 'a' if not is_first_batch else 'w') as f:
+        if is_first_batch:
+            f.write(';'.join(VP_FLUX_COLUMNS) + '\n')
+        fmt = ['%d'] + ['%.6g'] * n_vp_cols
+        np.savetxt(f, output_data, delimiter=';', fmt=fmt)
+    
+    return actual_batch_size
 
 
 def accumulate_flux_projete(
@@ -2759,6 +2756,7 @@ def run_projection_gpu_nested(
         
         # Write cashflows incrementally to avoid memory issues
         if batch_result.get('batch_mean_cashflows') is not None:
+            csv_start = datetime.now()
             rows_written = write_cashflows_batch(
                 output_path=output_path,
                 batch_mean_cashflows=batch_result['batch_mean_cashflows'],
@@ -2766,6 +2764,8 @@ def run_projection_gpu_nested(
                 start_idx=start_idx,
                 is_first_batch=(i == 0),
             )
+            csv_time = (datetime.now() - csv_start).total_seconds()
+            logger.info(f"  FLUX_PROJETE CSV write: {csv_time:.2f}s ({rows_written} rows)")
             total_cashflow_rows += rows_written
             # Free memory immediately
             del batch_result['batch_mean_cashflows']
