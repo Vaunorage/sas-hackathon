@@ -518,14 +518,29 @@ def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projectio
     
     # Calculate batch size (conservative for nested scenarios)
     try:
+        # Try numba cuda context first
         free_mem, total_mem = cuda.current_context().get_memory_info()
         print(f"  GPU free memory: {free_mem / 1024**3:.2f} GB")
         print(f"  GPU total memory: {total_mem / 1024**3:.2f} GB")
         # Use 70% of available memory after lookup overhead
         available_mem = max(0, (free_mem - lookup_overhead) * 0.70)
-    except NotImplementedError:
-        print("  Warning: Cannot query GPU memory, using conservative estimate")
-        available_mem = max(0, DEFAULT_GPU_MEMORY_GB * 1024**3 - lookup_overhead)
+    except Exception as e:
+        # Fallback: try cupy for memory info
+        try:
+            import cupy as cp
+            mempool = cp.get_default_memory_pool()
+            free_mem = mempool.free_bytes()
+            total_mem = cp.cuda.Device().mem_info[1]
+            # If free_bytes returns 0, use total - used
+            if free_mem == 0:
+                total_mem, used_mem = cp.cuda.Device().mem_info
+                free_mem = total_mem
+            print(f"  GPU free memory (cupy): {free_mem / 1024**3:.2f} GB")
+            print(f"  GPU total memory (cupy): {total_mem / 1024**3:.2f} GB")
+            available_mem = max(0, (free_mem - lookup_overhead) * 0.70)
+        except Exception as e2:
+            print(f"  Warning: Cannot query GPU memory ({e}), using conservative estimate")
+            available_mem = max(0, DEFAULT_GPU_MEMORY_GB * 1024**3 - lookup_overhead)
     
     batch_size = max(1, int(available_mem // total_mem_per_account))
     batch_size = min(batch_size, n_accounts)
