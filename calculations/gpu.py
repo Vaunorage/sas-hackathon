@@ -1129,11 +1129,12 @@ def write_cashflows_batch(
         'VP_COUSSIN_DEPOT': cf_flat[:, CF_OUT_IDX_VP_COUSSIN_DEPOT],
     })
     
+    # Write to CSV with optimized settings (float_format speeds up conversion significantly)
     flux_path = output_path / "FLUX_PROJETE_GPU.csv"
     if is_first_batch:
-        df.to_csv(flux_path, index=False, sep=';', mode='w')
+        df.to_csv(flux_path, index=False, sep=';', mode='w', float_format='%.6g')
     else:
-        df.to_csv(flux_path, index=False, sep=';', mode='a', header=False)
+        df.to_csv(flux_path, index=False, sep=';', mode='a', header=False, float_format='%.6g')
     
     return len(df)
 
@@ -1197,9 +1198,9 @@ def write_vp_flux_compte_batch(
     
     vp_path = output_path / "VP_FLUX_COMPTE_GPU.csv"
     if is_first_batch:
-        df.to_csv(vp_path, index=False, sep=';', mode='w')
+        df.to_csv(vp_path, index=False, sep=';', mode='w', float_format='%.6g')
     else:
-        df.to_csv(vp_path, index=False, sep=';', mode='a', header=False)
+        df.to_csv(vp_path, index=False, sep=';', mode='a', header=False, float_format='%.6g')
     
     return len(df)
 
