@@ -1422,6 +1422,15 @@ input[type="password"] {
                         durationInfo = `<br>Duration: ${durationStr}`;
                     }
                     
+                    // Error preview for failed jobs
+                    let errorPreview = '';
+                    if (job.status === 'failed' && job.error_message) {
+                        // Extract first line of error message (up to 100 chars)
+                        const firstLine = job.error_message.split('\n')[0];
+                        const preview = firstLine.length > 100 ? firstLine.substring(0, 100) + '...' : firstLine;
+                        errorPreview = `<br><span style="color: #ff0000; font-size: 12px;">❌ ${preview}</span>`;
+                    }
+                    
                     return `
                         <div class="job-item ${job.job_id === selectedJobId ? 'selected' : ''}" id="job-${job.job_id}">
                             <div class="job-item-header" onclick="toggleJob('${job.job_id}')">
@@ -1431,7 +1440,7 @@ input[type="password"] {
                                 </div>
                                 <div class="job-details">
                                     Created: ${new Date(job.created_at).toLocaleString()}<br>
-                                    ${fileInfo}${progressInfo}${durationInfo}
+                                    ${fileInfo}${progressInfo}${durationInfo}${errorPreview}
                                 </div>
                             </div>
                             <div class="job-item-details" id="job-details-${job.job_id}">
@@ -1647,6 +1656,25 @@ input[type="password"] {
                     }
                 }
                 
+                // Format error message with proper line breaks and stack trace formatting
+                let errorHTML = '';
+                if (job.error_message) {
+                    const errorMsg = job.error_message;
+                    // Format error message: preserve line breaks and format stack traces
+                    const formattedError = errorMsg
+                        .replace(/\n/g, '<br>')
+                        .replace(/Traceback \(most recent call last\):/g, '<strong>Traceback (most recent call last):</strong>')
+                        .replace(/File "([^"]+)", line (\d+)/g, '<span style="color: #0066cc;">File "$1", line $2</span>')
+                        .replace(/^(\s+)(at .+)$/gm, '&nbsp;&nbsp;&nbsp;&nbsp;$2');
+                    
+                    errorHTML = `
+                        <div class="error" style="margin: 15px 0; padding: 15px; max-height: 400px; overflow-y: auto;">
+                            <h3 style="margin-top: 0; color: #ff0000;">❌ Error Details</h3>
+                            <pre style="white-space: pre-wrap; word-wrap: break-word; font-family: 'Courier New', monospace; font-size: 12px; margin: 0; background: #fff; padding: 10px; border: 1px solid #ccc;">${formattedError}</pre>
+                        </div>
+                    `;
+                }
+                
                 detailsDiv.innerHTML = `
                     <div style="margin-bottom: 20px;">
                         ${parametersHTML}
@@ -1654,7 +1682,7 @@ input[type="password"] {
                         <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'Not completed yet'}</p>
                         ${progressHTML}
                         ${cancelButton}
-                        ${job.error_message && job.status !== 'running' ? `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>` : ''}
+                        ${errorHTML}
                         ${fileSourceHTML}
                     </div>
                     
