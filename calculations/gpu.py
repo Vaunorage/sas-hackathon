@@ -497,8 +497,8 @@ def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projectio
     # State tensor: (Batch, Ext_Scenarios, Years, STATE_SIZE)
     state_mem_per_account = nb_ext_scenarios * nb_an_projection * STATE_SIZE * 4  # float32
     
-    # Cashflow tensor: (Batch, Ext_Scenarios, Years, CF_OUT_IDX_SIZE)
-    cf_mem_per_account = nb_ext_scenarios * nb_an_projection * CF_OUT_IDX_SIZE * 4
+    # Cashflow tensor: (Batch, Ext_Scenarios, Years*12, CF_OUT_IDX_SIZE) - monthly data
+    cf_mem_per_account = nb_ext_scenarios * nb_an_projection * 12 * CF_OUT_IDX_SIZE * 4
     
     # Metrics tensor: (Batch, Ext_Scenarios, Years, NUM_CHOCS, METRICS_OUTPUT_SIZE) - chocs × (Reserve & Capital)
     metrics_mem_per_account = nb_ext_scenarios * nb_an_projection * NUM_CHOCS * METRICS_OUTPUT_SIZE * 4
