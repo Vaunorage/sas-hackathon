@@ -24,3 +24,40 @@ Dans le but d’unifier nos programmes python j’ai roulé les benchmarks suiva
 
 
 Paul Neag
+
+
+--------------------------------------
+
+Bonjour Paul,
+
+Merci pour le benchmark détaillé! J'ai testé l'approche kernel Numba CUDA avec ton cas exemple. Voici les résultats sur une RTX 2000 Ada:
+
+================================================================================
+BENCHMARK: Numba CUDA Kernels vs CuPy
+================================================================================
+Problem size: 100 years × 500 scenarios × 500 policies × 17 calcs
+
+Approach                   Load       Loop    Summary      Total               Result
+--------------------------------------------------------------------------------
+CuPy (satellite)          0.18s      0.67s      0.00s      0.86s        3595130329.15
+Numba CUDA Kernel         0.11s      0.13s      0.00s      0.24s        3595130329.15
+--------------------------------------------------------------------------------
+
+COMPARISON:
+  Total speedup:     3.6x (Numba faster)
+  Loop speedup:      5.2x (Numba faster)
+  Results match:     YES
+
+  Target à battre:   1.6s
+  Numba achieved:    0.24s
+  vs target:         6.6x PLUS RAPIDE
+Pourquoi c'est plus rapide:
+
+Un seul kernel launch — Toutes les 98 itérations temporelles sont traitées dans un seul appel kernel. CuPy lance implicitement plusieurs kernels par itération de boucle Python.
+Pas d'écritures mémoire intermédiaires — L'état (MV, guarantee) reste dans les registres du thread entre les timesteps. Avec CuPy, chaque opération écrit en mémoire globale.
+Fusion des opérations — Les 17 calculs sont fusionnés dans le même kernel au lieu d'être des opérations séparées.
+L'approche "account-first" assigne un thread par paire (scénario, police) qui traite toute la série temporelle séquentiellement. Ça élimine complètement l'overhead de synchronisation entre timesteps.
+
+Le script de benchmark est disponible si tu veux le tester sur ta RTX 3070.
+
+Taha
