@@ -1,0 +1,26 @@
+Bonjour,
+
+Dans le but d’unifier nos programmes python j’ai roulé les benchmarks suivants (sur ma RTX3070) avec la version du code en p.j. et tiré les conclusions suivantes :
+1.	La gain de vitesse de Cupy (GPU) vs Numpy (CPU) augmente avec le nombre d’opérations effectués (#7,8 vs #9,10). Donc on est mieux de loader les GPU avec plus d’opérations qu’avec plus de points de calculs là ou possible.
+2.	Le I/O GPU est coûteux (#9 vs #10) mais peut être mitigé en loadant le stricte minimum et en créant des conteurs satelites vides directement sur le GPU (#10 vs #12). Le temps d’accès GPU ne souffre pas du tout en splittant les matrices comme ça contrairement au temps CPU.
+3.	La sommarisation ne devrait pas être un bottleneck autant pour Cupy que Numpy.
+4.	Rouler en 32bits peut sauver de la mémoire (et donc temps I/O) mais l’écart de précision devient apparent lorsqu’on travaille avec des gros chiffres. À éviter.
+
+@Taha Racicot, Philippe, peux-tu tester ta méthode kernel avec ce cas exemple ? Le benchmark à battre serait la dernière ligne, 1.6s.
+
+#	Type	Load	Loop	Summary	Total	Output value	YEARS	SCENS	POLICIES	CALCS
+1	NP64 contigu	1.3	3.2	0.2	4.7	3069774990.378296	100	500	1000	7
+2	CP64 contigu	5.2	0.3	0	5.5	3069774990.378296
+3	NP32 contigu	0.9	1.7	0.1	2.7	3069775000
+4	CP32 contigu	2.5	0.3	0.1	2.9	3069774800
+5	NP64 contigu	1	2.9	0.1	4	1446877381.6409707	100	500	500	12
+6	CP64 contigu	3.0	0.4	0	3.4	1446877381.640971
+7	NP32 contigu	0.5	1.6	0	2.1	1446877400
+8	CP32 contigu	1.5	0.5	0	2	1446877400
+9	NP64 contigu	1.2	4.1	0.1	5.4	1446877381.6409707	100	500	500	17
+10	CP64 contigu	4.4	0.5	0	4.9	1446877381.640971
+11	NP64 satelite	0.3	7.5	0.4	8.2	1446877381.6409707
+12	CP64 satelite	1.1	0.5	0	1.6	1446877381.640971
+
+
+Paul Neag
