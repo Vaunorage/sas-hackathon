@@ -409,32 +409,126 @@ input[type="password"] {
 
 /* Kernel Editor Styles */
 .kernel-editor-container {
-    border: 2px inset #808080;
+    border: 1px solid #2d2d2d;
     margin: 10px 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    background: #1e1e1e;
 }
 
 .CodeMirror {
-    height: 500px;
-    font-size: 13px;
+    height: 600px;
+    font-size: 14px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
     border: none;
+    line-height: 1.5;
+}
+
+.CodeMirror-gutters {
+    background: #1e1e1e;
+    border-right: 1px solid #3e3e3e;
+}
+
+.CodeMirror-linenumber {
+    color: #858585;
+    padding: 0 8px;
 }
 
 .kernel-editor-toolbar {
-    background: #e0e0e0;
-    padding: 5px 10px;
-    border-bottom: 1px solid #999;
+    background: #2d2d2d;
+    padding: 8px 12px;
+    border-bottom: 1px solid #3e3e3e;
     font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
 }
 
 .kernel-editor-toolbar button {
-    margin-right: 5px;
-    padding: 3px 8px;
-    font-size: 11px;
+    margin-right: 8px;
+    padding: 5px 12px;
+    font-size: 12px;
+    background: #3e3e3e;
+    color: #d4d4d4;
+    border: 1px solid #555;
+    cursor: pointer;
+    border-radius: 3px;
+}
+
+.kernel-editor-toolbar button:hover {
+    background: #4e4e4e;
+    border-color: #666;
 }
 
 .kernel-editor-toolbar span {
-    margin-left: 15px;
-    color: #666;
+    color: #858585;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 11px;
+}
+
+.kernel-editor-toolbar .toolbar-left {
+    display: flex;
+    align-items: center;
+}
+
+.kernel-editor-toolbar .toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.kernel-editor-toolbar .toolbar-separator {
+    width: 1px;
+    height: 18px;
+    background: #555;
+    margin: 0 8px;
+}
+
+/* CodeMirror dialog styling for dark theme */
+.CodeMirror-dialog {
+    background: #2d2d2d;
+    border-bottom: 1px solid #3e3e3e;
+    padding: 8px 12px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    color: #d4d4d4;
+}
+
+.CodeMirror-dialog input {
+    background: #1e1e1e;
+    border: 1px solid #555;
+    color: #d4d4d4;
+    padding: 4px 8px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    margin: 0 5px;
+    outline: none;
+}
+
+.CodeMirror-dialog input:focus {
+    border-color: #007acc;
+}
+
+.CodeMirror-dialog button {
+    background: #3e3e3e;
+    border: 1px solid #555;
+    color: #d4d4d4;
+    padding: 4px 10px;
+    cursor: pointer;
+    margin-left: 5px;
+    border-radius: 3px;
+}
+
+.CodeMirror-dialog button:hover {
+    background: #4e4e4e;
+}
+
+/* Search match highlighting */
+.cm-searching {
+    background-color: rgba(255, 255, 0, 0.4) !important;
+}
+
+.CodeMirror-selection-highlight-scrollbar {
+    background-color: rgba(255, 255, 0, 0.5);
 }
 
 .kernel-versions-list {
@@ -570,6 +664,20 @@ input[type="password"] {
     </style>
 </head>
 <body>
+    <!-- Login Modal -->
+    <div id="login-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 10000; justify-content: center; align-items: center;">
+        <div style="background: #fff; padding: 30px; border: 3px solid #000080; width: 400px; box-shadow: 5px 5px 0 #000;">
+            <h2 style="margin-top: 0; color: #000080;">🔒 Authentication Required</h2>
+            <p>Please enter the admin password to access the application.</p>
+            <div style="margin: 20px 0;">
+                <label for="login-password" style="display: block; margin-bottom: 5px; font-weight: bold;">Password:</label>
+                <input type="password" id="login-password" style="width: 100%; padding: 8px; border: 2px solid #000; font-size: 14px;">
+            </div>
+            <div id="login-error" style="color: red; margin: 10px 0; display: none;"></div>
+            <button onclick="attemptLogin()" style="width: 100%; padding: 12px; background: #000080; color: #fff; border: 2px solid #000; font-size: 16px; font-weight: bold; cursor: pointer;">Login</button>
+        </div>
+    </div>
+
     <div class="container">
         <div class="header">
             <h1>GPU Actuarial Projections</h1>
@@ -578,7 +686,7 @@ input[type="password"] {
 
         <!-- Main Navigation Tabs -->
         <div class="main-tabs">
-            <div class="main-tab active" onclick="switchMainTab('kernel')">🔧 Kernel</div>
+            <div class="main-tab active" onclick="switchMainTab('kernel')">🔧 Code</div>
             <div class="main-tab" onclick="switchMainTab('create')">📝 Create Job</div>
             <div class="main-tab" onclick="switchMainTab('jobs')">📋 Jobs <span id="jobs-count-badge" style="background:#000080;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;margin-left:5px;"></span></div>
             <div class="main-tab" onclick="switchMainTab('stats')">📊 Stats</div>
@@ -621,13 +729,13 @@ input[type="password"] {
                                 <input type="number" id="shock_capital_pct" name="shock_capital_pct" value="35" min="0" max="100" step="1">
                             </div>
 
-                            <div class="form-group" style="margin-top: 15px; padding: 10px; background: #ffe0b0; border: 1px solid #ffa500;">
+                            <div class="form-group" style="margin-top: 10px;">
                                 <label>
-                                    <input type="checkbox" id="use_custom_kernel">
-                                    <strong>🧪 Use Custom Kernel Code</strong>
+                                    <input type="checkbox" id="external_only">
+                                    <strong>External Loop Only</strong>
                                 </label>
-                                <p style="font-size: 12px; color: #666; margin: 5px 0 0 20px;">
-                                    Uses kernel from Kernel tab. <a href="#" onclick="switchMainTab('kernel'); return false;" style="color: #000080;">Edit kernel →</a>
+                                <p style="font-size: 11px; color: #666; margin: 3px 0 0 20px;">
+                                    Skip internal scenarios (nested valuation). Faster for testing external projections.
                                 </p>
                             </div>
 
@@ -755,67 +863,59 @@ input[type="password"] {
             </div>
         </div>
 
-        <!-- TAB 3: Kernel Editor -->
+        <!-- TAB 3: Calculations Editor (Multi-file) -->
         <div id="tab-kernel" class="main-tab-content active">
             <div class="card">
-                <h2>🔧 Kernel Editor</h2>
-                <p style="color: #666; font-size: 13px; margin-bottom: 15px;">
-                    Edit the GPU kernel code. Save versions to the database, then check "Use Custom Kernel Code" in Create Job tab.
-                </p>
+                <h2>🔧 Calculations Editor</h2>
                 
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="kernel-password">Admin Password:</label>
-                        <input type="password" id="kernel-password" placeholder="Required for kernel changes">
+                <!-- File Selector and Password in one row -->
+                <div class="form-row" style="margin-bottom: 10px;">
+                    <div class="form-group" style="flex: 1;">
+                        <label for="calc-file-select">File:</label>
+                        <select id="calc-file-select" onchange="onCalcFileSelect()" style="width: 100%; padding: 8px; border: 1px solid #000; font-size: 14px;">
+                            <option value="">-- Select a file --</option>
+                        </select>
                     </div>
-                    <div class="form-group">
-                        <label for="kernel-version-name">Version Name (optional):</label>
-                        <input type="text" id="kernel-version-name" placeholder="e.g., v1.1-fix-lapse">
-                    </div>
-                    <div class="form-group">
-                        <label for="kernel-description">Description (optional):</label>
-                        <input type="text" id="kernel-description" placeholder="e.g., Fixed lapse calculation bug">
+                    <div class="form-group" style="flex: 0; align-self: flex-end; display: flex; gap: 5px;">
+                        <button type="button" class="btn btn-secondary" onclick="loadCalcFileContent()" title="Reload file from disk">↻</button>
+                        <button type="button" class="btn btn-primary" onclick="saveCalcFileContent()" id="btn-save-file">💾 Save</button>
                     </div>
                 </div>
                 
-                <div class="kernel-btn-group">
-                    <button type="button" class="btn btn-secondary" onclick="loadKernelContent()">📥 Load Current</button>
-                    <button type="button" class="btn" onclick="validateKernelOnly()" style="background: #ffa500; color: #000;">🧪 Validate Only</button>
-                    <button type="button" class="btn btn-primary" onclick="saveKernelContent()">💾 Save to DB</button>
-                    <button type="button" class="btn" onclick="restoreKernelBackup()">↩️ Restore Backup</button>
-                </div>
+                <!-- Hidden fields for backward compatibility -->
+                <input type="hidden" id="kernel-version-name" value="">
+                <input type="hidden" id="kernel-description" value="">
+                <div id="calc-file-info" style="display: none;"><span id="calc-file-name"></span><span id="calc-file-desc"></span><span id="calc-file-size"></span><span id="calc-file-backup"></span></div>
                 
-                <div class="form-group" style="margin-top: 15px;">
-                    <label>Kernel Code (kernels.py):</label>
+                <div class="form-group">
+                    <label id="editor-file-label">File Content:</label>
                     <div class="kernel-editor-container">
                         <div class="kernel-editor-toolbar">
-                            <button type="button" onclick="kernelEditorUndo()" title="Undo">↶ Undo</button>
-                            <button type="button" onclick="kernelEditorRedo()" title="Redo">↷ Redo</button>
-                            <button type="button" onclick="kernelEditorFind()" title="Find (Ctrl+F)">🔍 Find</button>
-                            <button type="button" onclick="kernelEditorReplace()" title="Replace (Ctrl+H)">⇄ Replace</button>
-                            <button type="button" onclick="kernelEditorFoldAll()" title="Fold All">▼ Fold All</button>
-                            <button type="button" onclick="kernelEditorUnfoldAll()" title="Unfold All">▶ Unfold All</button>
-                            <span id="kernel-editor-position">Line: 1, Col: 1</span>
+                            <div class="toolbar-left">
+                                <button type="button" onclick="kernelEditorUndo()" title="Undo (Ctrl+Z)">↶ Undo</button>
+                                <button type="button" onclick="kernelEditorRedo()" title="Redo (Ctrl+Y)">↷ Redo</button>
+                                <span class="toolbar-separator"></span>
+                                <button type="button" onclick="kernelEditorFind()" title="Find (Ctrl+F)">🔍 Find</button>
+                                <button type="button" onclick="kernelEditorReplace()" title="Find & Replace (Ctrl+H)">🔄 Replace</button>
+                                <span class="toolbar-separator"></span>
+                                <button type="button" onclick="kernelEditorGoToLine()" title="Go to Line (Ctrl+G)">⤵ Go to Line</button>
+                                <span class="toolbar-separator"></span>
+                                <button type="button" onclick="kernelEditorFoldAll()" title="Fold All">⊟ Fold All</button>
+                                <button type="button" onclick="kernelEditorUnfoldAll()" title="Unfold All">⊞ Unfold All</button>
+                                <span class="toolbar-separator"></span>
+                                <button type="button" onclick="kernelEditorFormat()" title="Auto-indent selection (Ctrl+])">⇥ Indent</button>
+                            </div>
+                            <div class="toolbar-right">
+                                <span id="kernel-editor-position">Ln 1, Col 1</span>
+                                <span class="toolbar-separator"></span>
+                                <span id="kernel-editor-mode">Python</span>
+                            </div>
                         </div>
                         <textarea id="kernel-content"></textarea>
                     </div>
-                    <p style="font-size: 11px; color: #666; margin-top: 5px;">
-                        Shortcuts: Ctrl+F (Find), Ctrl+H (Replace), Ctrl+G (Go to line), Ctrl+/ (Comment), Tab (Indent)
-                    </p>
                 </div>
                 
                 <div id="kernel-message"></div>
-                
-                <!-- Saved Versions -->
-                <div class="section-header" onclick="toggleKernelVersions()" style="cursor: pointer; margin-top: 20px;">
-                    <span id="versions-toggle-icon">▶</span> Saved Versions
-                </div>
-                <div id="kernel-versions-content" style="display: none; padding: 10px; background: #e8e8e8; border: 1px solid #ccc;">
-                    <button type="button" class="btn btn-secondary" onclick="loadKernelVersions()" style="margin-bottom: 10px;">↻ Refresh</button>
-                    <div id="kernel-versions-list" class="kernel-versions-list">
-                        <div class="loading">Click refresh to load versions...</div>
-                    </div>
-                </div>
             </div>
         </div>
 
@@ -941,6 +1041,85 @@ input[type="password"] {
         const API_BASE = window.location.origin;
         let selectedJobId = null;
         let isLoadingDetails = false;  // Flag to prevent auto-refresh interference
+        let isAuthenticated = false;
+        
+        // Authentication functions
+        async function checkAuthStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/auth/status`, {
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                isAuthenticated = data.authenticated;
+                
+                if (!isAuthenticated) {
+                    showLoginModal();
+                } else {
+                    hideLoginModal();
+                }
+                return isAuthenticated;
+            } catch (error) {
+                console.error('Auth check failed:', error);
+                showLoginModal();
+                return false;
+            }
+        }
+        
+        function showLoginModal() {
+            const modal = document.getElementById('login-modal');
+            modal.style.display = 'flex';
+            document.getElementById('login-password').focus();
+        }
+        
+        function hideLoginModal() {
+            const modal = document.getElementById('login-modal');
+            modal.style.display = 'none';
+        }
+        
+        async function attemptLogin() {
+            const password = document.getElementById('login-password').value;
+            const errorDiv = document.getElementById('login-error');
+            
+            try {
+                const response = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ password })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    isAuthenticated = true;
+                    hideLoginModal();
+                    document.getElementById('login-password').value = '';
+                    errorDiv.style.display = 'none';
+                    // Refresh the page content
+                    if (typeof refreshJobs === 'function') refreshJobs();
+                } else {
+                    errorDiv.textContent = data.error || 'Invalid password';
+                    errorDiv.style.display = 'block';
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Login failed: ' + error.message;
+                errorDiv.style.display = 'block';
+            }
+        }
+        
+        // Allow Enter key to submit login
+        document.addEventListener('DOMContentLoaded', () => {
+            const loginInput = document.getElementById('login-password');
+            if (loginInput) {
+                loginInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        attemptLogin();
+                    }
+                });
+            }
+            // Check auth on page load
+            checkAuthStatus();
+        });
         
         // Cache for job details and files to avoid redundant API calls
         const jobDetailsCache = new Map();
@@ -964,7 +1143,10 @@ input[type="password"] {
             
             // Initialize kernel editor when Kernel tab is opened
             if (tabName === 'kernel') {
-                setTimeout(initKernelEditor, 100);
+                setTimeout(() => {
+                    initKernelEditor();
+                    refreshCalcFileList();
+                }, 100);
             }
             
             // Load stats when Stats tab is opened
@@ -996,7 +1178,7 @@ input[type="password"] {
                 return 'debug';
             }
 
-            if (table === 'flux_projetes' || name === 'FLUX_PROJETES' || name === 'FLUX_PROJETES_GPU.CSV') {
+            if (table === 'flux_projetes' || name === 'FLUX_PROJETES' || name === 'FLUX_PROJETES_GPU.CSV' || name === 'FLUX_PROJETE_GPU.CSV') {
                 return 'external_cashflows';
             }
 
@@ -1240,6 +1422,15 @@ input[type="password"] {
                         durationInfo = `<br>Duration: ${durationStr}`;
                     }
                     
+                    // Error preview for failed jobs
+                    let errorPreview = '';
+                    if (job.status === 'failed' && job.error_message) {
+                        // Extract first line of error message (up to 100 chars)
+                        const firstLine = job.error_message.split('\n')[0];
+                        const preview = firstLine.length > 100 ? firstLine.substring(0, 100) + '...' : firstLine;
+                        errorPreview = `<br><span style="color: #ff0000; font-size: 12px;">❌ ${preview}</span>`;
+                    }
+                    
                     return `
                         <div class="job-item ${job.job_id === selectedJobId ? 'selected' : ''}" id="job-${job.job_id}">
                             <div class="job-item-header" onclick="toggleJob('${job.job_id}')">
@@ -1249,7 +1440,7 @@ input[type="password"] {
                                 </div>
                                 <div class="job-details">
                                     Created: ${new Date(job.created_at).toLocaleString()}<br>
-                                    ${fileInfo}${progressInfo}${durationInfo}
+                                    ${fileInfo}${progressInfo}${durationInfo}${errorPreview}
                                 </div>
                             </div>
                             <div class="job-item-details" id="job-details-${job.job_id}">
@@ -1259,21 +1450,12 @@ input[type="password"] {
                     `;
                 }).join('');
                 
-                // Reload details for expanded jobs
-                if (selectedJobId) {
-                    const selectedJob = data.jobs.find(j => j.job_id === selectedJobId);
-                    if (selectedJob && selectedJob.status === 'running') {
-                        // Refresh details for running job to show progress
-                        loadJobDetails(selectedJobId);
-                    } else if (expandedContent && !expandedContent.includes('Loading details...')) {
-                        // Restore content for non-running jobs (only if actually loaded)
-                        const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
-                        if (detailsDiv) {
-                            detailsDiv.innerHTML = expandedContent;
-                        }
-                    } else {
-                        // No cached content or still loading - load details
-                        loadJobDetails(selectedJobId);
+                // Restore details for expanded jobs (don't trigger new loads from auto-refresh)
+                if (selectedJobId && expandedContent) {
+                    const detailsDiv = document.getElementById(`job-details-${selectedJobId}`);
+                    if (detailsDiv) {
+                        // Always restore the cached content first to prevent flicker
+                        detailsDiv.innerHTML = expandedContent;
                     }
                 }
             } catch (error) {
@@ -1456,15 +1638,7 @@ input[type="password"] {
                     
                     if (job.total_batches > 0) {
                         const progressPercent = job.progress_percent || 0;
-                        progressHTML = `
-                            <div style="margin: 15px 0;">
-                                <strong>Progress:</strong>
-                                <div class="progress-container">
-                                    <div class="progress-text">Batch ${job.current_batch || 0} / ${job.total_batches} (${progressPercent.toFixed(1)}%)</div>
-                                    <div class="progress-bar" style="width: ${progressPercent}%;"></div>
-                                </div>
-                            </div>
-                        `;
+                        progressHTML = `<p><strong>Progress:</strong> Batch ${job.current_batch || 0} / ${job.total_batches} (${progressPercent.toFixed(1)}%)</p>`;
                     } else {
                         progressHTML = `<p style="color: #0074bc; font-size: 13px; margin: 10px 0;"><em>⏳ Initializing batch processing...</em></p>`;
                     }
@@ -1482,14 +1656,41 @@ input[type="password"] {
                     }
                 }
                 
+                // Format error message with proper line breaks and stack trace formatting
+                // Only show error section for failed jobs (not running jobs with progress messages)
+                let errorHTML = '';
+                if (job.error_message && job.status === 'failed') {
+                    const errorMsg = job.error_message;
+                    // Format error message: preserve line breaks and format stack traces
+                    const formattedError = errorMsg
+                        .replace(/\n/g, '<br>')
+                        .replace(/Traceback \(most recent call last\):/g, '<strong>Traceback (most recent call last):</strong>')
+                        .replace(/File "([^"]+)", line (\d+)/g, '<span style="color: #0066cc;">File "$1", line $2</span>')
+                        .replace(/^(\s+)(at .+)$/gm, '&nbsp;&nbsp;&nbsp;&nbsp;$2');
+                    
+                    errorHTML = `
+                        <div class="error" style="margin: 15px 0; padding: 15px; max-height: 400px; overflow-y: auto;">
+                            <h3 style="margin-top: 0; color: #ff0000;">❌ Error Details</h3>
+                            <pre style="white-space: pre-wrap; word-wrap: break-word; font-family: 'Courier New', monospace; font-size: 12px; margin: 0; background: #fff; padding: 10px; border: 1px solid #ccc;">${formattedError}</pre>
+                        </div>
+                    `;
+                }
+                
+                // Show progress message for running jobs
+                let progressMessageHTML = '';
+                if (job.error_message && job.status === 'running') {
+                    progressMessageHTML = `<p style="color: #0074bc; font-size: 13px; margin: 10px 0;"><em>${job.error_message}</em></p>`;
+                }
+                
                 detailsDiv.innerHTML = `
                     <div style="margin-bottom: 20px;">
                         ${parametersHTML}
                         <p><strong>Started:</strong> ${job.started_at ? new Date(job.started_at).toLocaleString() : 'Not started yet'}</p>
                         <p><strong>Completed:</strong> ${job.completed_at ? new Date(job.completed_at).toLocaleString() : 'Not completed yet'}</p>
                         ${progressHTML}
+                        ${progressMessageHTML}
                         ${cancelButton}
-                        ${job.error_message && job.status !== 'running' ? `<div class="error"><strong>Error:</strong><br>${job.error_message}</div>` : ''}
+                        ${errorHTML}
                         ${fileSourceHTML}
                     </div>
                     
@@ -1511,75 +1712,27 @@ input[type="password"] {
                 return '<p style="color: #666; font-style: italic;">No results available yet. Job may still be running or failed.</p>';
             }
             
-            // Group files by type
-            const filesByType = {
-                summary: [],
-                account_results: [],
-                external_cashflows: [],
-                five_chocs: [],
-                sensitivities: [],
-                debug: [],
-                input: [],
-                other: []
-            };
+            let html = '<div><h4>📁 Output Files</h4>';
             
             resultFiles.forEach(file => {
                 const f = normalizeResultFile(file);
-                const category = getUiFileCategory(f);
-                if (!filesByType[category]) filesByType[category] = [];
-                filesByType[category].push(f);
-            });
-            
-            const typeLabels = {
-                summary: '📊 Portfolio Summary',
-                account_results: '📋 Account Results',
-                external_cashflows: '🧾 External Projection Cashflows',
-                five_chocs: '⚡ Five Chocs',
-                sensitivities: '📐 Sensitivities (Greeks)',
-                debug: '🐛 Debug',
-                input: '📎 Input Files',
-                other: '📄 Other'
-            };
-
-            const typeItemIcons = {
-                summary: '📊',
-                account_results: '📋',
-                external_cashflows: '🧾',
-                five_chocs: '⚡',
-                sensitivities: '📐',
-                debug: '🐛',
-                input: '📎',
-                other: '📄'
-            };
-            
-            let html = '<div>';
-            
-            Object.entries(filesByType).forEach(([type, files]) => {
-                if (files.length > 0) {
-                    html += `<div>`;
-                    html += `<h4>${typeLabels[type]}</h4>`;
-                    files.forEach(file => {
-                        const fileName = file.name;
-                        const rowCount = file.row_count ? `(${file.row_count.toLocaleString()} rows)` : '';
-                        const fileSize = file.size ? `(${(file.size / 1024).toFixed(2)} KB)` : '';
-                        const sizeInfo = rowCount || fileSize;
-                        const description = file.description ? `<div style="font-size: 12px; color: #666;">${file.description}</div>` : '';
-                        const icon = typeItemIcons[type] || '📄';
-                        html += `
-                            <div style="padding: 10px; border: 1px solid #ccc; margin-bottom: 8px; background: #fff;">
-                                <div>
-                                    <strong style="font-size: 14px;">${icon} ${fileName}</strong> ${sizeInfo}
-                                    ${description}
-                                </div>
-                                <div style="margin-top: 8px;">
-                                    <button class="file-preview-btn" onclick="previewFile('${jobId}', '${fileName}')">👁️ Preview</button>
-                                    <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${fileName}')">⬇️ Download CSV</button>
-                                </div>
-                            </div>
-                        `;
-                    });
-                    html += '</div>';
-                }
+                const fileName = f.name;
+                const rowCount = f.row_count ? `(${f.row_count.toLocaleString()} rows)` : '';
+                const fileSize = f.size ? `(${(f.size / 1024).toFixed(2)} KB)` : '';
+                const sizeInfo = rowCount || fileSize;
+                const description = f.description ? `<div style="font-size: 12px; color: #666;">${f.description}</div>` : '';
+                html += `
+                    <div style="padding: 10px; border: 1px solid #ccc; margin-bottom: 8px; background: #fff;">
+                        <div>
+                            <strong style="font-size: 14px;">📄 ${fileName}</strong> ${sizeInfo}
+                            ${description}
+                        </div>
+                        <div style="margin-top: 8px;">
+                            <button class="file-preview-btn" onclick="previewFile('${jobId}', '${fileName}')">👁️ Preview</button>
+                            <button class="btn btn-primary download-btn" onclick="downloadFile('${jobId}', '${fileName}')">⬇️ Download CSV</button>
+                        </div>
+                    </div>
+                `;
             });
             
             html += '</div>';
@@ -2081,12 +2234,13 @@ input[type="password"] {
                 const debugIntScenario = document.getElementById('debug_int_scenario').value;
                 const debugIntYear = document.getElementById('debug_int_year').value;
                 const debugOnly = document.getElementById('debug_only').checked;
-                const useCustomKernel = document.getElementById('use_custom_kernel').checked;
+                const externalOnly = document.getElementById('external_only').checked;
                 
                 formData.append('nb_an_projection', nbAnProjection);
                 formData.append('nb_scenarios', nbScenarios);
                 formData.append('nb_int_scenarios', nbIntScenarios);
                 formData.append('shock_capital_pct', shockCapitalPct);
+                if (externalOnly) formData.append('external_only', 'true');
                 if (maxAccounts) formData.append('max_accounts', maxAccounts);
                 if (debugAccount) formData.append('debug_account', debugAccount);
                 if (debugScenario) formData.append('debug_scenario', debugScenario);
@@ -2096,14 +2250,11 @@ input[type="password"] {
                 if (debugIntYear) formData.append('debug_int_year', debugIntYear);
                 if (debugOnly) formData.append('debug_only', 'true');
                 
-                // Add custom kernel code if checkbox is checked
-                if (useCustomKernel) {
-                    const kernelContent = kernelEditor ? kernelEditor.getValue() : document.getElementById('kernel-content').value;
-                    if (!kernelContent || kernelContent.trim() === '' || kernelContent.startsWith('# Click')) {
-                        throw new Error('Custom kernel checkbox is checked but no kernel code is loaded. Please load kernel code first using the Kernel Editor.');
-                    }
+                // Always include kernel code from the Calculations Editor
+                const kernelContent = kernelEditor ? kernelEditor.getValue() : document.getElementById('kernel-content').value;
+                if (kernelContent && kernelContent.trim() !== '' && !kernelContent.startsWith('# Click')) {
                     formData.append('kernel_code', kernelContent);
-                    console.log(`Including custom kernel code (${kernelContent.length} bytes)`);
+                    console.log(`Including kernel code (${kernelContent.length} bytes)`);
                 }
                 
                 const response = await fetchWithToken(`${API_BASE}/jobs`, {
@@ -2121,8 +2272,7 @@ input[type="password"] {
                 const data = await response.json();
                 
                 if (response.ok) {
-                    const kernelMsg = useCustomKernel ? ' (with custom kernel)' : '';
-                    messageDiv.innerHTML = `<div class="success">Job created successfully${kernelMsg}! Job ID: ${data.job_id}</div>`;
+                    messageDiv.innerHTML = `<div class="success">Job created successfully! Job ID: ${data.job_id}</div>`;
                     // Switch to Jobs tab and select the new job
                     switchMainTab('jobs');
                     await loadJobs();
@@ -2139,8 +2289,8 @@ input[type="password"] {
             }
         });
 
-        // Auto-refresh jobs every 10 seconds
-        setInterval(loadJobs, 10000);
+        // Auto-refresh jobs every 30 seconds (reduced frequency to prevent UI flickering)
+        setInterval(loadJobs, 30000);
 
         // Initialize
         checkHealth();
@@ -2232,14 +2382,124 @@ input[type="password"] {
             }
         }
         
-        // Override load/save functions to use CodeMirror
-        const originalLoadKernelContent = loadKernelContent;
-        loadKernelContent = async function() {
+        function kernelEditorGoToLine() {
+            if (kernelEditor) {
+                const line = prompt('Go to line:', '1');
+                if (line !== null && line !== '') {
+                    const lineNum = parseInt(line, 10) - 1;
+                    if (!isNaN(lineNum) && lineNum >= 0 && lineNum < kernelEditor.lineCount()) {
+                        kernelEditor.setCursor(lineNum, 0);
+                        kernelEditor.scrollIntoView({line: lineNum, ch: 0}, 100);
+                        kernelEditor.focus();
+                    }
+                }
+            }
+        }
+        
+        function kernelEditorFormat() {
+            if (kernelEditor) {
+                const selection = kernelEditor.getSelection();
+                if (selection) {
+                    kernelEditor.execCommand('indentAuto');
+                } else {
+                    // Auto-indent entire document
+                    const totalLines = kernelEditor.lineCount();
+                    kernelEditor.operation(() => {
+                        for (let i = 0; i < totalLines; i++) {
+                            kernelEditor.indentLine(i, 'smart');
+                        }
+                    });
+                }
+            }
+        }
+        
+        // =============================================
+        // MULTI-FILE CALCULATIONS EDITOR
+        // =============================================
+        
+        let currentCalcFile = null;  // Currently selected file
+        let calcFilesData = [];      // Cached file list
+        
+        // Load the list of calculation files
+        async function refreshCalcFileList() {
+            const select = document.getElementById('calc-file-select');
             const messageDiv = document.getElementById('kernel-message');
-            messageDiv.innerHTML = '<div class="loading">Loading kernel content...</div>';
             
             try {
-                const response = await fetch(`${API_BASE}/admin/kernels/file`);
+                const response = await fetch(`${API_BASE}/admin/calcfiles`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    calcFilesData = data.files;
+                    
+                    // Rebuild select options
+                    select.innerHTML = '<option value="">-- Select a file --</option>';
+                    data.files.forEach(file => {
+                        const sizeKB = (file.size / 1024).toFixed(1);
+                        const option = document.createElement('option');
+                        option.value = file.filename;
+                        option.textContent = `${file.filename} (${sizeKB} KB) - ${file.description}`;
+                        select.appendChild(option);
+                    });
+                    
+                    // Auto-select kernels.py as default, or re-select current file
+                    if (!currentCalcFile && data.files.some(f => f.filename === 'kernels.py')) {
+                        select.value = 'kernels.py';
+                        onCalcFileSelect();
+                    } else if (currentCalcFile) {
+                        select.value = currentCalcFile;
+                    }
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to load files: ${error.message}</div>`;
+            }
+        }
+        
+        // Handle file selection change
+        function onCalcFileSelect() {
+            const select = document.getElementById('calc-file-select');
+            const filename = select.value;
+            const infoDiv = document.getElementById('calc-file-info');
+            
+            if (!filename) {
+                currentCalcFile = null;
+                infoDiv.style.display = 'none';
+                document.getElementById('editor-file-label').textContent = 'File Content:';
+                return;
+            }
+            
+            currentCalcFile = filename;
+            
+            // Find file info
+            const fileInfo = calcFilesData.find(f => f.filename === filename);
+            if (fileInfo) {
+                document.getElementById('calc-file-name').textContent = fileInfo.filename;
+                document.getElementById('calc-file-desc').textContent = fileInfo.description;
+                document.getElementById('calc-file-size').textContent = (fileInfo.size / 1024).toFixed(1) + ' KB';
+                document.getElementById('calc-file-backup').textContent = fileInfo.has_backup ? '✓ Backup exists' : '';
+                infoDiv.style.display = 'block';
+            }
+            
+            document.getElementById('editor-file-label').textContent = `File Content (${filename}):`;
+            
+            // Auto-load the file content
+            loadCalcFileContent();
+        }
+        
+        // Load content of selected file
+        async function loadCalcFileContent() {
+            if (!currentCalcFile) {
+                document.getElementById('kernel-message').innerHTML = '<div class="error">Please select a file first</div>';
+                return;
+            }
+            
+            const messageDiv = document.getElementById('kernel-message');
+            messageDiv.innerHTML = `<div class="loading">Loading ${currentCalcFile}...</div>`;
+            
+            try {
+                const response = await fetch(`${API_BASE}/admin/calcfiles/${currentCalcFile}`);
                 const data = await response.json();
                 
                 if (response.ok) {
@@ -2249,7 +2509,7 @@ input[type="password"] {
                     } else {
                         document.getElementById('kernel-content').value = data.content;
                     }
-                    messageDiv.innerHTML = '<div class="success">Kernel content loaded successfully</div>';
+                    messageDiv.innerHTML = `<div class="success">${currentCalcFile} loaded successfully (${(data.size / 1024).toFixed(1)} KB)</div>`;
                     setTimeout(() => messageDiv.innerHTML = '', 3000);
                 } else {
                     messageDiv.innerHTML = `<div class="error">Error: ${data.error}</div>`;
@@ -2257,74 +2517,52 @@ input[type="password"] {
             } catch (error) {
                 messageDiv.innerHTML = `<div class="error">Failed to load: ${error.message}</div>`;
             }
-        };
+        }
         
-        const originalSaveKernelContent = saveKernelContent;
-        saveKernelContent = async function() {
-            const password = document.getElementById('kernel-password').value;
+        
+        // Save file content to database
+        async function saveCalcFileContent() {
+            if (!currentCalcFile) {
+                document.getElementById('kernel-message').innerHTML = '<div class="error">Please select a file first</div>';
+                return;
+            }
+            
             const content = kernelEditor ? kernelEditor.getValue() : document.getElementById('kernel-content').value;
-            const versionName = document.getElementById('kernel-version-name').value;
-            const description = document.getElementById('kernel-description').value;
             const messageDiv = document.getElementById('kernel-message');
             
-            if (!password) {
-                messageDiv.innerHTML = '<div class="error">Admin password is required</div>';
-                return;
-            }
-            
             if (!content.trim()) {
-                messageDiv.innerHTML = '<div class="error">Kernel content cannot be empty</div>';
+                messageDiv.innerHTML = '<div class="error">File content cannot be empty</div>';
                 return;
             }
             
-            if (!confirm('This will validate the kernel code and save it to the database. Continue?')) {
-                return;
-            }
-            
-            messageDiv.innerHTML = '<div class="loading">🔍 Validating kernel code on RunPod GPU and saving...<br><small>This may take up to 2 minutes if a worker needs to start.</small></div>';
+            messageDiv.innerHTML = `<div class="loading">Saving ${currentCalcFile}...</div>`;
             
             try {
-                const response = await fetch(`${API_BASE}/admin/kernels/file`, {
+                const response = await fetch(`${API_BASE}/admin/calcfiles/${currentCalcFile}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify({
-                        password: password,
+                        password: 'session',  // Backend will use session auth
                         content: content,
-                        version_name: versionName || undefined,
-                        description: description || undefined,
-                        restart: false,  // No restart needed - use dynamic patching
-                        validate: true   // Enable validation
+                        restart: false,
+                        validate_syntax: true
                     })
                 });
                 
                 const data = await response.json();
                 
                 if (response.ok) {
-                    messageDiv.innerHTML = `<div class="success">✅ ${data.message}<br>Version: ${data.version_name}</div>`;
-                    document.getElementById('kernel-version-name').value = '';
-                    document.getElementById('kernel-description').value = '';
+                    messageDiv.innerHTML = `<div class="success">✅ Saved ${currentCalcFile}</div>`;
+                    setTimeout(() => messageDiv.innerHTML = '', 3000);
                 } else {
-                    // Validation or save failed - show detailed error
                     if (data.validation_failed) {
-                        let errorMsg = `❌ Validation Failed!\n\n`;
-                        errorMsg += `Stage: ${data.stage}\n`;
-                        errorMsg += `Error: ${data.error}\n`;
-                        
-                        if (data.line) {
-                            errorMsg += `\nLine: ${data.line}`;
-                            // Jump to error line in editor
-                            if (kernelEditor) {
-                                kernelEditor.setCursor(data.line - 1, 0);
-                                kernelEditor.focus();
-                            }
+                        let htmlError = `<div class="error">❌ Syntax Error (line ${data.line}): ${data.error}</div>`;
+                        if (data.line && kernelEditor) {
+                            kernelEditor.setCursor(data.line - 1, 0);
+                            kernelEditor.focus();
                         }
-                        
-                        if (data.traceback) {
-                            errorMsg += `\n\n--- Full Traceback ---\n${data.traceback}`;
-                        }
-                        
-                        alert(errorMsg);
-                        messageDiv.innerHTML = `<div class="error">❌ Validation failed at ${data.stage} stage. See popup for details.</div>`;
+                        messageDiv.innerHTML = htmlError;
                     } else {
                         messageDiv.innerHTML = `<div class="error">Error: ${data.error}</div>`;
                     }
@@ -2332,141 +2570,11 @@ input[type="password"] {
             } catch (error) {
                 messageDiv.innerHTML = `<div class="error">Failed to save: ${error.message}</div>`;
             }
-        };
-        
-        // Validate only (without saving)
-        async function validateKernelOnly() {
-            const password = document.getElementById('kernel-password').value;
-            const content = kernelEditor ? kernelEditor.getValue() : document.getElementById('kernel-content').value;
-            const messageDiv = document.getElementById('kernel-message');
-            
-            if (!password) {
-                messageDiv.innerHTML = '<div class="error">Admin password is required</div>';
-                return;
-            }
-            
-            if (!content.trim()) {
-                messageDiv.innerHTML = '<div class="error">Kernel content cannot be empty</div>';
-                return;
-            }
-            
-            messageDiv.innerHTML = '<div class="loading">🔍 Validating kernel code on RunPod GPU (running test projection with 1 account)...<br><small>This may take up to 2 minutes if a worker needs to start.</small></div>';
-            
-            try {
-                const response = await fetch(`${API_BASE}/admin/kernels/validate`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        password: password,
-                        content: content
-                    })
-                });
-                
-                const data = await response.json();
-                
-                if (response.ok && data.valid) {
-                    messageDiv.innerHTML = `<div class="success">✅ ${data.message}</div>`;
-                } else {
-                    // Build error message for display
-                    let htmlError = `<div class="error">
-                        <strong>❌ Validation Failed!</strong><br>
-                        <strong>Stage:</strong> ${data.stage}<br>
-                        <strong>Error:</strong> ${data.error}`;
-                    
-                    if (data.line) {
-                        htmlError += `<br><strong>Line:</strong> ${data.line}`;
-                        if (kernelEditor) {
-                            kernelEditor.setCursor(data.line - 1, 0);
-                            kernelEditor.focus();
-                        }
-                    }
-                    
-                    if (data.traceback) {
-                        htmlError += `<br><br><strong>Traceback:</strong><pre style="max-height: 300px; overflow: auto; background: #fff; padding: 10px; border: 1px solid #ccc; font-size: 11px; white-space: pre-wrap;">${data.traceback}</pre>`;
-                    }
-                    
-                    htmlError += `</div>`;
-                    messageDiv.innerHTML = htmlError;
-                }
-            } catch (error) {
-                messageDiv.innerHTML = `<div class="error">Failed to validate: ${error.message}</div>`;
-            }
         }
         
-        // Override showVersionActions to use CodeMirror
-        const originalShowVersionActions = showVersionActions;
-        showVersionActions = async function(versionId, versionName) {
-            const action = prompt(`Version: ${versionName}\n\nChoose action:\n1 = View content\n2 = Activate (deploy)\n3 = Delete\n\nEnter 1, 2, or 3:`);
-            
-            if (action === '1') {
-                try {
-                    const response = await fetch(`${API_BASE}/admin/kernels/versions/${versionId}`);
-                    const data = await response.json();
-                    if (response.ok) {
-                        if (kernelEditor) {
-                            kernelEditor.setValue(data.content);
-                            kernelEditor.refresh();
-                        } else {
-                            document.getElementById('kernel-content').value = data.content;
-                        }
-                        document.getElementById('kernel-message').innerHTML = `<div class="success">Loaded version: ${versionName}</div>`;
-                    } else {
-                        alert(`Error: ${data.error}`);
-                    }
-                } catch (error) {
-                    alert(`Failed: ${error.message}`);
-                }
-            } else if (action === '2') {
-                const password = document.getElementById('kernel-password').value;
-                if (!password) {
-                    alert('Please enter admin password first');
-                    return;
-                }
-                if (!confirm(`Activate version "${versionName}"? This will restart the server.`)) {
-                    return;
-                }
-                try {
-                    const response = await fetch(`${API_BASE}/admin/kernels/versions/${versionId}/activate`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ password: password })
-                    });
-                    const data = await response.json();
-                    if (response.ok) {
-                        document.getElementById('kernel-message').innerHTML = `<div class="success">✅ ${data.message}</div>`;
-                    } else {
-                        alert(`Error: ${data.error}`);
-                    }
-                } catch (error) {
-                    alert(`Failed: ${error.message}`);
-                }
-            } else if (action === '3') {
-                const password = document.getElementById('kernel-password').value;
-                if (!password) {
-                    alert('Please enter admin password first');
-                    return;
-                }
-                if (!confirm(`Delete version "${versionName}"? This cannot be undone.`)) {
-                    return;
-                }
-                try {
-                    const response = await fetch(`${API_BASE}/admin/kernels/versions/${versionId}`, {
-                        method: 'DELETE',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ password: password })
-                    });
-                    const data = await response.json();
-                    if (response.ok) {
-                        loadKernelVersions();
-                        document.getElementById('kernel-message').innerHTML = '<div class="success">Version deleted</div>';
-                    } else {
-                        alert(`Error: ${data.error}`);
-                    }
-                } catch (error) {
-                    alert(`Failed: ${error.message}`);
-                }
-            }
-        };
+        // Legacy function aliases for backward compatibility
+        function loadKernelContent() { loadCalcFileContent(); }
+        function saveKernelContent() { saveCalcFileContent(); }
         // =============================================
         // STATS TAB FUNCTIONALITY
         // =============================================

@@ -147,6 +147,7 @@ def handler(job):
         if debug_int_year is not None:
             debug_int_year = int(debug_int_year)
         debug_only = job_input.get('debug_only', False)
+        external_only = job_input.get('external_only', False)
         data_file_urls = job_input.get('data_file_urls', {})
     except (ValueError, TypeError) as e:
         if custom_kernel_applied:
@@ -263,6 +264,7 @@ def handler(job):
                 debug_int_scenario=debug_int_scenario if debug_int_scenario is not None else -1,
                 debug_int_year=debug_int_year if debug_int_year is not None else -1,
                 debug_only=debug_only,
+                run_nested_valuation=not external_only,  # external_only=True means skip nested valuation
                 progress_callback=progress_callback,
                 **file_paths  # Pass the specific paths for each data file
             )
@@ -311,6 +313,18 @@ def handler(job):
             if result.flux_projetes_df is not None:
                 output['flux_projetes'] = result.flux_projetes_df.to_dict(orient='records')
                 print(f"  ✓ Converted flux_projetes: {len(result.flux_projetes_df)} rows")
+            
+            # --- 6. Auto-export all CSV files from output directory ---
+            # This ensures any new output files are automatically included
+            output['output_files'] = {}
+            if output_path.exists():
+                for csv_file in output_path.glob('*.csv'):
+                    try:
+                        df = pd.read_csv(csv_file)
+                        output['output_files'][csv_file.name] = df.to_dict(orient='records')
+                        print(f"  ✓ Auto-exported {csv_file.name}: {len(df)} rows")
+                    except Exception as e:
+                        print(f"  ⚠ Could not export {csv_file.name}: {e}")
             
             # Restore original kernel after job completes
             if custom_kernel_applied:

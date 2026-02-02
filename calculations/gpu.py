@@ -497,8 +497,8 @@ def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projectio
     # State tensor: (Batch, Ext_Scenarios, Years, STATE_SIZE)
     state_mem_per_account = nb_ext_scenarios * nb_an_projection * STATE_SIZE * 4  # float32
     
-    # Cashflow tensor: (Batch, Ext_Scenarios, Years, CF_OUT_IDX_SIZE)
-    cf_mem_per_account = nb_ext_scenarios * nb_an_projection * CF_OUT_IDX_SIZE * 4
+    # Cashflow tensor: (Batch, Ext_Scenarios, Years*12, CF_OUT_IDX_SIZE) - monthly data
+    cf_mem_per_account = nb_ext_scenarios * nb_an_projection * 12 * CF_OUT_IDX_SIZE * 4
     
     # Metrics tensor: (Batch, Ext_Scenarios, Years, NUM_CHOCS, METRICS_OUTPUT_SIZE) - chocs × (Reserve & Capital)
     metrics_mem_per_account = nb_ext_scenarios * nb_an_projection * NUM_CHOCS * METRICS_OUTPUT_SIZE * 4
@@ -518,14 +518,29 @@ def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projectio
     
     # Calculate batch size (conservative for nested scenarios)
     try:
+        # Try numba cuda context first
         free_mem, total_mem = cuda.current_context().get_memory_info()
         print(f"  GPU free memory: {free_mem / 1024**3:.2f} GB")
         print(f"  GPU total memory: {total_mem / 1024**3:.2f} GB")
-        # Use more conservative factor (55% instead of 60%) to account for memory fragmentation
-        available_mem = max(0, (free_mem - lookup_overhead) * 0.55)
-    except NotImplementedError:
-        print("  Warning: Cannot query GPU memory, using conservative estimate")
-        available_mem = max(0, DEFAULT_GPU_MEMORY_GB * 1024**3 - lookup_overhead)
+        # Use 70% of available memory after lookup overhead
+        available_mem = max(0, (free_mem - lookup_overhead) * 0.70)
+    except Exception as e:
+        # Fallback: try cupy for memory info
+        try:
+            import cupy as cp
+            mempool = cp.get_default_memory_pool()
+            free_mem = mempool.free_bytes()
+            total_mem = cp.cuda.Device().mem_info[1]
+            # If free_bytes returns 0, use total - used
+            if free_mem == 0:
+                total_mem, used_mem = cp.cuda.Device().mem_info
+                free_mem = total_mem
+            print(f"  GPU free memory (cupy): {free_mem / 1024**3:.2f} GB")
+            print(f"  GPU total memory (cupy): {total_mem / 1024**3:.2f} GB")
+            available_mem = max(0, (free_mem - lookup_overhead) * 0.70)
+        except Exception as e2:
+            print(f"  Warning: Cannot query GPU memory ({e}), using conservative estimate")
+            available_mem = max(0, DEFAULT_GPU_MEMORY_GB * 1024**3 - lookup_overhead)
     
     batch_size = max(1, int(available_mem // total_mem_per_account))
     batch_size = min(batch_size, n_accounts)
@@ -543,10 +558,13 @@ class ProcessBatchResult(TypedDict):
     batch_capital: np.ndarray
     batch_reserves_5chocs: np.ndarray
     batch_capital_5chocs: np.ndarray
-    batch_cashflows: Optional[np.ndarray]  # Full cashflow tensor (batch, scenarios, years, CF_OUT_IDX_SIZE)
+    batch_mean_cashflows: Optional[np.ndarray]  # Pre-averaged cashflows (batch, months, CF_OUT_IDX_SIZE) - averaged on GPU
+    batch_vp_flux_compte: Optional[np.ndarray]  # GPU-aggregated VP by account
+    batch_flux_projete: Optional[np.ndarray]  # GPU-aggregated flux by year
     ext_debug: Optional[np.ndarray]  # Debug output from external kernel
     int_debug: Optional[np.ndarray]  # Debug output from internal kernel
     int_debug_ts: Optional[np.ndarray]  # Debug time series output from internal kernel
+    debug_flux: Optional[np.ndarray]  # Debug flux output
 
 
 def check_gpu_memory(batch_size: int, mem_per_account: float, batch_idx: int = 0):
@@ -825,6 +843,15 @@ def process_batch(
         _t_flux_end = _time.time()
         logger.info(f"  FLUX_PROJETE GPU aggregation: {_t_flux_end - _t_flux_start:.4f}s")
         
+        # --- Copy mean cashflows to host (MUCH smaller than full tensor) ---
+        # cf_mean_scenarios shape: (batch, months, CF_OUT_IDX_SIZE) - already averaged across scenarios
+        # This is ~100x smaller than the full (batch, scenarios, months, CF_OUT_IDX_SIZE) tensor
+        _t_mean_start = _time.time()
+        h_mean_cashflows = cp.asnumpy(cf_mean_scenarios)  # Copy reduced tensor to host
+        _t_mean_end = _time.time()
+        mean_cf_size_mb = h_mean_cashflows.nbytes / (1024**2)
+        logger.info(f"  Mean cashflow copy_to_host: {_t_mean_end - _t_mean_start:.2f}s for {mean_cf_size_mb:.2f} MB")
+        
         # Clean up intermediate GPU arrays
         del cf_mean_scenarios, vp_flux_compte_gpu, flux_projete_gpu, d_cf_cupy
         
@@ -832,13 +859,7 @@ def process_batch(
         logger.warning(f"  GPU aggregation failed, falling back to CPU: {e}")
         h_vp_flux_compte = None
         h_flux_projete = None
-    
-    # Copy full cashflows to host (still needed for FLUX_PROJETE_GPU.csv detailed output)
-    _t2 = _time.time()
-    h_cashflows = d_cashflows.copy_to_host()
-    _t3 = _time.time()
-    cf_size_gb = h_cashflows.nbytes / (1024**3)
-    logger.info(f"  Cashflow copy_to_host: {_t3 - _t2:.2f}s for {cf_size_gb:.2f} GB ({cf_size_gb / (_t3 - _t2 + 0.001):.2f} GB/s)")
+        h_mean_cashflows = None
     
     # Process metrics (only if nested valuation was run)
     if run_nested_valuation:
@@ -848,29 +869,33 @@ def process_batch(
         batch_reserves = batch_reserves_5chocs[:, 0]
         batch_capital = batch_capital_5chocs[:, 0]
     else:
-        # Outer loop only - compute simple PV-based reserves from Kernel A cashflows
-        logger.info("  Computing simple PV-based reserves from external scenarios...")
+        # Outer loop only - compute simple PV-based reserves from mean cashflows
+        # h_mean_cashflows is already averaged across scenarios on GPU
+        logger.info("  Computing simple PV-based reserves from mean cashflows...")
         h_metrics = None
         
         del d_cashflows  # Free GPU memory immediately
         cuda.synchronize()
         
-        # Compute simple reserve estimate by summing VP cashflows across years, avg over scenarios
-        # h_cashflows shape: (batch, scenarios, years, CF_OUT_IDX_SIZE)
+        # Compute simple reserve estimate by summing VP cashflows across months
+        # h_mean_cashflows shape: (batch, months, CF_OUT_IDX_SIZE) - already averaged across scenarios
         # Sum VP cashflows: VP_FRAIS_ACQUIS + VP_COMM_VENTE + VP_PRIMES_GARANTIES + ... + VP_PREST_DECES
-        vp_total = (
-            h_cashflows[:, :, :, CF_OUT_IDX_VP_FRAIS_ACQUIS] +
-            h_cashflows[:, :, :, CF_OUT_IDX_VP_COMM_VENTE] +
-            h_cashflows[:, :, :, CF_OUT_IDX_VP_PRIMES_GARANTIES] +
-            h_cashflows[:, :, :, CF_OUT_IDX_VP_PRIMES_VARIABLES] +
-            h_cashflows[:, :, :, CF_OUT_IDX_VP_FRAIS_FIXES] +
-            h_cashflows[:, :, :, CF_OUT_IDX_VP_HON_GEST] +
-            h_cashflows[:, :, :, CF_OUT_IDX_VP_COMM_MAINTIEN] +
-            h_cashflows[:, :, :, CF_OUT_IDX_VP_PREST_ECH] +
-            h_cashflows[:, :, :, CF_OUT_IDX_VP_PREST_MRV] +
-            h_cashflows[:, :, :, CF_OUT_IDX_VP_PREST_DECES]
-        )
-        batch_reserves = vp_total.sum(axis=2).mean(axis=1)  # Sum over years, avg over scenarios
+        if h_mean_cashflows is not None:
+            vp_total = (
+                h_mean_cashflows[:, :, CF_OUT_IDX_VP_FRAIS_ACQUIS] +
+                h_mean_cashflows[:, :, CF_OUT_IDX_VP_COMM_VENTE] +
+                h_mean_cashflows[:, :, CF_OUT_IDX_VP_PRIMES_GARANTIES] +
+                h_mean_cashflows[:, :, CF_OUT_IDX_VP_PRIMES_VARIABLES] +
+                h_mean_cashflows[:, :, CF_OUT_IDX_VP_FRAIS_FIXES] +
+                h_mean_cashflows[:, :, CF_OUT_IDX_VP_HON_GEST] +
+                h_mean_cashflows[:, :, CF_OUT_IDX_VP_COMM_MAINTIEN] +
+                h_mean_cashflows[:, :, CF_OUT_IDX_VP_PREST_ECH] +
+                h_mean_cashflows[:, :, CF_OUT_IDX_VP_PREST_MRV] +
+                h_mean_cashflows[:, :, CF_OUT_IDX_VP_PREST_DECES]
+            )
+            batch_reserves = vp_total.sum(axis=1)  # Sum over months (already averaged across scenarios)
+        else:
+            batch_reserves = np.zeros(current_batch_size, dtype=np.float32)
         
         # No capital calculation without nested valuation
         batch_capital = np.zeros(current_batch_size, dtype=np.float32)
@@ -929,7 +954,7 @@ def process_batch(
         'batch_capital': batch_capital,
         'batch_reserves_5chocs': batch_reserves_5chocs,
         'batch_capital_5chocs': batch_capital_5chocs,
-        'batch_cashflows': h_cashflows,
+        'batch_mean_cashflows': h_mean_cashflows,  # Pre-averaged on GPU (batch, months, CF_OUT_IDX_SIZE)
         'batch_vp_flux_compte': h_vp_flux_compte,  # GPU-aggregated VP by account
         'batch_flux_projete': h_flux_projete,      # GPU-aggregated flux by year
         'ext_debug': h_ext_debug,
@@ -1004,9 +1029,37 @@ def create_results_dataframes(
     return results_df, results_5chocs_df, sensitivities_df
 
 
+FLUX_COLUMNS = [
+    'ID_COMPTE', 'AN_EVAL', 'MOIS_EVAL',
+    'FRAIS_ACQUIS', 'COMM_VENTE', 'PRIMES_GARANTIES', 'PRIMES_VARIABLES',
+    'FRAIS_FIXES', 'HON_GEST', 'COMM_MAINTIEN', 'PREST_ECH', 'PREST_MRV', 'PREST_DECES',
+    'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+    'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH', 'VP_PREST_MRV', 'VP_PREST_DECES',
+    'VP_VALEUR_MARCHANDE', 'UNITE_COUVERTURE', 'DEPOT_FUTUR', 'REM_COMP_INV',
+    'VALEUR_MARCHANDE', 'VALEUR_GARANTIE', 'DEPOT_FUTUR_SURVIE',
+    'PASSIF_REDRESSE', 'COUSSIN_CREDIT', 'COUSSIN_MARCHE', 'COUSSIN_DEPENSE',
+    'COUSSIN_DECHEANCE', 'COUSSIN_MORTALITE', 'COUSSIN_DEPOT',
+    'VP_PASSIF_REDRESSE', 'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE',
+    'VP_COUSSIN_DECHEANCE', 'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT',
+]
+
+FLUX_CF_INDICES = [
+    CF_OUT_IDX_FRAIS_ACQUIS, CF_OUT_IDX_COMM_VENTE, CF_OUT_IDX_PRIMES_GARANTIES, CF_OUT_IDX_PRIMES_VARIABLES,
+    CF_OUT_IDX_FRAIS_FIXES, CF_OUT_IDX_HON_GEST, CF_OUT_IDX_COMM_MAINTIEN, CF_OUT_IDX_PREST_ECH, CF_OUT_IDX_PREST_MRV, CF_OUT_IDX_PREST_DECES,
+    CF_OUT_IDX_VP_FRAIS_ACQUIS, CF_OUT_IDX_VP_COMM_VENTE, CF_OUT_IDX_VP_PRIMES_GARANTIES, CF_OUT_IDX_VP_PRIMES_VARIABLES,
+    CF_OUT_IDX_VP_FRAIS_FIXES, CF_OUT_IDX_VP_HON_GEST, CF_OUT_IDX_VP_COMM_MAINTIEN, CF_OUT_IDX_VP_PREST_ECH, CF_OUT_IDX_VP_PREST_MRV, CF_OUT_IDX_VP_PREST_DECES,
+    CF_OUT_IDX_VP_VALEUR_MARCHANDE, CF_OUT_IDX_UNITE_COUVERTURE, CF_OUT_IDX_DEPOT_FUTUR, CF_OUT_IDX_REM_COMP_INV,
+    CF_OUT_IDX_VALEUR_MARCHANDE, CF_OUT_IDX_VALEUR_GARANTIE, CF_OUT_IDX_DEPOT_FUTUR_SURVIE,
+    CF_OUT_IDX_PASSIF_REDRESSE, CF_OUT_IDX_COUSSIN_CREDIT, CF_OUT_IDX_COUSSIN_MARCHE, CF_OUT_IDX_COUSSIN_DEPENSE,
+    CF_OUT_IDX_COUSSIN_DECHEANCE, CF_OUT_IDX_COUSSIN_MORTALITE, CF_OUT_IDX_COUSSIN_DEPOT,
+    CF_OUT_IDX_VP_PASSIF_REDRESSE, CF_OUT_IDX_VP_COUSSIN_CREDIT, CF_OUT_IDX_VP_COUSSIN_MARCHE, CF_OUT_IDX_VP_COUSSIN_DEPENSE,
+    CF_OUT_IDX_VP_COUSSIN_DECHEANCE, CF_OUT_IDX_VP_COUSSIN_MORTALITE, CF_OUT_IDX_VP_COUSSIN_DEPOT,
+]
+
+
 def write_cashflows_batch(
     output_path: Path,
-    batch_cashflows: np.ndarray,
+    batch_mean_cashflows: np.ndarray,
     population_ids: np.ndarray,
     start_idx: int,
     is_first_batch: bool = False,
@@ -1014,102 +1067,87 @@ def write_cashflows_batch(
     """
     Write a batch of cashflows to FLUX_PROJETE_GPU.csv incrementally.
     
+    Uses direct numpy array operations and file writing for maximum speed.
+    
     Args:
         output_path: Directory to save CSV file
-        batch_cashflows: Cashflow tensor (batch_size, n_scenarios, n_years, CF_OUT_IDX_SIZE)
+        batch_mean_cashflows: Pre-averaged cashflow tensor (batch_size, n_months, CF_OUT_IDX_SIZE)
+                              Already averaged across scenarios on GPU
         population_ids: Array of account IDs
         start_idx: Starting index in population_ids for this batch
         is_first_batch: If True, write header; otherwise append
     """
-    # Take mean across scenarios (axis=1) to match SAS proc summary
-    # Result shape: (batch_size, n_months, CF_OUT_IDX_SIZE) where n_months = n_years * 12
-    mean_cashflows = batch_cashflows.mean(axis=1)
+    batch_size = batch_mean_cashflows.shape[0]
+    n_months_out = batch_mean_cashflows.shape[1]
     
-    batch_size = mean_cashflows.shape[0]
-    n_months_out = mean_cashflows.shape[1]
+    # Limit to valid accounts
+    end_idx = min(start_idx + batch_size, len(population_ids))
+    actual_batch_size = end_idx - start_idx
+    if actual_batch_size <= 0:
+        return 0
     
-    flux_rows = []
-    for batch_idx in range(batch_size):
-        acc_idx = start_idx + batch_idx
-        if acc_idx >= len(population_ids):
-            break
-        id_compte = int(population_ids[acc_idx])
-        
-        for month_idx in range(n_months_out):
-            # Calculate year and month from monthly index
-            an_eval = (month_idx // 12) + 1  # Year starts at 1
-            mois_eval = (month_idx % 12) + 1  # Month 1-12
-            cf = mean_cashflows[batch_idx, month_idx, :]
-            
-            # Skip if all zeros (no data)
-            if np.all(cf == 0):
-                continue
-            
-            flux_rows.append({
-                'ID_COMPTE': id_compte,
-                'AN_EVAL': an_eval,
-                'MOIS_EVAL': mois_eval,  # Monthly output (mois_eval=1-12)
-                # Non-discounted cashflows
-                'FRAIS_ACQUIS': float(cf[CF_OUT_IDX_FRAIS_ACQUIS]),
-                'COMM_VENTE': float(cf[CF_OUT_IDX_COMM_VENTE]),
-                'PRIMES_GARANTIES': float(cf[CF_OUT_IDX_PRIMES_GARANTIES]),
-                'PRIMES_VARIABLES': float(cf[CF_OUT_IDX_PRIMES_VARIABLES]),
-                'FRAIS_FIXES': float(cf[CF_OUT_IDX_FRAIS_FIXES]),
-                'HON_GEST': float(cf[CF_OUT_IDX_HON_GEST]),
-                'COMM_MAINTIEN': float(cf[CF_OUT_IDX_COMM_MAINTIEN]),
-                'PREST_ECH': float(cf[CF_OUT_IDX_PREST_ECH]),
-                'PREST_MRV': float(cf[CF_OUT_IDX_PREST_MRV]),
-                'PREST_DECES': float(cf[CF_OUT_IDX_PREST_DECES]),
-                # Present value cashflows
-                'VP_FRAIS_ACQUIS': float(cf[CF_OUT_IDX_VP_FRAIS_ACQUIS]),
-                'VP_COMM_VENTE': float(cf[CF_OUT_IDX_VP_COMM_VENTE]),
-                'VP_PRIMES_GARANTIES': float(cf[CF_OUT_IDX_VP_PRIMES_GARANTIES]),
-                'VP_PRIMES_VARIABLES': float(cf[CF_OUT_IDX_VP_PRIMES_VARIABLES]),
-                'VP_FRAIS_FIXES': float(cf[CF_OUT_IDX_VP_FRAIS_FIXES]),
-                'VP_HON_GEST': float(cf[CF_OUT_IDX_VP_HON_GEST]),
-                'VP_COMM_MAINTIEN': float(cf[CF_OUT_IDX_VP_COMM_MAINTIEN]),
-                'VP_PREST_ECH': float(cf[CF_OUT_IDX_VP_PREST_ECH]),
-                'VP_PREST_MRV': float(cf[CF_OUT_IDX_VP_PREST_MRV]),
-                'VP_PREST_DECES': float(cf[CF_OUT_IDX_VP_PREST_DECES]),
-                'VP_VALEUR_MARCHANDE': float(cf[CF_OUT_IDX_VP_VALEUR_MARCHANDE]),
-                # Coverage and values
-                'UNITE_COUVERTURE': float(cf[CF_OUT_IDX_UNITE_COUVERTURE]),
-                'DEPOT_FUTUR': float(cf[CF_OUT_IDX_DEPOT_FUTUR]),
-                'REM_COMP_INV': float(cf[CF_OUT_IDX_REM_COMP_INV]),
-                'VALEUR_MARCHANDE': float(cf[CF_OUT_IDX_VALEUR_MARCHANDE]),
-                'VALEUR_GARANTIE': float(cf[CF_OUT_IDX_VALEUR_GARANTIE]),
-                'DEPOT_FUTUR_SURVIE': float(cf[CF_OUT_IDX_DEPOT_FUTUR_SURVIE]),
-                # Cushions (non-discounted)
-                'PASSIF_REDRESSE': float(cf[CF_OUT_IDX_PASSIF_REDRESSE]),
-                'COUSSIN_CREDIT': float(cf[CF_OUT_IDX_COUSSIN_CREDIT]),
-                'COUSSIN_MARCHE': float(cf[CF_OUT_IDX_COUSSIN_MARCHE]),
-                'COUSSIN_DEPENSE': float(cf[CF_OUT_IDX_COUSSIN_DEPENSE]),
-                'COUSSIN_DECHEANCE': float(cf[CF_OUT_IDX_COUSSIN_DECHEANCE]),
-                'COUSSIN_MORTALITE': float(cf[CF_OUT_IDX_COUSSIN_MORTALITE]),
-                'COUSSIN_DEPOT': float(cf[CF_OUT_IDX_COUSSIN_DEPOT]),
-                # Cushions (present value)
-                'VP_PASSIF_REDRESSE': float(cf[CF_OUT_IDX_VP_PASSIF_REDRESSE]),
-                'VP_COUSSIN_CREDIT': float(cf[CF_OUT_IDX_VP_COUSSIN_CREDIT]),
-                'VP_COUSSIN_MARCHE': float(cf[CF_OUT_IDX_VP_COUSSIN_MARCHE]),
-                'VP_COUSSIN_DEPENSE': float(cf[CF_OUT_IDX_VP_COUSSIN_DEPENSE]),
-                'VP_COUSSIN_DECHEANCE': float(cf[CF_OUT_IDX_VP_COUSSIN_DECHEANCE]),
-                'VP_COUSSIN_MORTALITE': float(cf[CF_OUT_IDX_VP_COUSSIN_MORTALITE]),
-                'VP_COUSSIN_DEPOT': float(cf[CF_OUT_IDX_VP_COUSSIN_DEPOT]),
-            })
+    # Vectorized: create meshgrid of (account_idx, month_idx)
+    account_indices = np.arange(actual_batch_size)
+    month_indices = np.arange(n_months_out)
+    acc_grid, month_grid = np.meshgrid(account_indices, month_indices, indexing='ij')
+    acc_flat = acc_grid.ravel()  # (actual_batch_size * n_months_out,)
+    month_flat = month_grid.ravel()
     
-    if flux_rows:
-        df = pd.DataFrame(flux_rows)
-        flux_path = output_path / "FLUX_PROJETE_GPU.csv"
-        
+    # Vectorized: filter out all-zero rows
+    cf_flat = batch_mean_cashflows[:actual_batch_size].reshape(-1, batch_mean_cashflows.shape[2])
+    non_zero_mask = np.any(cf_flat != 0, axis=1)
+    
+    if not np.any(non_zero_mask):
+        return 0
+    
+    acc_flat = acc_flat[non_zero_mask]
+    month_flat = month_flat[non_zero_mask]
+    cf_flat = cf_flat[non_zero_mask]
+    
+    # Vectorized: compute ID_COMPTE, AN_EVAL, MOIS_EVAL
+    id_compte = population_ids[start_idx + acc_flat].astype(np.int64)
+    an_eval = ((month_flat // 12) + 1).astype(np.int32)
+    mois_eval = ((month_flat % 12) + 1).astype(np.int32)
+    
+    # Extract only the columns we need from cf_flat (much faster than pandas)
+    n_rows = len(id_compte)
+    n_cf_cols = len(FLUX_CF_INDICES)
+    
+    # Build output array: [ID_COMPTE, AN_EVAL, MOIS_EVAL, ...cf_columns...]
+    # Use object dtype for mixed int/float, then convert to strings efficiently
+    output_data = np.empty((n_rows, 3 + n_cf_cols), dtype=np.float64)
+    output_data[:, 0] = id_compte
+    output_data[:, 1] = an_eval
+    output_data[:, 2] = mois_eval
+    for i, idx in enumerate(FLUX_CF_INDICES):
+        output_data[:, 3 + i] = cf_flat[:, idx]
+    
+    flux_path = output_path / "FLUX_PROJETE_GPU.csv"
+    
+    # Write using numpy savetxt (much faster than pandas to_csv)
+    with open(flux_path, 'a' if not is_first_batch else 'w') as f:
         if is_first_batch:
-            # Write with header
-            df.to_csv(flux_path, index=False, sep=';', mode='w')
-        else:
-            # Append without header
-            df.to_csv(flux_path, index=False, sep=';', mode='a', header=False)
-        
-        return len(flux_rows)
-    return 0
+            f.write(';'.join(FLUX_COLUMNS) + '\n')
+        # Use fmt to control precision - integers for first 3 cols, floats for rest
+        fmt = ['%d', '%d', '%d'] + ['%.6g'] * n_cf_cols
+        np.savetxt(f, output_data, delimiter=';', fmt=fmt)
+    
+    return n_rows
+
+
+VP_FLUX_COLUMNS = [
+    'ID_COMPTE', 'VP_FRAIS_ACQUIS', 'VP_COMM_VENTE', 'VP_PRIMES_GARANTIES', 'VP_PRIMES_VARIABLES',
+    'VP_FRAIS_FIXES', 'VP_HON_GEST', 'VP_COMM_MAINTIEN', 'VP_PREST_ECH', 'VP_PREST_MRV', 'VP_PREST_DECES',
+    'VP_PASSIF_REDRESSE', 'VP_COUSSIN_CREDIT', 'VP_COUSSIN_MARCHE', 'VP_COUSSIN_DEPENSE',
+    'VP_COUSSIN_DECHEANCE', 'VP_COUSSIN_MORTALITE', 'VP_COUSSIN_DEPOT', 'VP_VALEUR_MARCHANDE',
+]
+
+VP_FLUX_INDICES = [
+    CF_OUT_IDX_VP_FRAIS_ACQUIS, CF_OUT_IDX_VP_COMM_VENTE, CF_OUT_IDX_VP_PRIMES_GARANTIES, CF_OUT_IDX_VP_PRIMES_VARIABLES,
+    CF_OUT_IDX_VP_FRAIS_FIXES, CF_OUT_IDX_VP_HON_GEST, CF_OUT_IDX_VP_COMM_MAINTIEN, CF_OUT_IDX_VP_PREST_ECH, CF_OUT_IDX_VP_PREST_MRV, CF_OUT_IDX_VP_PREST_DECES,
+    CF_OUT_IDX_VP_PASSIF_REDRESSE, CF_OUT_IDX_VP_COUSSIN_CREDIT, CF_OUT_IDX_VP_COUSSIN_MARCHE, CF_OUT_IDX_VP_COUSSIN_DEPENSE,
+    CF_OUT_IDX_VP_COUSSIN_DECHEANCE, CF_OUT_IDX_VP_COUSSIN_MORTALITE, CF_OUT_IDX_VP_COUSSIN_DEPOT, CF_OUT_IDX_VP_VALEUR_MARCHANDE,
+]
 
 
 def write_vp_flux_compte_batch(
@@ -1121,6 +1159,8 @@ def write_vp_flux_compte_batch(
 ):
     """
     Write a batch of VP_FLUX_COMPTE (VP by account) to CSV incrementally.
+    
+    Uses direct numpy savetxt for maximum speed.
     
     This matches SAS: PROC SUMMARY ... CLASS ID_COMPTE; VAR VP_*; OUTPUT SUM=
     
@@ -1135,49 +1175,31 @@ def write_vp_flux_compte_batch(
         return 0
     
     batch_size = batch_vp_flux_compte.shape[0]
+    end_idx = min(start_idx + batch_size, len(population_ids))
+    actual_batch_size = end_idx - start_idx
+    if actual_batch_size <= 0:
+        return 0
     
-    rows = []
-    for batch_idx in range(batch_size):
-        acc_idx = start_idx + batch_idx
-        if acc_idx >= len(population_ids):
-            break
-        id_compte = int(population_ids[acc_idx])
-        vp = batch_vp_flux_compte[batch_idx, :]
-        
-        rows.append({
-            'ID_COMPTE': id_compte,
-            # VP columns (matching SAS VP_FLUX_COMPTE output)
-            'VP_FRAIS_ACQUIS': float(vp[CF_OUT_IDX_VP_FRAIS_ACQUIS]),
-            'VP_COMM_VENTE': float(vp[CF_OUT_IDX_VP_COMM_VENTE]),
-            'VP_PRIMES_GARANTIES': float(vp[CF_OUT_IDX_VP_PRIMES_GARANTIES]),
-            'VP_PRIMES_VARIABLES': float(vp[CF_OUT_IDX_VP_PRIMES_VARIABLES]),
-            'VP_FRAIS_FIXES': float(vp[CF_OUT_IDX_VP_FRAIS_FIXES]),
-            'VP_HON_GEST': float(vp[CF_OUT_IDX_VP_HON_GEST]),
-            'VP_COMM_MAINTIEN': float(vp[CF_OUT_IDX_VP_COMM_MAINTIEN]),
-            'VP_PREST_ECH': float(vp[CF_OUT_IDX_VP_PREST_ECH]),
-            'VP_PREST_MRV': float(vp[CF_OUT_IDX_VP_PREST_MRV]),
-            'VP_PREST_DECES': float(vp[CF_OUT_IDX_VP_PREST_DECES]),
-            'VP_PASSIF_REDRESSE': float(vp[CF_OUT_IDX_VP_PASSIF_REDRESSE]),
-            'VP_COUSSIN_CREDIT': float(vp[CF_OUT_IDX_VP_COUSSIN_CREDIT]),
-            'VP_COUSSIN_MARCHE': float(vp[CF_OUT_IDX_VP_COUSSIN_MARCHE]),
-            'VP_COUSSIN_DEPENSE': float(vp[CF_OUT_IDX_VP_COUSSIN_DEPENSE]),
-            'VP_COUSSIN_DECHEANCE': float(vp[CF_OUT_IDX_VP_COUSSIN_DECHEANCE]),
-            'VP_COUSSIN_MORTALITE': float(vp[CF_OUT_IDX_VP_COUSSIN_MORTALITE]),
-            'VP_COUSSIN_DEPOT': float(vp[CF_OUT_IDX_VP_COUSSIN_DEPOT]),
-            'VP_VALEUR_MARCHANDE': float(vp[CF_OUT_IDX_VP_VALEUR_MARCHANDE]),
-        })
+    # Vectorized: extract account IDs
+    id_compte = population_ids[start_idx:end_idx].astype(np.int64)
+    vp = batch_vp_flux_compte[:actual_batch_size]
     
-    if rows:
-        df = pd.DataFrame(rows)
-        vp_path = output_path / "VP_FLUX_COMPTE_GPU.csv"
-        
+    # Build output array
+    n_vp_cols = len(VP_FLUX_INDICES)
+    output_data = np.empty((actual_batch_size, 1 + n_vp_cols), dtype=np.float64)
+    output_data[:, 0] = id_compte
+    for i, idx in enumerate(VP_FLUX_INDICES):
+        output_data[:, 1 + i] = vp[:, idx]
+    
+    vp_path = output_path / "VP_FLUX_COMPTE_GPU.csv"
+    
+    with open(vp_path, 'a' if not is_first_batch else 'w') as f:
         if is_first_batch:
-            df.to_csv(vp_path, index=False, sep=';', mode='w')
-        else:
-            df.to_csv(vp_path, index=False, sep=';', mode='a', header=False)
-        
-        return len(rows)
-    return 0
+            f.write(';'.join(VP_FLUX_COLUMNS) + '\n')
+        fmt = ['%d'] + ['%.6g'] * n_vp_cols
+        np.savetxt(f, output_data, delimiter=';', fmt=fmt)
+    
+    return actual_batch_size
 
 
 def accumulate_flux_projete(
@@ -2733,17 +2755,20 @@ def run_projection_gpu_nested(
         all_capital_5chocs.extend(batch_result['batch_capital_5chocs'])
         
         # Write cashflows incrementally to avoid memory issues
-        if batch_result.get('batch_cashflows') is not None:
+        if batch_result.get('batch_mean_cashflows') is not None:
+            csv_start = datetime.now()
             rows_written = write_cashflows_batch(
                 output_path=output_path,
-                batch_cashflows=batch_result['batch_cashflows'],
+                batch_mean_cashflows=batch_result['batch_mean_cashflows'],
                 population_ids=population_ids,
                 start_idx=start_idx,
                 is_first_batch=(i == 0),
             )
+            csv_time = (datetime.now() - csv_start).total_seconds()
+            logger.info(f"  FLUX_PROJETE CSV write: {csv_time:.2f}s ({rows_written} rows)")
             total_cashflow_rows += rows_written
             # Free memory immediately
-            del batch_result['batch_cashflows']
+            del batch_result['batch_mean_cashflows']
         
         # Write VP_FLUX_COMPTE incrementally (GPU-aggregated VP by account)
         if batch_result.get('batch_vp_flux_compte') is not None:

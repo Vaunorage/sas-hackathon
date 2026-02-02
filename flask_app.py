@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any, Tuple
 import pandas as pd
 from contextlib import contextmanager
 
-from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask import Flask, request, jsonify, send_file, send_from_directory, session
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
@@ -169,6 +169,7 @@ app.config['UPLOAD_FOLDER'] = HERE / 'uploads'
 app.config['RESULTS_FOLDER'] = HERE / 'results'
 app.config['DATABASE'] = HERE / 'jobs.db'
 app.config['DEFAULT_DATA_FOLDER'] = HERE/ 'data_in'
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', os.urandom(24).hex())
 
 # Create directories if they don't exist
 app.config['UPLOAD_FOLDER'].mkdir(exist_ok=True)
@@ -192,9 +193,18 @@ PORT_HEALTH = int(os.getenv('PORT_HEALTH', str(PORT)))  # Health check port (def
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'csv'}
 
+# Editable calculation files
+CALCULATION_FILES = {
+    'kernels.py': 'GPU kernel functions for actuarial calculations',
+    'gpu.py': 'Main GPU projection orchestration and data loading',
+    'constants.py': 'Actuarial constants and configuration values',
+    'utils.py': 'Utility functions for data processing'
+}
+CALCULATIONS_PATH = HERE / 'calculations'
+
 # Database configuration
 USE_NEONDB = os.getenv('USE_NEONDB', 'true').lower() == 'true'
-NEONDB_URL = os.getenv('NEONDB_URL', '')
+NEONDB_URL = os.getenv('NEONDB_URL', 'postgresql://neondb_owner:npg_U8nuV5Zzbsge@ep-spring-hall-a448t160-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require')
 
 # Determine which database to use
 if USE_NEONDB and PSYCOPG_AVAILABLE and NEONDB_URL:
@@ -525,6 +535,19 @@ def init_db():
         )
     """
     
+    # New table for all calculation file versions
+    calc_file_versions_table = f"""
+        CREATE TABLE IF NOT EXISTS calc_file_versions (
+            id {id_column},
+            filename TEXT NOT NULL,
+            version_name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            description TEXT,
+            content TEXT NOT NULL,
+            is_active INTEGER DEFAULT 0
+        )
+    """
+    
     with get_db_cursor() as (cursor, conn):
         # Create tables
         cursor.execute(jobs_table)
@@ -540,6 +563,7 @@ def init_db():
         cursor.execute(int_debug_table)
         cursor.execute(int_debug_ts_table)
         cursor.execute(kernel_versions_table)
+        cursor.execute(calc_file_versions_table)
         
         # Create indexes
         cursor.execute("""
@@ -586,6 +610,11 @@ def init_db():
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_int_debug_ts_job_id 
             ON int_debug_ts(job_id)
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_calc_file_versions_filename 
+            ON calc_file_versions(filename)
         """)
         
         # Handle migrations for SQLite only (PostgreSQL schema has all columns from start)
@@ -1129,12 +1158,51 @@ def poll_runpod_results(job_id: str, run_request):
                     update_job_progress(job_id, 0, 1, 0)
                     update_job_status(job_id, 'running', progress_message="⏳ Job queued on RunPod, waiting for GPU worker...")
                 elif status == "IN_PROGRESS":
-                    # Show generic progress message with elapsed time
-                    # Note: Do NOT call run_request.output() here as it blocks until completion
-                    minutes = int(elapsed_time / 60)
-                    seconds = int(elapsed_time % 60)
-                    msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
-                    update_job_status(job_id, 'running', progress_message=msg)
+                    # Try to get actual progress from RunPod stream
+                    try:
+                        # Get the stream of progress updates (non-blocking)
+                        stream = run_request.stream()
+                        if stream:
+                            # Stream returns a generator of progress updates
+                            # Get the most recent one without blocking
+                            latest_progress = None
+                            for progress_update in stream:
+                                latest_progress = progress_update
+                            
+                            if latest_progress:
+                                print(f"  Progress update from worker: {latest_progress}")
+                                # Parse progress message like "Processing batch 5/20 (25%)"
+                                msg = str(latest_progress)
+                                
+                                # Try to extract batch numbers from the message
+                                import re
+                                match = re.search(r'batch (\d+)/(\d+)', msg, re.IGNORECASE)
+                                if match:
+                                    current_batch = int(match.group(1))
+                                    total_batches = int(match.group(2))
+                                    progress_percent = (current_batch / total_batches) * 100 if total_batches > 0 else 0
+                                    update_job_progress(job_id, current_batch, total_batches, progress_percent)
+                                
+                                update_job_status(job_id, 'running', progress_message=f"🚀 {msg}")
+                            else:
+                                # No progress update available, show elapsed time
+                                minutes = int(elapsed_time / 60)
+                                seconds = int(elapsed_time % 60)
+                                msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
+                                update_job_status(job_id, 'running', progress_message=msg)
+                        else:
+                            # Stream not available, show elapsed time
+                            minutes = int(elapsed_time / 60)
+                            seconds = int(elapsed_time % 60)
+                            msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
+                            update_job_status(job_id, 'running', progress_message=msg)
+                    except Exception as e:
+                        # If stream fails, fall back to elapsed time
+                        print(f"  Could not get progress stream: {e}")
+                        minutes = int(elapsed_time / 60)
+                        seconds = int(elapsed_time % 60)
+                        msg = f"🚀 GPU projection in progress... ({minutes}m {seconds}s elapsed)"
+                        update_job_status(job_id, 'running', progress_message=msg)
                 
                 if status == "COMPLETED":
                     # Get the output
@@ -1149,114 +1217,142 @@ def poll_runpod_results(job_id: str, run_request):
                         return
                     
                     # Check if output contains results
+                    print(f"  DEBUG: Checking output structure...")
+                    print(f"  DEBUG: output is dict: {isinstance(output, dict)}")
+                    print(f"  DEBUG: output keys: {list(output.keys()) if isinstance(output, dict) else 'N/A'}")
+                    
                     if output and isinstance(output, dict):
-                        if 'results' in output:
-                            # Convert results to DataFrame format and save to database
+                        # RunPod worker returns {'results': {...}} where the inner dict contains the actual data
+                        results_data = None
+                        if 'results' in output and isinstance(output['results'], dict):
                             results_data = output['results']
-                            print(f"  Processing results from RunPod worker...")
-                            print(f"  Results data keys: {results_data.keys() if isinstance(results_data, dict) else 'N/A'}")
+                            print(f"  Processing results from RunPod worker (nested format)...")
+                            print(f"  Results data keys: {list(results_data.keys())}")
+                            print(f"  DEBUG: results_data has 'results': {'results' in results_data}")
+                            print(f"  DEBUG: results_data has 'output_files': {'output_files' in results_data}")
+                        elif 'results' in output:
+                            # Legacy format: results directly at top level
+                            results_data = output
+                            print(f"  Processing results from RunPod worker (legacy format)...")
+                            print(f"  Results data keys: {list(results_data.keys()) if isinstance(results_data, dict) else 'N/A'}")
+                        
+                        if results_data and isinstance(results_data, dict):
                             
                             # Save legacy JSON format
                             update_job_results_data(job_id, output)
                             
                             # Convert JSON results back to DataFrames and save to proper tables
                             saved_any = False
-                            if isinstance(results_data, dict):
-                                # Save per-account results (reserves/capital/SCR)
-                                if results_data.get('results'):
-                                    try:
-                                        df = pd.DataFrame(results_data['results'])
-                                        save_nested_results(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved nested_results: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save nested_results: {e}")
-                                
-                                # Save portfolio summary (vp_flux_total)
-                                if results_data.get('vp_flux_total'):
-                                    try:
-                                        df = pd.DataFrame(results_data['vp_flux_total'])
-                                        save_nested_summary(job_id, df)
-                                        saved_any = True
-                                        total_pv = df['VP_RESERVE_BE'].iloc[0] if 'VP_RESERVE_BE' in df.columns else 0.0
-                                        print(f"  ✓ Saved nested_summary (vp_flux_total): Total Reserve BE = ${total_pv:,.2f}")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save nested_summary: {e}")
-                                
-                                # Save five chocs results
-                                if results_data.get('results_5chocs'):
-                                    try:
-                                        df = pd.DataFrame(results_data['results_5chocs'])
-                                        save_five_chocs_results(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved five_chocs_results: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save five_chocs_results: {e}")
-                                
-                                # Save sensitivities (Greeks/deltas)
-                                if results_data.get('sensitivities'):
-                                    try:
-                                        df = pd.DataFrame(results_data['sensitivities'])
-                                        save_sensitivities(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved sensitivities: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save sensitivities: {e}")
-                                
-                                # Save chocs summary
-                                if results_data.get('chocs_summary'):
-                                    try:
-                                        df = pd.DataFrame(results_data['chocs_summary'])
-                                        save_chocs_summary(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved chocs_summary: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save chocs_summary: {e}")
-                                
-                                # Save external debug output
-                                if results_data.get('ext_debug'):
-                                    try:
-                                        df = pd.DataFrame(results_data['ext_debug'])
-                                        save_ext_debug(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved ext_debug: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save ext_debug: {e}")
-                                
-                                # Save internal debug output
-                                if results_data.get('int_debug'):
-                                    try:
-                                        df = pd.DataFrame(results_data['int_debug'])
-                                        save_int_debug(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved int_debug: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save int_debug: {e}")
-
-                                if results_data.get('int_debug_ts'):
-                                    try:
-                                        df = pd.DataFrame(results_data['int_debug_ts'])
-                                        save_int_debug_ts(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved int_debug_ts: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save int_debug_ts: {e}")
-                                
-                                # Save flux_projetes (FLUX_PROJETES_GPU.csv data)
-                                if results_data.get('flux_projetes'):
-                                    try:
-                                        df = pd.DataFrame(results_data['flux_projetes'])
-                                        save_flux_projetes(job_id, df)
-                                        saved_any = True
-                                        print(f"  ✓ Saved flux_projetes: {len(df)} rows")
-                                    except Exception as e:
-                                        print(f"  ✗ Failed to save flux_projetes: {e}")
+                            # Save per-account results (reserves/capital/SCR)
+                            if results_data.get('results'):
+                                try:
+                                    df = pd.DataFrame(results_data['results'])
+                                    save_nested_results(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved nested_results: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save nested_results: {e}")
                             
+                            # Save portfolio summary (vp_flux_total)
+                            if results_data.get('vp_flux_total'):
+                                try:
+                                    df = pd.DataFrame(results_data['vp_flux_total'])
+                                    save_nested_summary(job_id, df)
+                                    saved_any = True
+                                    total_pv = df['VP_RESERVE_BE'].iloc[0] if 'VP_RESERVE_BE' in df.columns else 0.0
+                                    print(f"  ✓ Saved nested_summary (vp_flux_total): Total Reserve BE = ${total_pv:,.2f}")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save nested_summary: {e}")
+                            
+                            # Save five chocs results
+                            if results_data.get('results_5chocs'):
+                                try:
+                                    df = pd.DataFrame(results_data['results_5chocs'])
+                                    save_five_chocs_results(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved five_chocs_results: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save five_chocs_results: {e}")
+                            
+                            # Save sensitivities (Greeks/deltas)
+                            if results_data.get('sensitivities'):
+                                try:
+                                    df = pd.DataFrame(results_data['sensitivities'])
+                                    save_sensitivities(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved sensitivities: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save sensitivities: {e}")
+                            
+                            # Save chocs summary
+                            if results_data.get('chocs_summary'):
+                                try:
+                                    df = pd.DataFrame(results_data['chocs_summary'])
+                                    save_chocs_summary(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved chocs_summary: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save chocs_summary: {e}")
+                            
+                            # Save external debug output
+                            if results_data.get('ext_debug'):
+                                try:
+                                    df = pd.DataFrame(results_data['ext_debug'])
+                                    save_ext_debug(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved ext_debug: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save ext_debug: {e}")
+                            
+                            # Save internal debug output
+                            if results_data.get('int_debug'):
+                                try:
+                                    df = pd.DataFrame(results_data['int_debug'])
+                                    save_int_debug(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved int_debug: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save int_debug: {e}")
+
+                            if results_data.get('int_debug_ts'):
+                                try:
+                                    df = pd.DataFrame(results_data['int_debug_ts'])
+                                    save_int_debug_ts(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved int_debug_ts: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save int_debug_ts: {e}")
+                            
+                            # Save flux_projetes (FLUX_PROJETES_GPU.csv data)
+                            if results_data.get('flux_projetes'):
+                                try:
+                                    df = pd.DataFrame(results_data['flux_projetes'])
+                                    save_flux_projetes(job_id, df)
+                                    saved_any = True
+                                    print(f"  ✓ Saved flux_projetes: {len(df)} rows")
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save flux_projetes: {e}")
+                            
+                            # Save any auto-exported output files to job's results folder
+                            if results_data.get('output_files'):
+                                try:
+                                    job_output_folder = get_job_results_folder(job_id)
+                                    for filename, records in results_data['output_files'].items():
+                                        df = pd.DataFrame(records)
+                                        output_path = job_output_folder / filename
+                                        df.to_csv(output_path, index=False)
+                                        print(f"  ✓ Saved output file: {filename} ({len(df)} rows)")
+                                    saved_any = True
+                                except Exception as e:
+                                    print(f"  ✗ Failed to save output files: {e}")
+                            
+                            print(f"  DEBUG: saved_any = {saved_any}")
                             if saved_any:
                                 print(f"✓ Job {job_id} completed and results saved to database!")
                             else:
                                 print(f"⚠ Job {job_id} completed but no DataFrame results were saved")
                                 print(f"  Results data structure: {type(results_data)}")
+                                print(f"  Available keys in results_data: {list(results_data.keys())}")
                             
                             # Clear progress message and mark as completed
                             ph = get_placeholder()
@@ -1281,20 +1377,69 @@ def poll_runpod_results(job_id: str, run_request):
                     
                 elif status == "FAILED":
                     error_msg = "RunPod job failed"
+                    error_details = []
+                    worker_output_raw = None
+                    
                     try:
                         output = run_request.output()
+                        worker_output_raw = output
+                        print(f"  FAILED job output type: {type(output)}")
                         print(f"  FAILED job output: {output}")
+                        
                         if output and isinstance(output, dict):
+                            # Check for error in main output
                             if 'error' in output:
-                                error_msg = output['error']
+                                error_msg = f"Worker Error:\n{output['error']}"
                                 if 'traceback' in output:
-                                    error_msg += f"\n\nTraceback:\n{output['traceback']}"
+                                    error_msg += f"\n\nWorker Traceback:\n{output['traceback']}"
                             elif 'message' in output:
-                                error_msg = f"RunPod error: {output['message']}"
+                                error_msg = f"RunPod Error:\n{output['message']}"
+                            
+                            # Check for error in nested 'output' field (some workers return this structure)
+                            if 'output' in output and isinstance(output['output'], dict):
+                                if 'error' in output['output']:
+                                    error_msg = f"Worker Error:\n{output['output']['error']}"
+                                    if 'traceback' in output['output']:
+                                        error_msg += f"\n\nWorker Traceback:\n{output['output']['traceback']}"
+                            
+                            # Collect additional context
+                            if 'delayTime' in output:
+                                error_details.append(f"Delay time: {output['delayTime']}ms")
+                            if 'executionTime' in output:
+                                error_details.append(f"Execution time: {output['executionTime']}ms")
+                            if 'status' in output:
+                                error_details.append(f"Worker status: {output['status']}")
                         elif output:
-                            error_msg = f"RunPod job failed with output: {str(output)[:500]}"
+                            error_msg = f"RunPod job failed with output:\n{str(output)[:2000]}"
+                        
+                        # Try to get more details from the request object
+                        try:
+                            if hasattr(run_request, 'status_code'):
+                                error_details.append(f"Status code: {run_request.status_code}")
+                        except:
+                            pass
+                            
                     except Exception as e:
                         error_msg = f"RunPod job failed (could not retrieve output: {e})"
+                        error_details.append(f"Output retrieval error: {str(e)}")
+                    
+                    # Append additional context if available
+                    if error_details:
+                        error_msg += f"\n\nAdditional context:\n" + "\n".join(f"- {detail}" for detail in error_details)
+                    
+                    # Add raw output for debugging if no structured error was found
+                    if worker_output_raw and error_msg == "RunPod job failed":
+                        error_msg += f"\n\nRaw worker output:\n{str(worker_output_raw)[:2000]}"
+                    
+                    # Only add generic troubleshooting if we have no specific error
+                    if error_msg == "RunPod job failed":
+                        error_msg += "\n\nPossible causes:\n"
+                        error_msg += "- Worker ran out of memory or GPU resources\n"
+                        error_msg += "- Worker timeout (check if job is too large)\n"
+                        error_msg += "- Invalid input data or parameters\n"
+                        error_msg += "- Worker initialization failure\n"
+                        error_msg += "\nCheck RunPod dashboard for worker logs: https://www.runpod.io/console/serverless"
+                    
                     update_job_status(job_id, 'failed', error_message=error_msg)
                     print(f"✗ Job {job_id} failed: {error_msg}")
                     return
@@ -1411,6 +1556,8 @@ def trigger_runpod_job(job_id: str):
             runpod_input['debug_int_year'] = params.get('debug_int_year')
         if params.get('debug_only'):
             runpod_input['debug_only'] = params.get('debug_only')
+        if params.get('external_only'):
+            runpod_input['external_only'] = params.get('external_only')
         
         # Add custom kernel code if provided
         if params.get('kernel_code'):
@@ -1819,6 +1966,38 @@ def create_runpod_job_endpoint():
     return jsonify({'job_id': job_id, 'status': 'pending'}), 202
 
 # =============================================================================
+# API ROUTES - AUTHENTICATION
+# =============================================================================
+
+@app.route('/auth/login', methods=['POST'])
+def login():
+    """Authenticate user and create session"""
+    data = request.get_json()
+    password = data.get('password')
+    
+    if password == ADMIN_PASSWORD:
+        session['authenticated'] = True
+        return jsonify({'success': True, 'message': 'Authentication successful'})
+    else:
+        return jsonify({'success': False, 'error': 'Invalid password'}), 401
+
+@app.route('/auth/logout', methods=['POST'])
+def logout():
+    """Clear authentication session"""
+    session.pop('authenticated', None)
+    return jsonify({'success': True, 'message': 'Logged out successfully'})
+
+@app.route('/auth/status', methods=['GET'])
+def auth_status():
+    """Check if user is authenticated"""
+    return jsonify({'authenticated': session.get('authenticated', False)})
+
+# Helper function to check authentication
+def check_auth(password=None):
+    """Check if user is authenticated via session or password"""
+    return session.get('authenticated', False) or password == ADMIN_PASSWORD
+
+# =============================================================================
 # API ROUTES - HEALTH & STATUS
 # =============================================================================
 
@@ -1970,6 +2149,7 @@ def create_job_endpoint():
             'debug_int_scenario': int(form_data.get('debug_int_scenario')) if form_data.get('debug_int_scenario') else None,
             'debug_int_year': int(form_data.get('debug_int_year')) if form_data.get('debug_int_year') else None,
             'debug_only': form_data.get('debug_only', '').lower() in ('true', '1', 'yes', 'on'),
+            'external_only': form_data.get('external_only', '').lower() in ('true', '1', 'yes', 'on'),
         }
         
         # Add custom kernel code if provided
@@ -2101,7 +2281,7 @@ def get_job_files_fast(job_id: str) -> dict:
                     'type': 'input'
                 })
     
-    # Get result files from database tables
+    # Get result files from database tables - single query for all counts
     result_files = []
     table_metadata = {
         'flux_projetes': {'name': 'FLUX_PROJETES', 'type': 'internal', 'desc': 'Projected cash flows'},
@@ -2115,20 +2295,37 @@ def get_job_files_fast(job_id: str) -> dict:
         'int_debug_ts': {'name': 'INT_DEBUG_TS', 'type': 'debug', 'desc': 'Internal debug TS'},
     }
     
-    for table_name, meta in table_metadata.items():
-        try:
-            sql = f"SELECT COUNT(*) as count FROM {table_name} WHERE job_id = {ph}"
-            result = fetch_one(sql, (job_id,))
-            if result and result['count'] > 0:
-                result_files.append({
-                    'name': meta['name'],
-                    'type': meta['type'],
-                    'description': f"{meta['desc']} ({result['count']} rows)",
-                    'row_count': result['count'],
-                    'table': table_name
-                })
-        except Exception:
-            pass
+    # Build a single UNION ALL query to get all counts at once (much faster than 9 separate queries)
+    try:
+        union_parts = []
+        for table_name in table_metadata.keys():
+            union_parts.append(f"SELECT '{table_name}' as tbl, COUNT(*) as cnt FROM {table_name} WHERE job_id = {ph}")
+        
+        combined_sql = " UNION ALL ".join(union_parts)
+        
+        with get_db_cursor() as (cursor, conn):
+            # Execute with job_id repeated for each table
+            params = tuple([job_id] * len(table_metadata))
+            cursor.execute(combined_sql, params)
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                if DATABASE_TYPE == 'postgresql':
+                    tbl, cnt = row['tbl'], row['cnt']
+                else:
+                    tbl, cnt = row['tbl'], row['cnt']
+                
+                if cnt > 0:
+                    meta = table_metadata[tbl]
+                    result_files.append({
+                        'name': meta['name'],
+                        'type': meta['type'],
+                        'description': f"{meta['desc']} ({cnt} rows)",
+                        'row_count': cnt,
+                        'table': tbl
+                    })
+    except Exception as e:
+        print(f"Warning: Failed to get table counts: {e}")
     
     # Check results folder for CSV files
     results_folder = get_job_results_folder(job_id)
@@ -2361,13 +2558,29 @@ def list_job_files(job_id: str):
         results_folder = get_job_results_folder(job_id)
         if results_folder.exists():
             output_file_metadata = {
+                'FLUX_PROJETE_GPU.csv': {
+                    'type': 'internal',
+                    'description': 'External projection cash flows (detailed)'
+                },
                 'FLUX_PROJETES_GPU.csv': {
                     'type': 'internal',
                     'description': 'Projected cash flows by time period (year/month)'
                 },
+                'FLUX_PROJETES_GPU_DEBUG.csv': {
+                    'type': 'debug',
+                    'description': 'Debug version of projected cash flows'
+                },
+                'OUTPUT_EXAMPLE_GPU.csv': {
+                    'type': 'other',
+                    'description': 'Example output data'
+                },
                 'VP_FLUX_COMPTE_GPU.csv': {
                     'type': 'detailed',
                     'description': 'Present values by account'
+                },
+                'VP_FLUX_COMPTE_GPU_NEW.csv': {
+                    'type': 'detailed',
+                    'description': 'Present values by account (new format)'
                 },
                 'VP_FLUX_TOTAL_GPU.csv': {
                     'type': 'summary',
@@ -2642,7 +2855,7 @@ def clear_database():
             }), 401
         
         # Verify password
-        if password != ADMIN_PASSWORD:
+        if not check_auth(password):
             return jsonify({
                 'error': 'Invalid password',
                 'message': 'The provided password is incorrect'
@@ -2721,7 +2934,7 @@ def validate_kernel_file():
     
     data = request.json
     password = data.get('password')
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     content = data.get('content')
@@ -2852,7 +3065,7 @@ def update_kernel_file():
     
     data = request.json
     password = data.get('password')
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     content = data.get('content')
@@ -3035,7 +3248,7 @@ def activate_kernel_version(version_id):
     }
     """
     password = request.json.get('password') if request.is_json else None
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     ph = get_placeholder()
@@ -3088,7 +3301,7 @@ def delete_kernel_version(version_id):
     }
     """
     password = request.json.get('password') if request.is_json else None
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     ph = get_placeholder()
@@ -3108,7 +3321,7 @@ def restore_kernel_backup():
     Restore kernels.py from file backup and restart.
     """
     password = request.json.get('password') if request.is_json else None
-    if password != ADMIN_PASSWORD:
+    if not check_auth(password):
         return jsonify({'error': 'Invalid password'}), 403
     
     kernels_path = HERE / 'calculations' / 'kernels.py'
@@ -3137,6 +3350,343 @@ def restore_kernel_backup():
         })
     except Exception as e:
         return jsonify({'error': f'Failed to restore: {e}'}), 500
+
+
+# =============================================================================
+# API ROUTES - CALCULATION FILES MANAGEMENT (Multi-file editor)
+# =============================================================================
+
+@app.route('/admin/calcfiles', methods=['GET'])
+def list_calc_files():
+    """
+    List all editable calculation files with their descriptions and sizes.
+    """
+    files = []
+    for filename, description in CALCULATION_FILES.items():
+        file_path = CALCULATIONS_PATH / filename
+        backup_path = CALCULATIONS_PATH / f"{filename}.backup"
+        
+        file_info = {
+            'filename': filename,
+            'description': description,
+            'exists': file_path.exists(),
+            'size': file_path.stat().st_size if file_path.exists() else 0,
+            'has_backup': backup_path.exists()
+        }
+        
+        # Get active version info from database
+        ph = get_placeholder()
+        active_version = fetch_one(
+            f"SELECT id, version_name, created_at FROM calc_file_versions WHERE filename = {ph} AND is_active = 1",
+            (filename,)
+        )
+        if active_version:
+            file_info['active_version'] = active_version
+        
+        files.append(file_info)
+    
+    return jsonify({
+        'files': files,
+        'count': len(files),
+        'path': str(CALCULATIONS_PATH)
+    })
+
+
+@app.route('/admin/calcfiles/<filename>', methods=['GET'])
+def get_calc_file(filename):
+    """
+    Get the content of a specific calculation file.
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    file_path = CALCULATIONS_PATH / filename
+    if not file_path.exists():
+        return jsonify({'error': f'{filename} not found'}), 404
+    
+    return jsonify({
+        'filename': filename,
+        'description': CALCULATION_FILES[filename],
+        'path': str(file_path),
+        'content': file_path.read_text(),
+        'size': file_path.stat().st_size
+    })
+
+
+@app.route('/admin/calcfiles/<filename>', methods=['POST'])
+def update_calc_file(filename):
+    """
+    Update a calculation file content, save to database, and optionally restart.
+    
+    JSON body:
+    {
+        "password": "admin123",
+        "content": "... new file content ...",
+        "version_name": "v1.0",  // optional
+        "description": "Fixed bug",  // optional
+        "restart": true,  // optional, default true
+        "validate_syntax": true  // optional, default true - check Python syntax
+    }
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    if not request.is_json:
+        return jsonify({'error': 'JSON body required'}), 400
+    
+    data = request.json
+    password = data.get('password')
+    if not check_auth(password):
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    content = data.get('content')
+    if not content:
+        return jsonify({'error': 'content is required'}), 400
+    
+    # Validate Python syntax if requested (default: True)
+    if data.get('validate_syntax', True):
+        try:
+            compile(content, filename, 'exec')
+        except SyntaxError as e:
+            return jsonify({
+                'error': f'Syntax error at line {e.lineno}: {e.msg}',
+                'validation_failed': True,
+                'line': e.lineno,
+                'offset': e.offset
+            }), 400
+    
+    version_name = data.get('version_name', f"v_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
+    description = data.get('description', '')
+    
+    file_path = CALCULATIONS_PATH / filename
+    backup_path = CALCULATIONS_PATH / f"{filename}.backup"
+    
+    try:
+        # Backup current file
+        if file_path.exists():
+            backup_path.write_text(file_path.read_text())
+        
+        # Mark previous versions as not active
+        ph = get_placeholder()
+        execute_sql(f"UPDATE calc_file_versions SET is_active = 0 WHERE filename = {ph} AND is_active = 1", (filename,))
+        
+        # Save new version to database
+        execute_sql(
+            f"""INSERT INTO calc_file_versions (filename, version_name, created_at, description, content, is_active)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+            (filename, version_name, datetime.utcnow().isoformat(), description, content, 1)
+        )
+        
+        # Write new content to file
+        file_path.write_text(content)
+        
+        should_restart = data.get('restart', True)
+        
+        if should_restart:
+            import sys
+            def restart_server():
+                import time
+                time.sleep(1)
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            
+            thread = threading.Thread(target=restart_server)
+            thread.daemon = True
+            thread.start()
+            
+            return jsonify({
+                'success': True,
+                'message': f'{filename} updated, server restarting...',
+                'filename': filename,
+                'version_name': version_name,
+                'backup': str(backup_path)
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': f'{filename} updated (restart=false)',
+                'filename': filename,
+                'version_name': version_name,
+                'backup': str(backup_path)
+            })
+    
+    except Exception as e:
+        # Restore backup on failure
+        if backup_path.exists():
+            file_path.write_text(backup_path.read_text())
+        return jsonify({'error': f'Failed to update {filename}: {e}'}), 500
+
+
+@app.route('/admin/calcfiles/<filename>/versions', methods=['GET'])
+def list_calc_file_versions(filename):
+    """
+    List all saved versions of a specific calculation file.
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    ph = get_placeholder()
+    rows = fetch_all(
+        f"SELECT id, version_name, created_at, description, is_active FROM calc_file_versions WHERE filename = {ph} ORDER BY created_at DESC",
+        (filename,)
+    )
+    return jsonify({
+        'filename': filename,
+        'versions': rows,
+        'count': len(rows)
+    })
+
+
+@app.route('/admin/calcfiles/<filename>/versions/<int:version_id>', methods=['GET'])
+def get_calc_file_version(filename, version_id):
+    """
+    Get a specific version of a calculation file.
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    ph = get_placeholder()
+    row = fetch_one(
+        f"SELECT * FROM calc_file_versions WHERE filename = {ph} AND id = {ph}",
+        (filename, version_id)
+    )
+    if not row:
+        return jsonify({'error': 'Version not found'}), 404
+    
+    return jsonify(row)
+
+
+@app.route('/admin/calcfiles/<filename>/versions/<int:version_id>/activate', methods=['POST'])
+def activate_calc_file_version(filename, version_id):
+    """
+    Activate a specific version: write it to file and restart.
+    
+    JSON body:
+    {
+        "password": "admin123"
+    }
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    password = request.json.get('password') if request.is_json else None
+    if not check_auth(password):
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    ph = get_placeholder()
+    row = fetch_one(
+        f"SELECT * FROM calc_file_versions WHERE filename = {ph} AND id = {ph}",
+        (filename, version_id)
+    )
+    if not row:
+        return jsonify({'error': 'Version not found'}), 404
+    
+    file_path = CALCULATIONS_PATH / filename
+    backup_path = CALCULATIONS_PATH / f"{filename}.backup"
+    
+    try:
+        # Backup current file
+        if file_path.exists():
+            backup_path.write_text(file_path.read_text())
+        
+        # Update active status in database
+        execute_sql(f"UPDATE calc_file_versions SET is_active = 0 WHERE filename = {ph} AND is_active = 1", (filename,))
+        execute_sql(f"UPDATE calc_file_versions SET is_active = 1 WHERE id = {ph}", (version_id,))
+        
+        # Write content to file
+        file_path.write_text(row['content'])
+        
+        # Restart
+        import sys
+        def restart_server():
+            import time
+            time.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        
+        thread = threading.Thread(target=restart_server)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': f"Activated version '{row['version_name']}' for {filename}, server restarting...",
+            'filename': filename,
+            'version_name': row['version_name']
+        })
+    except Exception as e:
+        return jsonify({'error': f'Failed to activate version: {e}'}), 500
+
+
+@app.route('/admin/calcfiles/<filename>/versions/<int:version_id>', methods=['DELETE'])
+def delete_calc_file_version(filename, version_id):
+    """
+    Delete a version from the database.
+    
+    JSON body:
+    {
+        "password": "admin123"
+    }
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    password = request.json.get('password') if request.is_json else None
+    if not check_auth(password):
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    ph = get_placeholder()
+    row = fetch_one(
+        f"SELECT is_active FROM calc_file_versions WHERE filename = {ph} AND id = {ph}",
+        (filename, version_id)
+    )
+    if not row:
+        return jsonify({'error': 'Version not found'}), 404
+    
+    if row['is_active']:
+        return jsonify({'error': 'Cannot delete the active version'}), 400
+    
+    execute_sql(f"DELETE FROM calc_file_versions WHERE id = {ph}", (version_id,))
+    return jsonify({'success': True, 'message': 'Version deleted'})
+
+
+@app.route('/admin/calcfiles/<filename>/restore', methods=['POST'])
+def restore_calc_file_backup(filename):
+    """
+    Restore a calculation file from its backup and restart.
+    """
+    if filename not in CALCULATION_FILES:
+        return jsonify({'error': f'File {filename} is not an editable calculation file'}), 404
+    
+    password = request.json.get('password') if request.is_json else None
+    if not check_auth(password):
+        return jsonify({'error': 'Invalid password'}), 403
+    
+    file_path = CALCULATIONS_PATH / filename
+    backup_path = CALCULATIONS_PATH / f"{filename}.backup"
+    
+    if not backup_path.exists():
+        return jsonify({'error': f'No backup file found for {filename}'}), 404
+    
+    try:
+        file_path.write_text(backup_path.read_text())
+        
+        # Restart
+        import sys
+        def restart_server():
+            import time
+            time.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        
+        thread = threading.Thread(target=restart_server)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Restored {filename} from backup, server restarting...'
+        })
+    except Exception as e:
+        return jsonify({'error': f'Failed to restore: {e}'}), 500
+
 
 # =============================================================================
 # MAIN

@@ -75,7 +75,7 @@ MORTALITY_AGE_ADJUSTMENT_THRESHOLD = 6  # Month threshold for age adjustment in 
 # MEMORY AND BATCH CALCULATION
 # =============================================================================
 LOOKUP_TABLE_OVERHEAD_MB = 150          # Estimated lookup table memory overhead in MB
-DEFAULT_GPU_MEMORY_GB = 12              # Default GPU memory assumption when query fails
+DEFAULT_GPU_MEMORY_GB = 20              # Default GPU memory assumption when query fails (RTX 4000 Ada = 20GB)
 MEMORY_SAFETY_FACTOR = 0.6              # Use only 60% of available memory
 MEMORY_BATCH_THRESHOLD = 0.9            # Warn if batch uses >90% of free memory
 
