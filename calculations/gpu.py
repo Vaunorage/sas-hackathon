@@ -2573,7 +2573,8 @@ def run_projection_gpu_nested(
         debug_int_scenario: int = -1,
         debug_int_year: int = -1,
         debug_only: bool = False,
-        run_nested_valuation: bool = True):
+        run_nested_valuation: bool = True,
+        write_detailed_cashflows: bool = True):
     """
     Run GPU-accelerated nested stochastic projection using Two-Pass architecture.
     
@@ -2586,6 +2587,8 @@ def run_projection_gpu_nested(
                    specified by debug_account (filters population to that account only).
         run_nested_valuation: If True (default), run both Kernel A and Kernel B (full nested valuation).
                              If False, run only Kernel A (outer loop only - no nested valuation).
+        write_detailed_cashflows: If True (default), write FLUX_PROJETE_GPU.csv (per-account cashflows).
+                                  If False, skip this file to save compute time.
     """
     start_time = datetime.now()
     print(f"Starting {'NESTED STOCHASTIC' if run_nested_valuation else 'OUTER LOOP ONLY'} GPU projection at {start_time}")
@@ -2754,8 +2757,8 @@ def run_projection_gpu_nested(
         all_reserves_5chocs.extend(batch_result['batch_reserves_5chocs'])
         all_capital_5chocs.extend(batch_result['batch_capital_5chocs'])
         
-        # Write cashflows incrementally to avoid memory issues
-        if batch_result.get('batch_mean_cashflows') is not None:
+        # Write cashflows incrementally to avoid memory issues (if enabled)
+        if write_detailed_cashflows and batch_result.get('batch_mean_cashflows') is not None:
             csv_start = datetime.now()
             rows_written = write_cashflows_batch(
                 output_path=output_path,
@@ -2767,7 +2770,8 @@ def run_projection_gpu_nested(
             csv_time = (datetime.now() - csv_start).total_seconds()
             logger.info(f"  FLUX_PROJETE CSV write: {csv_time:.2f}s ({rows_written} rows)")
             total_cashflow_rows += rows_written
-            # Free memory immediately
+        # Free memory immediately
+        if batch_result.get('batch_mean_cashflows') is not None:
             del batch_result['batch_mean_cashflows']
         
         # Write VP_FLUX_COMPTE incrementally (GPU-aggregated VP by account)
@@ -2995,6 +2999,8 @@ Examples:
                         help='Internal scenario to debug (-1 = disabled)')
     parser.add_argument('--debug-int-year', type=int, default=1,
                         help='Internal year to debug (-1 = disabled)')
+    parser.add_argument('--write-detailed-cashflows', action='store_true',
+                        help='Write FLUX_PROJETE_GPU.csv (per-account cashflows). Disabled by default to save compute time.')
 
     args = parser.parse_args()
     
@@ -3029,6 +3035,7 @@ Examples:
             debug_int_scenario=args.debug_int_scenario,
             debug_int_year=args.debug_int_year,
             run_nested_valuation=not args.outer_loop_only,
+            write_detailed_cashflows=args.write_detailed_cashflows,
         )
 
         if results:
