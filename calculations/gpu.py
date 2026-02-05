@@ -2574,7 +2574,7 @@ def run_projection_gpu_nested(
         debug_int_year: int = -1,
         debug_only: bool = False,
         run_nested_valuation: bool = True,
-        write_detailed_cashflows: bool = True):
+        write_detailed_cashflows: bool = False):
     """
     Run GPU-accelerated nested stochastic projection using Two-Pass architecture.
     
