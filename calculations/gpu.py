@@ -2591,6 +2591,18 @@ def run_projection_gpu_nested(
                                   If False, skip this file to save compute time.
     """
     start_time = datetime.now()
+    
+    # Clear output directory before starting
+    if output_path.exists():
+        import shutil
+        print(f"Clearing output directory: {output_path}")
+        for item in output_path.glob('*.csv'):
+            item.unlink()
+        print(f"✓ Removed {len(list(output_path.glob('*')))} old files")
+    else:
+        output_path.mkdir(parents=True, exist_ok=True)
+        print(f"Created output directory: {output_path}")
+    
     print(f"Starting {'NESTED STOCHASTIC' if run_nested_valuation else 'OUTER LOOP ONLY'} GPU projection at {start_time}")
     print("=" * 80)
     if run_nested_valuation:
