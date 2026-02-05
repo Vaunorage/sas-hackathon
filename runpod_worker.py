@@ -8,87 +8,147 @@ import traceback
 import os
 import sys
 
-# Store original kernel content for restoration
+# Store original file contents for restoration
 # Use environment variable or default path for Docker compatibility
-KERNELS_PATH = Path(os.environ.get('KERNELS_PATH', Path(__file__).parent / 'calculations' / 'kernels.py'))
-_original_kernel_content = None
+CALCULATIONS_PATH = Path(os.environ.get('CALCULATIONS_PATH', Path(__file__).parent / 'calculations'))
+_original_file_contents = {}  # {filename: content}
+
+# Supported calculation files that can be customized
+SUPPORTED_CALC_FILES = ['kernels.py', 'gpu.py', 'constants.py', 'utils.py']
 
 
-def apply_custom_kernel(kernel_code: str) -> dict:
+def apply_calc_files(calc_files: dict) -> dict:
     """
-    Apply custom kernel code by writing to kernels.py and reloading modules.
+    Apply custom calculation files by writing to disk and reloading modules.
+    
+    Args:
+        calc_files: Dictionary of {filename: content} for calculation files
     
     Returns dict with 'success' or 'error' key.
     """
-    global _original_kernel_content
+    global _original_file_contents
     
     try:
-        # Backup original content (only once)
-        if _original_kernel_content is None and KERNELS_PATH.exists():
-            _original_kernel_content = KERNELS_PATH.read_text()
+        applied_files = []
         
-        # Validate syntax first
+        for filename, content in calc_files.items():
+            if filename not in SUPPORTED_CALC_FILES:
+                print(f"[CALC_FILES] Skipping unsupported file: {filename}")
+                continue
+            
+            file_path = CALCULATIONS_PATH / filename
+            
+            # Backup original content (only once per file)
+            if filename not in _original_file_contents and file_path.exists():
+                _original_file_contents[filename] = file_path.read_text()
+            
+            # Validate Python syntax
+            try:
+                compile(content, filename, 'exec')
+            except SyntaxError as e:
+                restore_original_files()
+                return {
+                    'error': f'Syntax error in {filename} at line {e.lineno}: {e.msg}',
+                    'file': filename,
+                    'line': e.lineno
+                }
+            
+            # Write new content
+            file_path.write_text(content)
+            applied_files.append(filename)
+            print(f"[CALC_FILES] Written {filename} ({len(content)} bytes)")
+            sys.stdout.flush()
+        
+        if not applied_files:
+            return {'success': True, 'message': 'No files to apply'}
+        
+        # Reload modules in correct order (dependencies first)
+        # Order: constants -> utils -> kernels -> gpu
+        reload_order = ['constants.py', 'utils.py', 'kernels.py', 'gpu.py']
+        
+        for filename in reload_order:
+            if filename in applied_files:
+                module_name = f"calculations.{filename.replace('.py', '')}"
+                try:
+                    module = importlib.import_module(module_name)
+                    importlib.reload(module)
+                    print(f"[CALC_FILES] Reloaded {module_name}")
+                    sys.stdout.flush()
+                except Exception as e:
+                    print(f"[CALC_FILES] Warning: Could not reload {module_name}: {e}")
+        
+        # Always reload gpu.py last since it depends on others
         try:
-            compile(kernel_code, 'kernels.py', 'exec')
-        except SyntaxError as e:
-            return {
-                'error': f'Syntax error at line {e.lineno}: {e.msg}',
-                'line': e.lineno
-            }
-        
-        # Write new kernel code
-        KERNELS_PATH.write_text(kernel_code)
-        print(f"[KERNEL] Custom kernel code written ({len(kernel_code)} bytes)")
-        sys.stdout.flush()
-        
-        # Reload modules
-        import calculations.kernels
-        importlib.reload(calculations.kernels)
-        print("[KERNEL] Reloaded calculations.kernels")
-        sys.stdout.flush()
-        
-        import calculations.gpu
-        importlib.reload(calculations.gpu)
-        print("[KERNEL] Reloaded calculations.gpu")
-        sys.stdout.flush()
-
-        try:
-            calculations.gpu.validate_kernel_compatibility()
+            import calculations.gpu
+            importlib.reload(calculations.gpu)
+            print("[CALC_FILES] Reloaded calculations.gpu (final)")
+            sys.stdout.flush()
         except Exception as e:
-            restore_original_kernel()
+            restore_original_files()
             return {
-                'error': 'Kernel not compatible with the running methods',
-                'details': str(e)
+                'error': f'Failed to reload calculations.gpu: {str(e)}',
+                'traceback': traceback.format_exc()
             }
         
-        return {'success': True}
+        # Validate kernel compatibility if kernels.py was modified
+        if 'kernels.py' in applied_files:
+            try:
+                calculations.gpu.validate_kernel_compatibility()
+            except Exception as e:
+                restore_original_files()
+                return {
+                    'error': 'Kernel not compatible with the running methods',
+                    'details': str(e)
+                }
+        
+        return {'success': True, 'applied_files': applied_files}
         
     except Exception as e:
-        # Restore original on failure
-        restore_original_kernel()
+        restore_original_files()
         return {
-            'error': f'Failed to apply custom kernel: {str(e)}',
+            'error': f'Failed to apply calculation files: {str(e)}',
             'traceback': traceback.format_exc()
         }
 
 
-def restore_original_kernel():
-    """Restore the original kernel code."""
-    global _original_kernel_content
+def restore_original_files():
+    """Restore all original calculation file contents."""
+    global _original_file_contents
     
-    if _original_kernel_content is not None:
-        try:
-            KERNELS_PATH.write_text(_original_kernel_content)
-            
-            import calculations.kernels
-            importlib.reload(calculations.kernels)
-            
-            import calculations.gpu
-            importlib.reload(calculations.gpu)
-            
-            print("[KERNEL] Restored original kernel code")
-        except Exception as e:
-            print(f"[KERNEL] Warning: Failed to restore original kernel: {e}")
+    if not _original_file_contents:
+        return
+    
+    try:
+        for filename, content in _original_file_contents.items():
+            file_path = CALCULATIONS_PATH / filename
+            file_path.write_text(content)
+            print(f"[CALC_FILES] Restored {filename}")
+        
+        # Reload modules in correct order
+        reload_order = ['constants.py', 'utils.py', 'kernels.py', 'gpu.py']
+        for filename in reload_order:
+            if filename in _original_file_contents:
+                module_name = f"calculations.{filename.replace('.py', '')}"
+                try:
+                    module = importlib.import_module(module_name)
+                    importlib.reload(module)
+                except Exception:
+                    pass
+        
+        print("[CALC_FILES] Restored all original files")
+    except Exception as e:
+        print(f"[CALC_FILES] Warning: Failed to restore original files: {e}")
+
+
+# Legacy function for backward compatibility
+def apply_custom_kernel(kernel_code: str) -> dict:
+    """Legacy function - wraps apply_calc_files for backward compatibility."""
+    return apply_calc_files({'kernels.py': kernel_code})
+
+
+def restore_original_kernel():
+    """Legacy function - wraps restore_original_files for backward compatibility."""
+    restore_original_files()
 
 
 def handler(job):
@@ -101,14 +161,32 @@ def handler(job):
     - 'nb_int_scenarios': Number of internal (risk-neutral) scenarios per node.
     - 'data_file_urls': A dictionary where keys are file names (e.g., 'POPULATION.csv')
                         and values are temporary download URLs (from tmpfiles.org).
-    - 'kernel_code': (Optional) Custom kernels.py code to use for this job.
+    - 'calc_files': (Optional) Dictionary of {filename: content} for custom calculation files.
+                    Supports: kernels.py, gpu.py, constants.py, utils.py
+    - 'kernel_code': (Optional, legacy) Custom kernels.py code to use for this job.
     """
     job_input = job['input']
-    custom_kernel_applied = False
+    custom_code_applied = False
+    applied_files = []
 
-    # --- 0. Apply custom kernel if provided ---
-    kernel_code = job_input.get('kernel_code')
-    if kernel_code:
+    # --- 0. Apply custom calculation files if provided ---
+    calc_files = job_input.get('calc_files')
+    if calc_files:
+        total_size = sum(len(content) for content in calc_files.values())
+        print(f"[CALC_FILES] Custom calculation files provided: {list(calc_files.keys())} ({total_size} bytes total)")
+        result = apply_calc_files(calc_files)
+        if 'error' in result:
+            return {
+                'error': f"Failed to apply calculation files: {result['error']}",
+                'calc_files_error': result
+            }
+        custom_code_applied = True
+        applied_files = result.get('applied_files', [])
+        print(f"[CALC_FILES] Applied: {applied_files}")
+    
+    # Legacy: Apply custom kernel if provided (backward compatibility)
+    elif job_input.get('kernel_code'):
+        kernel_code = job_input.get('kernel_code')
         print(f"[KERNEL] Custom kernel code provided ({len(kernel_code)} bytes)")
         result = apply_custom_kernel(kernel_code)
         if 'error' in result:
@@ -116,7 +194,8 @@ def handler(job):
                 'error': f"Failed to apply custom kernel: {result['error']}",
                 'kernel_error': result
             }
-        custom_kernel_applied = True
+        custom_code_applied = True
+        applied_files = ['kernels.py']
         print("[KERNEL] Custom kernel applied successfully")
 
     # --- 1. Get parameters from job input ---
@@ -150,8 +229,8 @@ def handler(job):
         external_only = job_input.get('external_only', False)
         data_file_urls = job_input.get('data_file_urls', {})
     except (ValueError, TypeError) as e:
-        if custom_kernel_applied:
-            restore_original_kernel()
+        if custom_code_applied:
+            restore_original_files()
         return {'error': f"Invalid input parameter: {e}"}
 
     # --- 2. Create temporary directories for input and output ---
@@ -222,8 +301,8 @@ def handler(job):
                 log_parts.append(f"debug account {debug_account}")
             if debug_scenario is not None and debug_scenario >= 0:
                 log_parts.append(f"debug scenario {debug_scenario}")
-            if custom_kernel_applied:
-                log_parts.append("custom kernel")
+            if custom_code_applied:
+                log_parts.append(f"custom code ({', '.join(applied_files)})")
             print(f"Starting GPU nested projection with {', '.join(log_parts)}.")
             sys.stdout.flush()
             
@@ -274,7 +353,8 @@ def handler(job):
             output = {
                 'total_duration': result.total_duration,
                 'saved_files': result.saved_files,
-                'custom_kernel_used': custom_kernel_applied,
+                'custom_code_used': custom_code_applied,
+                'custom_files_applied': applied_files,
             }
             
             # Convert DataFrames to JSON format
@@ -326,9 +406,9 @@ def handler(job):
                     except Exception as e:
                         print(f"  ⚠ Could not export {csv_file.name}: {e}")
             
-            # Restore original kernel after job completes
-            if custom_kernel_applied:
-                restore_original_kernel()
+            # Restore original files after job completes
+            if custom_code_applied:
+                restore_original_files()
             
             return {'results': output}
 
@@ -336,9 +416,9 @@ def handler(job):
             print(f"[ERROR] GPU projection failed: {e}")
             print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
             sys.stdout.flush()
-            # Restore original kernel on error
-            if custom_kernel_applied:
-                restore_original_kernel()
+            # Restore original files on error
+            if custom_code_applied:
+                restore_original_files()
             # Catch exceptions from the GPU projection and return an error
             return {
                 'error': f"An error occurred during GPU projection: {e}",

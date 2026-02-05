@@ -1594,8 +1594,14 @@ input[type="password"] {
                         parametersHTML += `<li><strong>Debug Internal Year:</strong> ${params.debug_int_year}</li>`;
                     }
 
-                    const customKernelUsed = Boolean(params.use_custom_kernel) || Boolean(params.kernel_code);
-                    parametersHTML += `<li><strong>Kernel Used:</strong> ${customKernelUsed ? 'Custom kernel' : 'Default kernel'}</li>`;
+                    // Show which calculation files were included
+                    if (params.calc_files_included && params.calc_files_included.length > 0) {
+                        parametersHTML += `<li><strong>Custom Code:</strong> ${params.calc_files_included.join(', ')}</li>`;
+                    } else if (params.use_custom_kernel || params.kernel_code) {
+                        parametersHTML += `<li><strong>Kernel Used:</strong> Custom kernel</li>`;
+                    } else {
+                        parametersHTML += `<li><strong>Code:</strong> Default (no custom files)</li>`;
+                    }
                 }
                 parametersHTML += '</ul></div>';
                 
@@ -2250,12 +2256,9 @@ input[type="password"] {
                 if (debugIntYear) formData.append('debug_int_year', debugIntYear);
                 if (debugOnly) formData.append('debug_only', 'true');
                 
-                // Always include kernel code from the Calculations Editor
-                const kernelContent = kernelEditor ? kernelEditor.getValue() : document.getElementById('kernel-content').value;
-                if (kernelContent && kernelContent.trim() !== '' && !kernelContent.startsWith('# Click')) {
-                    formData.append('kernel_code', kernelContent);
-                    console.log(`Including kernel code (${kernelContent.length} bytes)`);
-                }
+                // Note: All calculation files (kernels.py, gpu.py, constants.py, utils.py) 
+                // are automatically read from disk by the Flask server and sent to RunPod worker
+                console.log('Job will use current calculation files from server');
                 
                 const response = await fetchWithToken(`${API_BASE}/jobs`, {
                     method: 'POST',
@@ -2756,8 +2759,13 @@ input[type="password"] {
                     shockPct = isNaN(pct) ? params.shock_capital_pct : pct.toFixed(1) + '%';
                 }
                 
-                // Check if custom kernel was used
-                const customKernel = Boolean(params.use_custom_kernel) || Boolean(params.kernel_code) ? 'Yes' : 'No';
+                // Check if custom code was used
+                let customCode = 'No';
+                if (params.calc_files_included && params.calc_files_included.length > 0) {
+                    customCode = params.calc_files_included.length + ' files';
+                } else if (params.use_custom_kernel || params.kernel_code) {
+                    customCode = 'Kernel only';
+                }
                 
                 return `
                     <tr>
@@ -2775,7 +2783,7 @@ input[type="password"] {
                         <td>${params.debug_month !== null && params.debug_month !== undefined ? params.debug_month : '-'}</td>
                         <td>${params.debug_int_scenario !== null && params.debug_int_scenario !== undefined ? params.debug_int_scenario : '-'}</td>
                         <td>${params.debug_int_year !== null && params.debug_int_year !== undefined ? params.debug_int_year : '-'}</td>
-                        <td>${customKernel}</td>
+                        <td>${customCode}</td>
                         <td>${duration}</td>
                         <td style="font-size: 11px;">${new Date(job.created_at).toLocaleString()}</td>
                     </tr>

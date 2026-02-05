@@ -979,7 +979,7 @@ def create_results_dataframes(
         Tuple of (results_df, results_5chocs_df, sensitivities_df)
     """
     results_df = pd.DataFrame({
-        'ID_COMPTE': population_ids[:n_accounts],
+        'ID_COMPTE': 1000,
         'RESERVE_BE': all_reserves,
         'CAPITAL_REQ': all_capital,
         'SCR': [cap - res for res, cap in zip(all_reserves, all_capital)]
