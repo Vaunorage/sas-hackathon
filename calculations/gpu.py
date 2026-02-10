@@ -447,21 +447,21 @@ def create_gpu_coussins_lookup(df: pd.DataFrame):
 def initialize_gpu():
     """
     Initialize GPU and check availability.
-    
+
     Returns:
         Tuple of (gpu_device, free_mem, total_mem) or raises RuntimeError
     """
     try:
         if not cuda.is_available():
             raise RuntimeError("CUDA is not available")
-        
+
         # Configure RMM to use CUDA memory resource (no pooling) for predictable memory release
         try:
             import rmm
             rmm.reinitialize(managed_memory=False, pool_allocator=False)
         except (ImportError, Exception):
             pass
-        
+
         # Configure CuPy to not use memory pool
         try:
             import cupy as cp
@@ -469,20 +469,21 @@ def initialize_gpu():
             cp.cuda.set_pinned_memory_allocator(None)
         except (ImportError, Exception):
             pass
-        
+
         gpu = cuda.get_current_device()
-        print(f"GPU Device: {gpu.name.decode()}")
-        
+        # Handle gpu.name being bytes or str to avoid AttributeError
+        device_name = gpu.name.decode() if isinstance(gpu.name, bytes) else gpu.name
+        print(f"GPU Device: {device_name}")
+
         try:
             free_mem, total_mem = cuda.current_context().get_memory_info()
-            print(f"GPU Memory: {free_mem / 1024**3:.2f} GB free / {total_mem / 1024**3:.2f} GB total")
+            print(f"GPU Memory: {free_mem / 1024 ** 3:.2f} GB free / {total_mem / 1024 ** 3:.2f} GB total")
         except NotImplementedError:
             free_mem, total_mem = None, None
-        
+
         return gpu, free_mem, total_mem
     except Exception as e:
         raise RuntimeError(f"Failed to initialize GPU: {e}")
-
 
 def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projection: int, 
                          nb_int_scenarios: int, account_data_cols: int):

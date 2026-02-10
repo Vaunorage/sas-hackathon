@@ -61,3 +61,11 @@ L'approche "account-first" assigne un thread par paire (scénario, police) qui t
 Le script de benchmark est disponible si tu veux le tester sur ta RTX 3070.
 
 Taha
+
+-------------------------------------------
+
+Regarder si on peut enlever les matrices dans le kernel
+Regarder si NDArray gere le broadcasting dans gpu
+Use cupy to transfer data to gpu
+corriger pour Ben
+Tester pour 2000000 comptes avec les petites tests
