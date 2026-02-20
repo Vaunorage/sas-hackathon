@@ -130,26 +130,28 @@ from calculations.constants import (
     CF_OUT_IDX_SIZE,
 )
 
+
 @cuda.jit
 def external_generator_kernel(
-        account_data,        # AccountData: (n_accounts, n_fields)
-        n_scenarios,         # int
-        n_years,             # int
-        freq_eval,           # float
-        mortality_lookup,    # MortalityLookup: (sex, age, year, product)
-        returns_lookups,     # ReturnsLookups: 7 arrays
-        lapse_lookups,       # LapseLookups: 6 arrays
-        policy_lookups,      # PolicyLookups: 5 arrays
+        account_data,  # AccountData: (n_accounts, n_fields)
+        n_scenarios,  # int
+        n_years,  # int
+        freq_eval,  # float
+        mortality_lookup,  # MortalityLookup: (sex, age, year, product)
+        returns_lookups,  # ReturnsLookups: 7 arrays
+        lapse_lookups,  # LapseLookups: 6 arrays
+        policy_lookups,  # PolicyLookups: 5 arrays
         commission_lookups,  # CommissionLookups: 6 arrays
-        coussins_lookups,    # CoussinsLookups: 16 arrays
-        output_states,       # StatesTensor: (batch, scenarios, years, STATE_SIZE)
-        output_cashflows,    # CashflowsTensor: (batch, scenarios, years, CF_OUT_IDX_SIZE)
-        debug_output=None,   # Optional: (EXT_DEBUG_SIZE,) - single row for filtered debug
-        debug_flux_output=None,  # Optional: (n_years+1, freq_eval, FLUX_COMP_IDX_SIZE) - flux for debug account/scenario
-        debug_account=-1,    # Account index to debug (-1 = disabled)
-        debug_scenario=-1,   # Scenario index to debug (-1 = disabled)
-        debug_year=-1,       # Year (an_eval) to debug (-1 = disabled)
-        debug_month=-1,      # Month (mois_eval) to debug (-1 = disabled)
+        coussins_lookups,  # CoussinsLookups: 16 arrays
+        output_states,  # StatesTensor: (batch, scenarios, years, STATE_SIZE)
+        output_cashflows,  # CashflowsTensor: (batch, scenarios, years, CF_OUT_IDX_SIZE)
+        debug_output=None,  # Optional: (EXT_DEBUG_SIZE,) - single row for filtered debug
+        debug_flux_output=None,
+        # Optional: (n_years+1, freq_eval, FLUX_COMP_IDX_SIZE) - flux for debug account/scenario
+        debug_account=-1,  # Account index to debug (-1 = disabled)
+        debug_scenario=-1,  # Scenario index to debug (-1 = disabled)
+        debug_year=-1,  # Year (an_eval) to debug (-1 = disabled)
+        debug_month=-1,  # Month (mois_eval) to debug (-1 = disabled)
 ):
     """
     KERNEL A: EXTERNAL SCENARIO GENERATOR (Tier 1)
@@ -390,8 +392,11 @@ def external_generator_kernel(
             else:
                 # Calculate VM/VG ratio (SAS lines 350-355)
                 vm_mid_period = (MT_VM_PROJ + MT_VM_AV_RETRAIT_FRAIS) / 2.0
-                pc_gar_ech_ratio = PC_GAR_ECH / max(MT_GAR_ECH_PROJ, MIN_GUARANTEE_VALUE) if MT_GAR_ECH_PROJ > 0 else 1.0
-                pc_gar_deces_ratio = PC_GAR_DECES_1 / max(MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ, MIN_GUARANTEE_VALUE) if (MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ) > 0 else 1.0
+                pc_gar_ech_ratio = PC_GAR_ECH / max(MT_GAR_ECH_PROJ,
+                                                    MIN_GUARANTEE_VALUE) if MT_GAR_ECH_PROJ > 0 else 1.0
+                pc_gar_deces_ratio = PC_GAR_DECES_1 / max(MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ,
+                                                          MIN_GUARANTEE_VALUE) if (
+                                                                                              MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ) > 0 else 1.0
                 srg_ratio = 1.0 / max(MT_SRG_PROJ, MIN_GUARANTEE_VALUE) if MT_SRG_PROJ > 0 else 1.0
 
                 min_ratio = min(pc_gar_ech_ratio, pc_gar_deces_ratio, srg_ratio)
@@ -425,7 +430,8 @@ def external_generator_kernel(
                     if LAPSE_NIV_TOT == LAPSE_LEVEL_1:
                         lapse_interp = (VM_VG_RATIO - 0.0) / VM_VG_RATIO_LEVEL1_THRESHOLD
                     elif LAPSE_NIV_TOT == LAPSE_LEVEL_2:
-                        lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL1_THRESHOLD) / (VM_VG_RATIO_LEVEL2_THRESHOLD - VM_VG_RATIO_LEVEL1_THRESHOLD)
+                        lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL1_THRESHOLD) / (
+                                    VM_VG_RATIO_LEVEL2_THRESHOLD - VM_VG_RATIO_LEVEL1_THRESHOLD)
                     else:
                         lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL2_THRESHOLD) / VM_VG_RATIO_LEVEL3_DIVISOR
                     LAPSE_TOT = lapse_interp * (tx_lapse_tot_max - tx_lapse_tot_min) + tx_lapse_tot_min
@@ -448,7 +454,8 @@ def external_generator_kernel(
                     if LAPSE_NIV_PART == LAPSE_LEVEL_1:
                         lapse_interp = (VM_VG_RATIO - 0.0) / VM_VG_RATIO_LEVEL1_THRESHOLD
                     elif LAPSE_NIV_PART == LAPSE_LEVEL_2:
-                        lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL1_THRESHOLD) / (VM_VG_RATIO_LEVEL2_THRESHOLD - VM_VG_RATIO_LEVEL1_THRESHOLD)
+                        lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL1_THRESHOLD) / (
+                                    VM_VG_RATIO_LEVEL2_THRESHOLD - VM_VG_RATIO_LEVEL1_THRESHOLD)
                     else:
                         lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL2_THRESHOLD) / VM_VG_RATIO_LEVEL3_DIVISOR
                     LAPSE_PART = lapse_interp * (tx_lapse_part_max - tx_lapse_part_min) + tx_lapse_part_min
@@ -483,7 +490,8 @@ def external_generator_kernel(
                 MT_MIN_FERR_PROJ = MT_VM_PROJ * min_ferr_rate
 
             if PC_BONI_DECES > 0.0 and age < MAX_BONI_DECES:
-                MT_BONI_DECES_PROJ = MT_BONI_DECES_PROJ + (MT_GAR_DECES_PROJ * PC_BONI_DECES / freq_eval * AJUST_NOUV_AFFAIRES)
+                MT_BONI_DECES_PROJ = MT_BONI_DECES_PROJ + (
+                            MT_GAR_DECES_PROJ * PC_BONI_DECES / freq_eval * AJUST_NOUV_AFFAIRES)
             else:
                 MT_BONI_DECES_PROJ = 0.0
 
@@ -498,7 +506,8 @@ def external_generator_kernel(
                 if mois_eval == 12 // freq_eval:
                     if TABLE_TAUX_MRV_MRG_MRA == 2:
                         max_age_start = AGE_MRV_PERMIS if AGE_MRV_PERMIS > AGE_DECAISSEMENT else AGE_DECAISSEMENT
-                        should_reinit = (AGE_RETRAIT == max_age_start or (MT_SRG_PROJ == MT_VM_PROJ and MT_VM_PROJ != 0.0))
+                        should_reinit = (
+                                    AGE_RETRAIT == max_age_start or (MT_SRG_PROJ == MT_VM_PROJ and MT_VM_PROJ != 0.0))
                         if should_reinit:
                             if AGE_RETRAIT < 60:
                                 TAUX_MRV_MRG_MRA_PROJ = 0.03
@@ -535,9 +544,9 @@ def external_generator_kernel(
             # Withdrawals calculation (SAS lines 498-507)
             RETRAIT = 0.0
             if not (
-                AGE_RETRAIT < AGE_DECAISSEMENT or
-                (AGE_RETRAIT == AGE_DECAISSEMENT and mois_eval >= MOIS_NAIS) or
-                (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)
+                    AGE_RETRAIT < AGE_DECAISSEMENT or
+                    (AGE_RETRAIT == AGE_DECAISSEMENT and mois_eval >= MOIS_NAIS) or
+                    (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)
             ):
                 if VAR_RETRAIT_FCT == 1:
                     RETRAIT = MT_TPA_RETRAIT if MT_TPA_RETRAIT > 0.0 else MT_VM_PROJ * PC_RETRAIT_AGE
@@ -564,7 +573,6 @@ def external_generator_kernel(
                 MT_GAR_ECH_PROJ = 0.0
                 MT_GAR_DECES_PROJ = 0.0
                 MT_BONI_DECES_PROJ = 0.0
-                MT_SRG_PROJ = 0.0
             else:
                 withdrawal_factor = 1.0 - RETRAIT / MT_VM_AV_RETRAIT
                 MT_GAR_ECH_PROJ *= withdrawal_factor
@@ -596,36 +604,27 @@ def external_generator_kernel(
 
             age_retrait = age + 1
             if (pc_depot_annuel == 0.0 or
-                (i_even_cesse_depot == 1 and age_retrait >= AGE_DECAISSEMENT) or
-                (age_max_depot < age) or
-                (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)):
+                    (i_even_cesse_depot == 1 and age_retrait >= AGE_DECAISSEMENT) or
+                    (age_max_depot < age) or
+                    (MT_VM_PROJ <= 0 and I_PRODUIT_REGR == 0)):
                 depot_futur = 0.0
             else:
                 if MT_TPA_DEPOT > 0.0:
                     depot_futur = MT_TPA_DEPOT
                 else:
-                    base_depot_calc = MT_VM_PROJ if var_depot_fct == 1 else (acc[ACCOUNT_IDX_MT_GAR_DECES] / max(PC_GAR_DECES_1, MIN_GUARANTEE_VALUE))
+                    base_depot_calc = MT_VM_PROJ if var_depot_fct == 1 else (
+                                acc[ACCOUNT_IDX_MT_GAR_DECES] / max(PC_GAR_DECES_1, MIN_GUARANTEE_VALUE))
                     depot_futur = base_depot_calc * pc_depot_annuel
                 depot_futur = depot_futur / freq_eval
 
-            if depot_futur > 0.0 and MT_VM_PROJ > 0.0:
-                MT_DEX_PROJ += depot_futur * (MT_DEX_PROJ / MT_VM_PROJ)
-                MT_MM_PROJ += depot_futur * (MT_MM_PROJ / MT_VM_PROJ)
-                MT_TSX_PROJ += depot_futur * (MT_TSX_PROJ / MT_VM_PROJ)
-                MT_SP500_PROJ += depot_futur * (MT_SP500_PROJ / MT_VM_PROJ)
-                MT_EAFE_PROJ += depot_futur * (MT_EAFE_PROJ / MT_VM_PROJ)
-                MT_GAR_DECES_PROJ += depot_futur
-                MT_GAR_ECH_PROJ += depot_futur * PC_GAR_ECH_DEP_FUT
-                if MT_SRG_PROJ > 0.0:
-                    MT_SRG_PROJ += depot_futur
-
-            if MT_VM_AP_RETRAIT > 0.0:
-                MT_VM_PROJ = MT_VM_AP_RETRAIT + depot_futur
-            else:
-                MT_VM_PROJ = MT_VM_AP_RETRAIT
+            MT_GAR_DECES_PROJ += depot_futur
+            MT_GAR_ECH_PROJ += depot_futur * PC_GAR_ECH_DEP_FUT
+            MT_SRG_PROJ += depot_futur
+            MT_VM_AP_RETRAIT_DEPOT = MT_VM_AP_RETRAIT + depot_futur
+            MT_VM_PROJ = MT_VM_AP_RETRAIT_DEPOT
 
             # Death benefits calculation (SAS line 598)
-            claim = MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ - MT_VM_PROJ
+            claim = MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ - MT_VM_AP_RETRAIT_DEPOT
             PREST_DECES = -qx * claim * TX_SURVIE_DEB if claim > 0 else 0.0
 
             PREST_ECH = 0.0
@@ -711,16 +710,15 @@ def external_generator_kernel(
                     MT_GAR_DECES_PROJ = MT_GAR_DECES_PROJ * PC_GAR_DECES_2 / PC_GAR_DECES_1
                 PC_GAR_DECES_1 = PC_GAR_DECES_2
 
-            if MT_VM_ORIG > 0 and MT_VM_PROJ > 0:
-                orig_total = (acc[ACCOUNT_IDX_MT_SP500] + acc[ACCOUNT_IDX_MT_TSX] +
-                             acc[ACCOUNT_IDX_MT_EAFE] + acc[ACCOUNT_IDX_MT_DEX] +
-                             acc[ACCOUNT_IDX_MT_MM])
-                if orig_total > 0:
-                    MT_SP500_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_SP500] / orig_total
-                    MT_TSX_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_TSX] / orig_total
-                    MT_EAFE_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_EAFE] / orig_total
-                    MT_DEX_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_DEX] / orig_total
-                    MT_MM_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_MM] / orig_total
+            orig_total = (acc[ACCOUNT_IDX_MT_SP500] + acc[ACCOUNT_IDX_MT_TSX] +
+                          acc[ACCOUNT_IDX_MT_EAFE] + acc[ACCOUNT_IDX_MT_DEX] +
+                          acc[ACCOUNT_IDX_MT_MM])
+            if orig_total > 0:
+                MT_SP500_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_SP500] / orig_total
+                MT_TSX_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_TSX] / orig_total
+                MT_EAFE_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_EAFE] / orig_total
+                MT_DEX_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_DEX] / orig_total
+                MT_MM_PROJ = MT_VM_PROJ * acc[ACCOUNT_IDX_MT_MM] / orig_total
 
             comm_vente = 0.0
             frais_acquis = 0.0
@@ -746,8 +744,10 @@ def external_generator_kernel(
                         weight_rf = 0.0
                     if weight_rf > 1.0:
                         weight_rf = 1.0
-                    pc_commission_vente = ((pc_vente_ac_v * (1.0 - weight_rf)) + (pc_vente_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
-                    pc_commission_maintien = ((pc_maintien_ac_v * (1.0 - weight_rf)) + (pc_maintien_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
+                    pc_commission_vente = ((pc_vente_ac_v * (1.0 - weight_rf)) + (
+                                pc_vente_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
+                    pc_commission_maintien = ((pc_maintien_ac_v * (1.0 - weight_rf)) + (
+                                pc_maintien_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
                     pc_frais_an = (pc_frais_ac_v * (1.0 - weight_rf)) + (pc_frais_rf_v * weight_rf)
                 else:
                     pc_commission_vente = 0.0
@@ -760,13 +760,21 @@ def external_generator_kernel(
             fixed_fee_annual = 0.0
             if ID_PRODUIT < fees_lookup.shape[0] and annee_reelle < fees_lookup.shape[1]:
                 fixed_fee_annual = fees_lookup[ID_PRODUIT, annee_reelle]
-            FRAIS_FIXES = -fixed_fee_annual / freq_eval * AJUST_NOUV_AFFAIRES * TX_SURVIE_DEB if MT_VM_AV_RETRAIT > 0.0 else 0.0
 
-            HON_GEST = -MT_VM_AV_RETRAIT_FRAIS * (math.exp(PC_HONORAIRES_GEST / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0) * TX_SURVIE_DEB
+            if MT_VM_AV_RETRAIT > 0.0 or PREST_MRV < 0.0:
+                FRAIS_FIXES = -fixed_fee_annual / freq_eval * AJUST_NOUV_AFFAIRES * TX_SURVIE_DEB
+            else:
+                FRAIS_FIXES = 0.0
 
-            COMM_MAINTIEN = -MT_VM_AV_RETRAIT_FRAIS * (math.exp(pc_commission_maintien / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0) * TX_SURVIE_DEB
+            HON_GEST = -MT_VM_AV_RETRAIT_FRAIS * (
+                        math.exp(PC_HONORAIRES_GEST / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0) * TX_SURVIE_DEB
 
-            PRIMES_VARIABLES = MT_VM_AV_RETRAIT_FRAIS * math.exp(-(PC_RFG - PC_REVENU_FDS) / freq_eval * AJUST_NOUV_AFFAIRES) * (-(math.exp(-PC_REVENU_FDS / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0)) * TX_SURVIE_DEB
+            COMM_MAINTIEN = -MT_VM_AV_RETRAIT_FRAIS * (
+                        math.exp(pc_commission_maintien / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0) * TX_SURVIE_DEB
+
+            PRIMES_VARIABLES = MT_VM_AV_RETRAIT_FRAIS * math.exp(
+                -(PC_RFG - PC_REVENU_FDS) / freq_eval * AJUST_NOUV_AFFAIRES) * (
+                                   -(math.exp(-PC_REVENU_FDS / freq_eval * AJUST_NOUV_AFFAIRES) - 1.0)) * TX_SURVIE_DEB
 
             VALEUR_MARCHANDE = MT_VM_PROJ * TX_SURVIE
 
@@ -872,10 +880,11 @@ def external_generator_kernel(
             if debug_flux_output is not None:
                 # Only capture flux for the debug account and scenario
                 is_debug_acct_scn = (
-                    (debug_account < 0 or account_idx == debug_account) and
-                    (debug_scenario < 0 or scenario_idx == debug_scenario)
+                        (debug_account < 0 or account_idx == debug_account) and
+                        (debug_scenario < 0 or scenario_idx == debug_scenario)
                 )
-                if is_debug_acct_scn and an_eval < debug_flux_output.shape[0] and mois_eval < debug_flux_output.shape[1]:
+                if is_debug_acct_scn and an_eval < debug_flux_output.shape[0] and mois_eval < debug_flux_output.shape[
+                    1]:
                     # Cashflow components
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_PRIMES_GARANTIES] = PRIMES_GARANTIES
                     debug_flux_output[an_eval, mois_eval, FLUX_COMP_IDX_PREST_DECES] = PREST_DECES
@@ -935,7 +944,7 @@ def external_generator_kernel(
             VP_COMM_MAINTIEN = COMM_MAINTIEN * TX_ACTUALISATION
             VP_PRIMES_VARIABLES = PRIMES_VARIABLES * TX_ACTUALISATION
             VP_VALEUR_MARCHANDE = VALEUR_MARCHANDE * TX_ACTUALISATION / freq_eval
-            
+
             # Cushion present values (SAS lines 868-874)
             VP_PASSIF_REDRESSE = PASSIF_REDRESSE * TX_ACTUALISATION / freq_eval
             VP_COUSSIN_CREDIT = COUSSIN_CREDIT * TX_ACTUALISATION / freq_eval
@@ -944,7 +953,7 @@ def external_generator_kernel(
             VP_COUSSIN_DECHEANCE = COUSSIN_DECHEANCE * TX_ACTUALISATION / freq_eval
             VP_COUSSIN_MORTALITE = COUSSIN_MORTALITE * TX_ACTUALISATION / freq_eval
             VP_COUSSIN_DEPOT = COUSSIN_DEPOT * TX_ACTUALISATION / freq_eval
-            
+
             # Additional SAS variables (lines 768, 774, 780, 781, 791)
             # UNITE_COUVERTURE = MAX(MT_VM_PROJ, MT_GAR_DECES_PROJ+MT_BONI_DECES_PROJ, RETRAIT) * TX_SURVIE
             uc_max = MT_VM_PROJ
@@ -953,14 +962,14 @@ def external_generator_kernel(
             if RETRAIT > uc_max:
                 uc_max = RETRAIT
             UNITE_COUVERTURE = uc_max * TX_SURVIE
-            
+
             VALEUR_GARANTIE = MT_GAR_DECES_PROJ * TX_SURVIE
             DEPOT_FUTUR_SURVIE = depot_futur * TX_SURVIE
-            
+
             # REM_COMP_INV = ((RETRAIT - PREST_MRV) + MT_VM_AP_RETRAIT_DEPOT * (1 - TX_SURVIE/TX_SURVIE_DEB)) * TX_SURVIE_DEB
             tx_ratio = TX_SURVIE / TX_SURVIE_DEB if TX_SURVIE_DEB != 0.0 else 0.0
-            REM_COMP_INV = ((RETRAIT + PREST_MRV) + MT_VM_PROJ * (1.0 - tx_ratio)) * TX_SURVIE_DEB
-            
+            REM_COMP_INV = ((RETRAIT + PREST_MRV) + MT_VM_AP_RETRAIT_DEPOT * (1.0 - tx_ratio)) * TX_SURVIE_DEB
+
             # === WRITE MONTHLY CASHFLOWS (one row per month) ===
             # Output monthly data to match SAS FLUX_PROJETES format
             if an_eval >= 1 and an_eval <= n_years:
@@ -978,44 +987,56 @@ def external_generator_kernel(
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PREST_ECH] = PREST_ECH
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PREST_MRV] = PREST_MRV
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PREST_DECES] = PREST_DECES
-                    
+
                     # Present value cashflows (write monthly values)
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_FRAIS_ACQUIS] = VP_FRAIS_ACQUIS
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COMM_VENTE] = VP_COMM_VENTE
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PRIMES_GARANTIES] = VP_PRIMES_GARANTIES
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PRIMES_VARIABLES] = VP_PRIMES_VARIABLES
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PRIMES_GARANTIES] = VP_PRIMES_GARANTIES
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PRIMES_VARIABLES] = VP_PRIMES_VARIABLES
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_FRAIS_FIXES] = VP_FRAIS_FIXES
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_HON_GEST] = VP_HON_GEST
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COMM_MAINTIEN] = VP_COMM_MAINTIEN
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PREST_ECH] = VP_PREST_ECH
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PREST_MRV] = VP_PREST_MRV
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PREST_DECES] = VP_PREST_DECES
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_VALEUR_MARCHANDE] = VP_VALEUR_MARCHANDE
-                    
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_VALEUR_MARCHANDE] = VP_VALEUR_MARCHANDE
+
                     # Coverage and values (write monthly values)
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_UNITE_COUVERTURE] = UNITE_COUVERTURE
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_DEPOT_FUTUR] = depot_futur
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_REM_COMP_INV] = REM_COMP_INV
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VALEUR_MARCHANDE] = VALEUR_MARCHANDE
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VALEUR_GARANTIE] = VALEUR_GARANTIE
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_DEPOT_FUTUR_SURVIE] = DEPOT_FUTUR_SURVIE
-                    
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_DEPOT_FUTUR_SURVIE] = DEPOT_FUTUR_SURVIE
+
                     # Cushions non-discounted (write monthly values)
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_PASSIF_REDRESSE] = PASSIF_REDRESSE
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_CREDIT] = COUSSIN_CREDIT
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_MARCHE] = COUSSIN_MARCHE
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_DEPENSE] = COUSSIN_DEPENSE
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_DECHEANCE] = COUSSIN_DECHEANCE
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_MORTALITE] = COUSSIN_MORTALITE
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_DECHEANCE] = COUSSIN_DECHEANCE
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_MORTALITE] = COUSSIN_MORTALITE
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_COUSSIN_DEPOT] = COUSSIN_DEPOT
-                    
+
                     # Cushions present value (write monthly values)
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PASSIF_REDRESSE] = VP_PASSIF_REDRESSE
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_CREDIT] = VP_COUSSIN_CREDIT
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_MARCHE] = VP_COUSSIN_MARCHE
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DEPENSE] = VP_COUSSIN_DEPENSE
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DECHEANCE] = VP_COUSSIN_DECHEANCE
-                    output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_MORTALITE] = VP_COUSSIN_MORTALITE
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_PASSIF_REDRESSE] = VP_PASSIF_REDRESSE
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_CREDIT] = VP_COUSSIN_CREDIT
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_MARCHE] = VP_COUSSIN_MARCHE
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DEPENSE] = VP_COUSSIN_DEPENSE
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DECHEANCE] = VP_COUSSIN_DECHEANCE
+                    output_cashflows[
+                        account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_MORTALITE] = VP_COUSSIN_MORTALITE
                     output_cashflows[account_idx, scenario_idx, out_idx, CF_OUT_IDX_VP_COUSSIN_DEPOT] = VP_COUSSIN_DEPOT
 
             # === SAVE STATE TO GLOBAL MEMORY (only at year-end) ===
@@ -1036,7 +1057,8 @@ def external_generator_kernel(
                     output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_BONI_DECES] = MT_BONI_DECES_PROJ
                     output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_BCB] = MT_BCB_PROJ
                     output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MT_MRV_MRG_MRA] = MT_MRV_MRG_MRA_PROJ
-                    output_states[account_idx, scenario_idx, out_idx, STATE_IDX_TAUX_MRV_MRG_MRA] = TAUX_MRV_MRG_MRA_PROJ
+                    output_states[
+                        account_idx, scenario_idx, out_idx, STATE_IDX_TAUX_MRV_MRG_MRA] = TAUX_MRV_MRG_MRA_PROJ
                     output_states[account_idx, scenario_idx, out_idx, STATE_IDX_ANNEE_ECH] = float(ANNEE_ECH_PROJ)
                     output_states[account_idx, scenario_idx, out_idx, STATE_IDX_MOIS_ECH] = float(MOIS_ECH_PROJ)
                     output_states[account_idx, scenario_idx, out_idx, STATE_IDX_TX_ACTUALISATION] = TX_ACTUALISATION
@@ -1048,10 +1070,10 @@ def external_generator_kernel(
                 if debug_output is not None:
                     # Check if this iteration matches the debug filter
                     matches_filter = (
-                        (debug_account < 0 or account_idx == debug_account) and
-                        (debug_scenario < 0 or scenario_idx == debug_scenario) and
-                        (debug_year < 0 or an_eval == debug_year) and
-                        (debug_month < 0 or mois_eval == debug_month)
+                            (debug_account < 0 or account_idx == debug_account) and
+                            (debug_scenario < 0 or scenario_idx == debug_scenario) and
+                            (debug_year < 0 or an_eval == debug_year) and
+                            (debug_month < 0 or mois_eval == debug_month)
                     )
                     if matches_filter:
                         debug_output[EXT_DEBUG_IDX_VM] = MT_VM_PROJ
@@ -1071,26 +1093,26 @@ def external_generator_kernel(
                         debug_output[EXT_DEBUG_IDX_VM_VG_RATIO] = VM_VG_RATIO
 
 
-
 @cuda.jit
 def nested_valuation_kernel_five_chocs(
-        input_states,        # StatesTensor: (batch, ext_scenarios, years, STATE_SIZE)
-        account_data,        # AccountData: (n_accounts, n_fields)
+        input_states,  # StatesTensor: (batch, ext_scenarios, years, STATE_SIZE)
+        account_data,  # AccountData: (n_accounts, n_fields)
         n_internal_scenarios,  # int
-        n_internal_years,    # int
+        n_internal_years,  # int
         rn_returns_lookups,  # RNReturnsLookups: 6 arrays
-        mortality_lookup,    # MortalityLookup: (sex, age, year, product)
-        lapse_lookups,       # LapseLookups: 6 arrays
-        policy_lookups,      # PolicyLookups: 5 arrays
+        mortality_lookup,  # MortalityLookup: (sex, age, year, product)
+        lapse_lookups,  # LapseLookups: 6 arrays
+        policy_lookups,  # PolicyLookups: 5 arrays
         commission_lookups,  # CommissionLookups: 6 arrays
-        output_metrics,      # MetricsTensor: (batch, ext_scenarios, years, NUM_CHOCS, 2)
-        debug_output=None,   # Optional: (NUM_CHOCS, INT_DEBUG_SIZE) - one row per choc for filtered debug
-        debug_ts_output=None,  # Optional: (NUM_CHOCS, n_internal_years, INT_TS_DEBUG_IDX_SIZE) - time series for filtered debug
+        output_metrics,  # MetricsTensor: (batch, ext_scenarios, years, NUM_CHOCS, 2)
+        debug_output=None,  # Optional: (NUM_CHOCS, INT_DEBUG_SIZE) - one row per choc for filtered debug
+        debug_ts_output=None,
+        # Optional: (NUM_CHOCS, n_internal_years, INT_TS_DEBUG_IDX_SIZE) - time series for filtered debug
         debug_int_scenario=-1,  # Internal scenario to debug (-1 = disabled, logs all)
-        debug_int_year=-1,      # Internal year to debug (-1 = disabled, logs all)
-        debug_account=-1,       # Account index to debug (-1 = disabled)
+        debug_int_year=-1,  # Internal year to debug (-1 = disabled, logs all)
+        debug_account=-1,  # Account index to debug (-1 = disabled)
         debug_ext_scenario=-1,  # External scenario to debug (-1 = disabled)
-        debug_ext_year=-1,      # External year to debug (-1 = disabled)
+        debug_ext_year=-1,  # External year to debug (-1 = disabled)
         shock_capital_pct=0.35,
 ):
     """
@@ -1232,9 +1254,9 @@ def nested_valuation_kernel_five_chocs(
     is_debug_node = False
     if debug_output is not None or debug_ts_output is not None:
         is_debug_node = (
-            (debug_account < 0 or acc_idx == debug_account) and
-            (debug_ext_scenario < 0 or scn_idx == debug_ext_scenario) and
-            (debug_ext_year < 0 or year_idx == debug_ext_year)
+                (debug_account < 0 or acc_idx == debug_account) and
+                (debug_ext_scenario < 0 or scn_idx == debug_ext_scenario) and
+                (debug_ext_year < 0 or year_idx == debug_ext_year)
         )
 
     # Pre-fetch array dimensions ONCE (avoid repeated shape lookups)
@@ -1288,7 +1310,7 @@ def nested_valuation_kernel_five_chocs(
 
         sum_pv_reserve_choc = 0.0
         sum_pv_capital_choc = 0.0
-        
+
         # Variables to capture debug values at specific internal iteration
         debug_curr_vm = 0.0
         debug_fees = 0.0
@@ -1431,8 +1453,11 @@ def nested_valuation_kernel_five_chocs(
                         LAPSE_PART = 0.0
                     else:
                         vm_mid_period = (MT_VM_PROJ + MT_VM_AV_RETRAIT_FRAIS) / 2.0
-                        pc_gar_ech_ratio = PC_GAR_ECH / max(MT_GAR_ECH_PROJ, MIN_GUARANTEE_VALUE) if MT_GAR_ECH_PROJ > 0 else 1.0
-                        pc_gar_deces_ratio = pc_gar_deces_1 / max(MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ, MIN_GUARANTEE_VALUE) if (MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ) > 0 else 1.0
+                        pc_gar_ech_ratio = PC_GAR_ECH / max(MT_GAR_ECH_PROJ,
+                                                            MIN_GUARANTEE_VALUE) if MT_GAR_ECH_PROJ > 0 else 1.0
+                        pc_gar_deces_ratio = pc_gar_deces_1 / max(MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ,
+                                                                  MIN_GUARANTEE_VALUE) if (
+                                                                                                      MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ) > 0 else 1.0
                         srg_ratio = 1.0 / max(MT_SRG_PROJ, MIN_GUARANTEE_VALUE) if MT_SRG_PROJ > 0 else 1.0
                         min_ratio = min(pc_gar_ech_ratio, pc_gar_deces_ratio, srg_ratio)
                         VM_VG_RATIO = min(VM_VG_RATIO_MAX, vm_mid_period * min_ratio)
@@ -1462,7 +1487,8 @@ def nested_valuation_kernel_five_chocs(
                             if LAPSE_NIV_TOT == LAPSE_LEVEL_1:
                                 lapse_interp = (VM_VG_RATIO - 0.0) / VM_VG_RATIO_LEVEL1_THRESHOLD
                             elif LAPSE_NIV_TOT == LAPSE_LEVEL_2:
-                                lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL1_THRESHOLD) / (VM_VG_RATIO_LEVEL2_THRESHOLD - VM_VG_RATIO_LEVEL1_THRESHOLD)
+                                lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL1_THRESHOLD) / (
+                                            VM_VG_RATIO_LEVEL2_THRESHOLD - VM_VG_RATIO_LEVEL1_THRESHOLD)
                             else:
                                 lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL2_THRESHOLD) / VM_VG_RATIO_LEVEL3_DIVISOR
                             LAPSE_TOT = lapse_interp * (tx_lapse_tot_max - tx_lapse_tot_min) + tx_lapse_tot_min
@@ -1483,7 +1509,8 @@ def nested_valuation_kernel_five_chocs(
                             if LAPSE_NIV_PART == LAPSE_LEVEL_1:
                                 lapse_interp = (VM_VG_RATIO - 0.0) / VM_VG_RATIO_LEVEL1_THRESHOLD
                             elif LAPSE_NIV_PART == LAPSE_LEVEL_2:
-                                lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL1_THRESHOLD) / (VM_VG_RATIO_LEVEL2_THRESHOLD - VM_VG_RATIO_LEVEL1_THRESHOLD)
+                                lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL1_THRESHOLD) / (
+                                            VM_VG_RATIO_LEVEL2_THRESHOLD - VM_VG_RATIO_LEVEL1_THRESHOLD)
                             else:
                                 lapse_interp = (VM_VG_RATIO - VM_VG_RATIO_LEVEL2_THRESHOLD) / VM_VG_RATIO_LEVEL3_DIVISOR
                             LAPSE_PART = lapse_interp * (tx_lapse_part_max - tx_lapse_part_min) + tx_lapse_part_min
@@ -1528,7 +1555,8 @@ def nested_valuation_kernel_five_chocs(
 
                         if TABLE_TAUX_MRV_MRG_MRA == 2:
                             max_age_start = AGE_MRV_PERMIS if AGE_MRV_PERMIS > AGE_DECAISSEMENT else AGE_DECAISSEMENT
-                            should_reinit = (AGE_RETRAIT == max_age_start or (MT_SRG_PROJ == MT_VM_PROJ and MT_VM_PROJ != 0.0))
+                            should_reinit = (AGE_RETRAIT == max_age_start or (
+                                        MT_SRG_PROJ == MT_VM_PROJ and MT_VM_PROJ != 0.0))
                             if should_reinit:
                                 if AGE_RETRAIT < 60:
                                     TAUX_MRV_MRG_MRA_PROJ = 0.03
@@ -1595,7 +1623,6 @@ def nested_valuation_kernel_five_chocs(
                         MT_GAR_ECH_PROJ = 0.0
                         MT_GAR_DECES_PROJ = 0.0
                         MT_BONI_DECES_PROJ = 0.0
-                        MT_SRG_PROJ = 0.0
                     else:
                         withdrawal_factor = 1.0 - RETRAIT / MT_VM_AV_RETRAIT
                         MT_GAR_ECH_PROJ = MT_GAR_ECH_PROJ * withdrawal_factor
@@ -1630,25 +1657,23 @@ def nested_valuation_kernel_five_chocs(
                         if MT_TPA_DEPOT > 0.0:
                             depot_futur = MT_TPA_DEPOT
                         else:
-                            base_depot_calc = MT_VM_AP_RETRAIT if var_depot_fct == 1 else (MT_GAR_DECES_PROJ / max(pc_gar_deces_1, MIN_GUARANTEE_VALUE))
+                            base_depot_calc = MT_VM_AP_RETRAIT if var_depot_fct == 1 else (
+                                        MT_GAR_DECES_PROJ / max(pc_gar_deces_1, MIN_GUARANTEE_VALUE))
                             depot_futur = base_depot_calc * pc_depot_annuel
                         depot_futur = depot_futur / FREQ_EVAL_INT
 
-                    if MT_VM_AP_RETRAIT > 0.0:
-                        MT_VM_PROJ = MT_VM_AP_RETRAIT + depot_futur
-                        MT_GAR_ECH_PROJ = MT_GAR_ECH_PROJ + depot_futur * PC_GAR_ECH_DEP_FUT
-                        MT_GAR_DECES_PROJ = MT_GAR_DECES_PROJ + depot_futur
-                        if MT_SRG_PROJ > 0.0:
-                            MT_SRG_PROJ = MT_SRG_PROJ + depot_futur
-                    else:
-                        MT_VM_PROJ = MT_VM_AP_RETRAIT
+                    MT_VM_PROJ = MT_VM_AP_RETRAIT + depot_futur
+                    MT_GAR_ECH_PROJ = MT_GAR_ECH_PROJ + depot_futur * PC_GAR_ECH_DEP_FUT
+                    MT_GAR_DECES_PROJ = MT_GAR_DECES_PROJ + depot_futur
+                    MT_SRG_PROJ = MT_SRG_PROJ + depot_futur
 
                     claim = MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ - MT_VM_PROJ
                     PREST_DECES = -qx * claim * TX_SURVIE_DEB if claim > 0.0 else 0.0
                     VP_PREST_DECES = PREST_DECES * tx_actu
 
                     PREST_ECH = 0.0
-                    target_month_ech = 12 if MOIS_NAIS == int(12 // FREQ_EVAL_INT) else (MOIS_NAIS - int(12 // FREQ_EVAL_INT))
+                    target_month_ech = 12 if MOIS_NAIS == int(12 // FREQ_EVAL_INT) else (
+                                MOIS_NAIS - int(12 // FREQ_EVAL_INT))
                     if ((annee_reelle == ANNEE_ECH_PROJ and mois_eval == MOIS_ECH_PROJ) or
                             (age == AGE_FIN_CONTRAT and mois_eval == target_month_ech)):
                         diff_ech = MT_GAR_ECH_PROJ - MT_VM_AP_RETRAIT
@@ -1693,7 +1718,8 @@ def nested_valuation_kernel_five_chocs(
                             if int(years_since_issue / FREQ_RESET_DECES) == years_since_issue / FREQ_RESET_DECES and mois_eval == MOIS_COTIS:
                                 should_reset = True
 
-                        target_month = 12 if MOIS_NAIS == int(12 // FREQ_EVAL_INT) else (MOIS_NAIS - int(12 // FREQ_EVAL_INT))
+                        target_month = 12 if MOIS_NAIS == int(12 // FREQ_EVAL_INT) else (
+                                    MOIS_NAIS - int(12 // FREQ_EVAL_INT))
                         if age == MAX_RESET_DECES - 1 and mois_eval == target_month:
                             should_reset = True
 
@@ -1718,7 +1744,8 @@ def nested_valuation_kernel_five_chocs(
                             else:
                                 MOIS_ECH_PROJ = mois_eval
 
-                    target_month = 12 if MOIS_NAIS == int(12 // FREQ_EVAL_INT) else (MOIS_NAIS - int(12 // FREQ_EVAL_INT))
+                    target_month = 12 if MOIS_NAIS == int(12 // FREQ_EVAL_INT) else (
+                                MOIS_NAIS - int(12 // FREQ_EVAL_INT))
                     if age == AGE_CHANG_DECES - 1 and mois_eval == target_month:
                         if pc_gar_deces_1 != 0.0:
                             MT_GAR_DECES_PROJ = MT_GAR_DECES_PROJ * PC_GAR_DECES_2 / pc_gar_deces_1
@@ -1767,8 +1794,10 @@ def nested_valuation_kernel_five_chocs(
                                 weight_rf = 0.0
                             if weight_rf > 1.0:
                                 weight_rf = 1.0
-                            pc_commission_vente = ((pc_vente_ac_v * (1.0 - weight_rf)) + (pc_vente_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
-                            pc_commission_maintien = ((pc_maintien_ac_v * (1.0 - weight_rf)) + (pc_maintien_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
+                            pc_commission_vente = ((pc_vente_ac_v * (1.0 - weight_rf)) + (
+                                        pc_vente_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
+                            pc_commission_maintien = ((pc_maintien_ac_v * (1.0 - weight_rf)) + (
+                                        pc_maintien_rf_v * weight_rf)) * AJUSTEMENT_COMMISSION
                             pc_frais_an = (pc_frais_ac_v * (1.0 - weight_rf)) + (pc_frais_rf_v * weight_rf)
 
                     COMM_VENTE = -pc_commission_vente * depot_futur * TX_SURVIE
@@ -1786,13 +1815,16 @@ def nested_valuation_kernel_five_chocs(
                         FRAIS_FIXES = -fixed_fee_annual / FREQ_EVAL_INT * TX_SURVIE_DEB
                     VP_FRAIS_FIXES = FRAIS_FIXES * tx_actu
 
-                    HON_GEST = -MT_VM_AV_RETRAIT_FRAIS * (math.exp(PC_HONORAIRES_GEST / FREQ_EVAL_INT) - 1.0) * TX_SURVIE_DEB
+                    HON_GEST = -MT_VM_AV_RETRAIT_FRAIS * (
+                                math.exp(PC_HONORAIRES_GEST / FREQ_EVAL_INT) - 1.0) * TX_SURVIE_DEB
                     VP_HON_GEST = HON_GEST * tx_actu
 
-                    COMM_MAINTIEN = -MT_VM_AV_RETRAIT_FRAIS * (math.exp(pc_commission_maintien / FREQ_EVAL_INT) - 1.0) * TX_SURVIE_DEB
+                    COMM_MAINTIEN = -MT_VM_AV_RETRAIT_FRAIS * (
+                                math.exp(pc_commission_maintien / FREQ_EVAL_INT) - 1.0) * TX_SURVIE_DEB
                     VP_COMM_MAINTIEN = COMM_MAINTIEN * tx_actu
 
-                    PRIMES_VARIABLES = MT_VM_AV_RETRAIT_FRAIS * math.exp(-(PC_RFG - PC_REVENU_FDS) / FREQ_EVAL_INT) * (-(math.exp(-PC_REVENU_FDS / FREQ_EVAL_INT) - 1.0)) * TX_SURVIE_DEB
+                    PRIMES_VARIABLES = MT_VM_AV_RETRAIT_FRAIS * math.exp(-(PC_RFG - PC_REVENU_FDS) / FREQ_EVAL_INT) * (
+                        -(math.exp(-PC_REVENU_FDS / FREQ_EVAL_INT) - 1.0)) * TX_SURVIE_DEB
                     VP_PRIMES_VARIABLES = PRIMES_VARIABLES * tx_actu
 
                     fees = -(HON_GEST + COMM_MAINTIEN + FRAIS_FIXES)
@@ -1804,7 +1836,7 @@ def nested_valuation_kernel_five_chocs(
 
                     if do_capital == 0 and is_debug_node and debug_int_scenario >= 0 and i_int == debug_int_scenario:
                         if vm_choc_start > 0:
-                            r_portfolio = (r_dex * mt_dex_choc + r_mm * mt_mm_choc + r_tsx * mt_tsx_choc + 
+                            r_portfolio = (r_dex * mt_dex_choc + r_mm * mt_mm_choc + r_tsx * mt_tsx_choc +
                                            r_sp500 * mt_sp500_choc + r_eafe * mt_eafe_choc) / vm_choc_start
                         else:
                             r_portfolio = 0.0
@@ -1842,9 +1874,9 @@ def nested_valuation_kernel_five_chocs(
         if debug_output is not None:
             # Check if this node matches the debug filter
             matches_filter = (
-                (debug_account < 0 or acc_idx == debug_account) and
-                (debug_ext_scenario < 0 or scn_idx == debug_ext_scenario) and
-                (debug_ext_year < 0 or year_idx == debug_ext_year)
+                    (debug_account < 0 or acc_idx == debug_account) and
+                    (debug_ext_scenario < 0 or scn_idx == debug_ext_scenario) and
+                    (debug_ext_year < 0 or year_idx == debug_ext_year)
             )
             if matches_filter:
                 debug_output[choc_idx, INT_DEBUG_IDX_START_VM] = start_vm

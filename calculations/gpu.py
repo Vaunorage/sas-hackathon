@@ -485,44 +485,45 @@ def initialize_gpu():
     except Exception as e:
         raise RuntimeError(f"Failed to initialize GPU: {e}")
 
-def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projection: int, 
+
+def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projection: int,
                          nb_int_scenarios: int, account_data_cols: int):
     """
     Calculate optimal batch size based on memory requirements.
-    
+
     Returns:
         Tuple of (batch_size, num_batches, total_mem_per_account, lookup_overhead)
     """
     print("\nCalculating memory requirements...")
-    
+
     # State tensor: (Batch, Ext_Scenarios, Years, STATE_SIZE)
     state_mem_per_account = nb_ext_scenarios * nb_an_projection * STATE_SIZE * 4  # float32
-    
+
     # Cashflow tensor: (Batch, Ext_Scenarios, Years*12, CF_OUT_IDX_SIZE) - monthly data
     cf_mem_per_account = nb_ext_scenarios * nb_an_projection * 12 * CF_OUT_IDX_SIZE * 4
-    
+
     # Metrics tensor: (Batch, Ext_Scenarios, Years, NUM_CHOCS, METRICS_OUTPUT_SIZE) - chocs × (Reserve & Capital)
     metrics_mem_per_account = nb_ext_scenarios * nb_an_projection * NUM_CHOCS * METRICS_OUTPUT_SIZE * 4
-    
-    total_mem_per_account = (state_mem_per_account + cf_mem_per_account + 
+
+    total_mem_per_account = (state_mem_per_account + cf_mem_per_account +
                              metrics_mem_per_account + account_data_cols * 4)
-    
+
     # Estimate lookup table memory overhead (always resident on GPU)
     lookup_overhead = 0
     lookup_overhead += 6 * nb_ext_scenarios * nb_an_projection * 12 * 4
     lookup_overhead += 6 * nb_int_scenarios * nb_an_projection * 4
-    lookup_overhead += LOOKUP_TABLE_OVERHEAD_MB * 1024**2
-    
-    print(f"  State tensor per account: {state_mem_per_account / 1024**2:.2f} MB")
-    print(f"  Total memory per account: {total_mem_per_account / 1024**2:.2f} MB")
-    print(f"  Lookup table overhead: {lookup_overhead / 1024**2:.2f} MB")
-    
+    lookup_overhead += LOOKUP_TABLE_OVERHEAD_MB * 1024 ** 2
+
+    print(f"  State tensor per account: {state_mem_per_account / 1024 ** 2:.2f} MB")
+    print(f"  Total memory per account: {total_mem_per_account / 1024 ** 2:.2f} MB")
+    print(f"  Lookup table overhead: {lookup_overhead / 1024 ** 2:.2f} MB")
+
     # Calculate batch size (conservative for nested scenarios)
     try:
         # Try numba cuda context first
         free_mem, total_mem = cuda.current_context().get_memory_info()
-        print(f"  GPU free memory: {free_mem / 1024**3:.2f} GB")
-        print(f"  GPU total memory: {total_mem / 1024**3:.2f} GB")
+        print(f"  GPU free memory: {free_mem / 1024 ** 3:.2f} GB")
+        print(f"  GPU total memory: {total_mem / 1024 ** 3:.2f} GB")
         # Use 70% of available memory after lookup overhead
         available_mem = max(0, (free_mem - lookup_overhead) * 0.70)
     except Exception as e:
@@ -536,20 +537,20 @@ def calculate_batch_size(n_accounts: int, nb_ext_scenarios: int, nb_an_projectio
             if free_mem == 0:
                 total_mem, used_mem = cp.cuda.Device().mem_info
                 free_mem = total_mem
-            print(f"  GPU free memory (cupy): {free_mem / 1024**3:.2f} GB")
-            print(f"  GPU total memory (cupy): {total_mem / 1024**3:.2f} GB")
+            print(f"  GPU free memory (cupy): {free_mem / 1024 ** 3:.2f} GB")
+            print(f"  GPU total memory (cupy): {total_mem / 1024 ** 3:.2f} GB")
             available_mem = max(0, (free_mem - lookup_overhead) * 0.70)
         except Exception as e2:
             print(f"  Warning: Cannot query GPU memory ({e}), using conservative estimate")
-            available_mem = max(0, DEFAULT_GPU_MEMORY_GB * 1024**3 - lookup_overhead)
-    
+            available_mem = max(0, DEFAULT_GPU_MEMORY_GB * 1024 ** 3 - lookup_overhead)
+
     batch_size = max(1, int(available_mem // total_mem_per_account))
     batch_size = min(batch_size, n_accounts)
     num_batches = (n_accounts + batch_size - 1) // batch_size
-    
+
     print(f"  Batch size: {batch_size} accounts")
     print(f"  Total batches: {num_batches}")
-    
+
     return batch_size, num_batches, total_mem_per_account, lookup_overhead
 
 
@@ -559,7 +560,8 @@ class ProcessBatchResult(TypedDict):
     batch_capital: np.ndarray
     batch_reserves_5chocs: np.ndarray
     batch_capital_5chocs: np.ndarray
-    batch_mean_cashflows: Optional[np.ndarray]  # Pre-averaged cashflows (batch, months, CF_OUT_IDX_SIZE) - averaged on GPU
+    batch_mean_cashflows: Optional[
+        np.ndarray]  # Pre-averaged cashflows (batch, months, CF_OUT_IDX_SIZE) - averaged on GPU
     batch_vp_flux_compte: Optional[np.ndarray]  # GPU-aggregated VP by account
     batch_flux_projete: Optional[np.ndarray]  # GPU-aggregated flux by year
     ext_debug: Optional[np.ndarray]  # Debug output from external kernel
@@ -581,18 +583,18 @@ def check_gpu_memory(batch_size: int, mem_per_account: float, batch_idx: int = 0
             except (ImportError, AttributeError):
                 pass
             cuda.synchronize()
-        
+
         free_mem, _ = cuda.current_context().get_memory_info()
         estimated_mem = batch_size * mem_per_account
         logger.info(f"  Free GPU memory: {free_mem / 1024 ** 3:.2f} GB")
         logger.info(f"  Estimated batch memory: {estimated_mem / 1024 ** 3:.2f} GB")
-        
+
         # Check if we have enough memory (simple check: need < available)
         if estimated_mem > free_mem:
             raise RuntimeError(
                 f"Insufficient GPU memory for batch {batch_idx + 1}. "
-                f"Need {estimated_mem / 1024**3:.2f} GB but only "
-                f"{free_mem / 1024**3:.2f} GB available. "
+                f"Need {estimated_mem / 1024 ** 3:.2f} GB but only "
+                f"{free_mem / 1024 ** 3:.2f} GB available. "
                 f"Try reducing batch size or number of scenarios."
             )
     except NotImplementedError:
@@ -600,27 +602,27 @@ def check_gpu_memory(batch_size: int, mem_per_account: float, batch_idx: int = 0
 
 
 def process_batch(
-    batch_account_data: np.ndarray,
-    nb_ext_scenarios: int,
-    nb_an_projection: int,
-    nb_int_scenarios: int,
-    shock_capital_pct: float,
-    total_mem_per_account: float,
-    threads_per_block: tuple,
-    gpu_lookups: dict,
-    batch_idx: int = 0,
-    num_batches: int = 1,
-    debug_account: int = -1,
-    debug_scenario: int = -1,
-    debug_year: int = -1,
-    debug_month: int = -1,
-    debug_int_scenario: int = -1,
-    debug_int_year: int = -1,
-    run_nested_valuation: bool = True,
+        batch_account_data: np.ndarray,
+        nb_ext_scenarios: int,
+        nb_an_projection: int,
+        nb_int_scenarios: int,
+        shock_capital_pct: float,
+        total_mem_per_account: float,
+        threads_per_block: tuple,
+        gpu_lookups: dict,
+        batch_idx: int = 0,
+        num_batches: int = 1,
+        debug_account: int = -1,
+        debug_scenario: int = -1,
+        debug_year: int = -1,
+        debug_month: int = -1,
+        debug_int_scenario: int = -1,
+        debug_int_year: int = -1,
+        run_nested_valuation: bool = True,
 ) -> ProcessBatchResult:
     """
     Process a single batch through both kernels (or just Kernel A if run_nested_valuation=False).
-    
+
     Args:
         batch_account_data: 2D array of account data for this batch (n_batch_accounts, n_features)
         nb_ext_scenarios: Number of external scenarios
@@ -638,16 +640,16 @@ def process_batch(
         debug_int_scenario: Internal scenario to debug (-1 = disabled)
         debug_int_year: Internal year to debug (-1 = disabled)
         run_nested_valuation: If True, run Kernel B (nested valuation). If False, only run Kernel A (outer loop)
-    
+
     Returns:
         ProcessBatchResult with batch results
     """
     batch_start = datetime.now()
     current_batch_size = len(batch_account_data)
-    
+
     logger.info(f"\n--- Batch {batch_idx + 1}/{num_batches} ({current_batch_size} accounts) ---")
     check_gpu_memory(current_batch_size, total_mem_per_account, batch_idx)
-    
+
     # Prepare batch data
     batch_account_data_contiguous = np.ascontiguousarray(batch_account_data)
     d_batch_accounts = _to_device_contiguous(batch_account_data_contiguous)
@@ -667,23 +669,24 @@ def process_batch(
             )
         else:
             d_metrics = None
-        
+
         # Allocate debug arrays (always allocate, use -1 flags to disable)
         enable_ext_debug = debug_account >= 0 or debug_scenario >= 0 or debug_year >= 0 or debug_month >= 0
         enable_int_debug = enable_ext_debug and run_nested_valuation  # Internal debug only if external debug is enabled AND running nested valuation
-        
+
         if enable_ext_debug:
-            logger.info(f"  Debug mode: account={debug_account}, scenario={debug_scenario}, year={debug_year}, month={debug_month}")
+            logger.info(
+                f"  Debug mode: account={debug_account}, scenario={debug_scenario}, year={debug_year}, month={debug_month}")
         if enable_int_debug:
             logger.info(f"  Internal debug: int_scenario={debug_int_scenario}, int_year={debug_int_year}")
-        
+
         # Always allocate debug arrays (kernel uses -1 flags to skip writing)
         d_ext_debug = _device_array_cupy((EXT_DEBUG_SIZE,))
         if run_nested_valuation:
             d_int_debug = _device_array_cupy((NUM_CHOCS, INT_DEBUG_SIZE))
         else:
             d_int_debug = None
-        
+
         # Allocate debug flux array for single account/scenario flux capture
         # Shape: (n_years+1, freq_eval, FLUX_COMP_IDX_SIZE)
         freq_eval_int = int(CONFIG['FREQ_EVAL'])
@@ -694,7 +697,7 @@ def process_batch(
         else:
             # Minimal array when debug is disabled
             d_debug_flux = _to_device_contiguous(np.zeros((1, 1, FLUX_COMP_IDX_SIZE), dtype=np.float32))
-        
+
         enable_int_debug_ts = enable_int_debug and debug_int_scenario >= 0
         if enable_int_debug_ts:
             d_int_debug_ts = _to_device_contiguous(
@@ -707,17 +710,17 @@ def process_batch(
             d_int_debug_ts = None
     except Exception as e:
         raise RuntimeError(
-            f"Failed to allocate GPU memory for batch {batch_idx+1}. "
+            f"Failed to allocate GPU memory for batch {batch_idx + 1}. "
             f"Try reducing --max-accounts or --ext-scenarios. Original error: {e}"
         )
-    
+
     # === KERNEL A: EXTERNAL GENERATOR ===
     logger.info("  Launching Kernel A (External Generator)...")
     validate_kernel_compatibility()
     blocks_x = (current_batch_size + threads_per_block[0] - 1) // threads_per_block[0]
     blocks_y = (nb_ext_scenarios + threads_per_block[1] - 1) // threads_per_block[1]
     grid_A = (blocks_x, blocks_y)
-    
+
     kernel_a_start = datetime.now()
     if 'coussins' not in gpu_lookups:
         raise RuntimeError(
@@ -746,12 +749,12 @@ def process_batch(
     cuda.synchronize()
     kernel_a_time = (datetime.now() - kernel_a_start).total_seconds()
     logger.info(f"  Kernel A complete: {kernel_a_time:.2f}s")
-    
+
     # Free states tensor immediately if not running nested valuation
     if not run_nested_valuation:
         del d_states
         cuda.synchronize()
-    
+
     # === KERNEL B: NESTED VALUATOR WITH 5 CHOCS ===
     kernel_b_time = 0.0
     if run_nested_valuation:
@@ -759,9 +762,9 @@ def process_batch(
         total_nodes = current_batch_size * nb_ext_scenarios * nb_an_projection
         threads_per_block_B = DEFAULT_THREADS_PER_BLOCK_1D
         blocks_B = (total_nodes + threads_per_block_B - 1) // threads_per_block_B
-        
+
         kernel_b_start = datetime.now()
-        
+
         nested_valuation_kernel_five_chocs[blocks_B, threads_per_block_B](
             d_states,
             d_batch_accounts,
@@ -783,15 +786,15 @@ def process_batch(
             float(shock_capital_pct),
         )
         cuda.synchronize()
-        
+
         kernel_b_time = (datetime.now() - kernel_b_start).total_seconds()
         logger.info(f"  Kernel B complete: {kernel_b_time:.2f}s")
     else:
         logger.info(f"  Kernel B skipped (run_nested_valuation=False - outer loop only)")
-    
+
     # Copy results back
     logger.info("  Copying results to CPU...")
-    
+
     # Copy debug arrays if enabled
     h_ext_debug = None
     h_int_debug = None
@@ -806,7 +809,7 @@ def process_batch(
         h_int_debug = d_int_debug.copy_to_host()
         if enable_int_debug_ts:
             h_int_debug_ts = d_int_debug_ts.copy_to_host()
-    
+
     # ==========================================================================
     # GPU-BASED AGGREGATIONS (SAS-compatible outputs)
     # Compute aggregations on GPU before copying to minimize data transfer
@@ -816,13 +819,13 @@ def process_batch(
     cuda.synchronize()  # Ensure GPU work is done before timing
     _t1 = _time.time()
     logger.info(f"  GPU sync before aggregations: {_t1 - _t0:.2f}s")
-    
+
     # Convert d_cashflows to CuPy array for GPU aggregations
     # d_cashflows shape: (batch, scenarios, years, CF_OUT_IDX_SIZE)
     try:
         import cupy as cp
         d_cf_cupy = cp.asarray(d_cashflows)
-        
+
         # --- VP_FLUX_COMPTE: Mean across scenarios, then sum across all months ---
         # Result: (batch, CF_OUT_IDX_SIZE) - one row per account with summed VP values
         _t_vp_start = _time.time()
@@ -833,7 +836,7 @@ def process_batch(
         h_vp_flux_compte = cp.asnumpy(vp_flux_compte_gpu)  # Copy small result to host
         _t_vp_end = _time.time()
         logger.info(f"  VP_FLUX_COMPTE GPU aggregation: {_t_vp_end - _t_vp_start:.4f}s")
-        
+
         # --- FLUX_PROJETE: Mean across scenarios, sum across accounts ---
         # Result: (months, CF_OUT_IDX_SIZE) - one row per month with summed values across all accounts
         _t_flux_start = _time.time()
@@ -843,25 +846,25 @@ def process_batch(
         h_flux_projete = cp.asnumpy(flux_projete_gpu)  # Copy small result to host
         _t_flux_end = _time.time()
         logger.info(f"  FLUX_PROJETE GPU aggregation: {_t_flux_end - _t_flux_start:.4f}s")
-        
+
         # --- Copy mean cashflows to host (MUCH smaller than full tensor) ---
         # cf_mean_scenarios shape: (batch, months, CF_OUT_IDX_SIZE) - already averaged across scenarios
         # This is ~100x smaller than the full (batch, scenarios, months, CF_OUT_IDX_SIZE) tensor
         _t_mean_start = _time.time()
         h_mean_cashflows = cp.asnumpy(cf_mean_scenarios)  # Copy reduced tensor to host
         _t_mean_end = _time.time()
-        mean_cf_size_mb = h_mean_cashflows.nbytes / (1024**2)
+        mean_cf_size_mb = h_mean_cashflows.nbytes / (1024 ** 2)
         logger.info(f"  Mean cashflow copy_to_host: {_t_mean_end - _t_mean_start:.2f}s for {mean_cf_size_mb:.2f} MB")
-        
+
         # Clean up intermediate GPU arrays
         del cf_mean_scenarios, vp_flux_compte_gpu, flux_projete_gpu, d_cf_cupy
-        
+
     except Exception as e:
         logger.warning(f"  GPU aggregation failed, falling back to CPU: {e}")
         h_vp_flux_compte = None
         h_flux_projete = None
         h_mean_cashflows = None
-    
+
     # Process metrics (only if nested valuation was run)
     if run_nested_valuation:
         h_metrics = d_metrics.copy_to_host()
@@ -874,40 +877,40 @@ def process_batch(
         # h_mean_cashflows is already averaged across scenarios on GPU
         logger.info("  Computing simple PV-based reserves from mean cashflows...")
         h_metrics = None
-        
+
         del d_cashflows  # Free GPU memory immediately
         cuda.synchronize()
-        
+
         # Compute simple reserve estimate by summing VP cashflows across months
         # h_mean_cashflows shape: (batch, months, CF_OUT_IDX_SIZE) - already averaged across scenarios
         # Sum VP cashflows: VP_FRAIS_ACQUIS + VP_COMM_VENTE + VP_PRIMES_GARANTIES + ... + VP_PREST_DECES
         if h_mean_cashflows is not None:
             vp_total = (
-                h_mean_cashflows[:, :, CF_OUT_IDX_VP_FRAIS_ACQUIS] +
-                h_mean_cashflows[:, :, CF_OUT_IDX_VP_COMM_VENTE] +
-                h_mean_cashflows[:, :, CF_OUT_IDX_VP_PRIMES_GARANTIES] +
-                h_mean_cashflows[:, :, CF_OUT_IDX_VP_PRIMES_VARIABLES] +
-                h_mean_cashflows[:, :, CF_OUT_IDX_VP_FRAIS_FIXES] +
-                h_mean_cashflows[:, :, CF_OUT_IDX_VP_HON_GEST] +
-                h_mean_cashflows[:, :, CF_OUT_IDX_VP_COMM_MAINTIEN] +
-                h_mean_cashflows[:, :, CF_OUT_IDX_VP_PREST_ECH] +
-                h_mean_cashflows[:, :, CF_OUT_IDX_VP_PREST_MRV] +
-                h_mean_cashflows[:, :, CF_OUT_IDX_VP_PREST_DECES]
+                    h_mean_cashflows[:, :, CF_OUT_IDX_VP_FRAIS_ACQUIS] +
+                    h_mean_cashflows[:, :, CF_OUT_IDX_VP_COMM_VENTE] +
+                    h_mean_cashflows[:, :, CF_OUT_IDX_VP_PRIMES_GARANTIES] +
+                    h_mean_cashflows[:, :, CF_OUT_IDX_VP_PRIMES_VARIABLES] +
+                    h_mean_cashflows[:, :, CF_OUT_IDX_VP_FRAIS_FIXES] +
+                    h_mean_cashflows[:, :, CF_OUT_IDX_VP_HON_GEST] +
+                    h_mean_cashflows[:, :, CF_OUT_IDX_VP_COMM_MAINTIEN] +
+                    h_mean_cashflows[:, :, CF_OUT_IDX_VP_PREST_ECH] +
+                    h_mean_cashflows[:, :, CF_OUT_IDX_VP_PREST_MRV] +
+                    h_mean_cashflows[:, :, CF_OUT_IDX_VP_PREST_DECES]
             )
             batch_reserves = vp_total.sum(axis=1)  # Sum over months (already averaged across scenarios)
         else:
             batch_reserves = np.zeros(current_batch_size, dtype=np.float32)
-        
+
         # No capital calculation without nested valuation
         batch_capital = np.zeros(current_batch_size, dtype=np.float32)
         batch_reserves_5chocs = np.zeros((current_batch_size, NUM_CHOCS), dtype=np.float32)
         batch_capital_5chocs = np.zeros((current_batch_size, NUM_CHOCS), dtype=np.float32)
-        
+
         # Store base reserves in first choc position for consistency
         batch_reserves_5chocs[:, 0] = batch_reserves
-        
+
         gc.collect()
-    
+
     # Cleanup
     del d_batch_accounts, d_ext_debug, d_debug_flux
     if not run_nested_valuation:
@@ -925,11 +928,11 @@ def process_batch(
     if h_metrics is not None:
         del h_metrics
     gc.collect()
-    
+
     # Clear CuPy array references to allow garbage collection
     _clear_cupy_refs()
     gc.collect()
-    
+
     # Force RMM/CuPy to release memory back to CUDA
     try:
         import cupy as cp
@@ -937,19 +940,19 @@ def process_batch(
         cp.get_default_pinned_memory_pool().free_all_blocks()
     except (ImportError, AttributeError):
         pass
-    
+
     try:
         import rmm
         rmm.mr.get_current_device_resource().deallocate(0, 0)
     except (ImportError, AttributeError):
         pass
-    
+
     cuda.synchronize()
     gc.collect()
-    
+
     batch_time = (datetime.now() - batch_start).total_seconds()
     logger.info(f"  Batch complete: {batch_time:.2f}s (KernelA: {kernel_a_time:.2f}s, KernelB: {kernel_b_time:.2f}s)")
-    
+
     return {
         'batch_reserves': batch_reserves,
         'batch_capital': batch_capital,
@@ -957,7 +960,7 @@ def process_batch(
         'batch_capital_5chocs': batch_capital_5chocs,
         'batch_mean_cashflows': h_mean_cashflows,  # Pre-averaged on GPU (batch, months, CF_OUT_IDX_SIZE)
         'batch_vp_flux_compte': h_vp_flux_compte,  # GPU-aggregated VP by account
-        'batch_flux_projete': h_flux_projete,      # GPU-aggregated flux by year
+        'batch_flux_projete': h_flux_projete,  # GPU-aggregated flux by year
         'ext_debug': h_ext_debug,
         'int_debug': h_int_debug,
         'int_debug_ts': h_int_debug_ts,
@@ -966,16 +969,16 @@ def process_batch(
 
 
 def create_results_dataframes(
-    population_ids: np.ndarray,
-    all_reserves: list,
-    all_capital: list,
-    all_reserves_5chocs: list,
-    all_capital_5chocs: list,
-    n_accounts: int
+        population_ids: np.ndarray,
+        all_reserves: list,
+        all_capital: list,
+        all_reserves_5chocs: list,
+        all_capital_5chocs: list,
+        n_accounts: int
 ):
     """
     Create results DataFrames from accumulated batch results.
-    
+
     Returns:
         Tuple of (results_df, results_5chocs_df, sensitivities_df)
     """
@@ -985,15 +988,15 @@ def create_results_dataframes(
         'CAPITAL_REQ': all_capital,
         'SCR': [cap - res for res, cap in zip(all_reserves, all_capital)]
     })
-    
+
     results_5chocs_df = None
     sensitivities_df = None
-    
+
     if all_reserves_5chocs:
         all_reserves_5chocs_array = np.array(all_reserves_5chocs)
         all_capital_5chocs_array = np.array(all_capital_5chocs)
         choc_rows = []
-        
+
         for acc_idx in range(n_accounts):
             account_id = population_ids[acc_idx]
             for choc_idx, choc_name in enumerate(CHOC_NAMES):
@@ -1007,12 +1010,12 @@ def create_results_dataframes(
                     'CAPITAL_REQ': capital,
                     'SCR': capital - reserve
                 })
-        
+
         results_5chocs_df = pd.DataFrame(choc_rows)
-        
+
         base_reserves = all_reserves_5chocs_array[:, 0]
         base_capital = all_capital_5chocs_array[:, 0]
-        
+
         sensitivities_df = pd.DataFrame({
             'ID_COMPTE': population_ids[:n_accounts],
             'DELTA_SP500_RESERVE': all_reserves_5chocs_array[:, 1] - base_reserves,
@@ -1024,9 +1027,10 @@ def create_results_dataframes(
             'DELTA_EAFE_CAPITAL': all_capital_5chocs_array[:, 3] - base_capital,
             'DELTA_DEX_CAPITAL': all_capital_5chocs_array[:, 4] - base_capital,
         })
-        
-        logger.info(f"Created 5 chocs results with {len(results_5chocs_df)} rows and sensitivities for {len(sensitivities_df)} accounts")
-    
+
+        logger.info(
+            f"Created 5 chocs results with {len(results_5chocs_df)} rows and sensitivities for {len(sensitivities_df)} accounts")
+
     return results_df, results_5chocs_df, sensitivities_df
 
 
@@ -1046,30 +1050,34 @@ FLUX_COLUMNS = [
 
 FLUX_CF_INDICES = [
     CF_OUT_IDX_FRAIS_ACQUIS, CF_OUT_IDX_COMM_VENTE, CF_OUT_IDX_PRIMES_GARANTIES, CF_OUT_IDX_PRIMES_VARIABLES,
-    CF_OUT_IDX_FRAIS_FIXES, CF_OUT_IDX_HON_GEST, CF_OUT_IDX_COMM_MAINTIEN, CF_OUT_IDX_PREST_ECH, CF_OUT_IDX_PREST_MRV, CF_OUT_IDX_PREST_DECES,
-    CF_OUT_IDX_VP_FRAIS_ACQUIS, CF_OUT_IDX_VP_COMM_VENTE, CF_OUT_IDX_VP_PRIMES_GARANTIES, CF_OUT_IDX_VP_PRIMES_VARIABLES,
-    CF_OUT_IDX_VP_FRAIS_FIXES, CF_OUT_IDX_VP_HON_GEST, CF_OUT_IDX_VP_COMM_MAINTIEN, CF_OUT_IDX_VP_PREST_ECH, CF_OUT_IDX_VP_PREST_MRV, CF_OUT_IDX_VP_PREST_DECES,
+    CF_OUT_IDX_FRAIS_FIXES, CF_OUT_IDX_HON_GEST, CF_OUT_IDX_COMM_MAINTIEN, CF_OUT_IDX_PREST_ECH, CF_OUT_IDX_PREST_MRV,
+    CF_OUT_IDX_PREST_DECES,
+    CF_OUT_IDX_VP_FRAIS_ACQUIS, CF_OUT_IDX_VP_COMM_VENTE, CF_OUT_IDX_VP_PRIMES_GARANTIES,
+    CF_OUT_IDX_VP_PRIMES_VARIABLES,
+    CF_OUT_IDX_VP_FRAIS_FIXES, CF_OUT_IDX_VP_HON_GEST, CF_OUT_IDX_VP_COMM_MAINTIEN, CF_OUT_IDX_VP_PREST_ECH,
+    CF_OUT_IDX_VP_PREST_MRV, CF_OUT_IDX_VP_PREST_DECES,
     CF_OUT_IDX_VP_VALEUR_MARCHANDE, CF_OUT_IDX_UNITE_COUVERTURE, CF_OUT_IDX_DEPOT_FUTUR, CF_OUT_IDX_REM_COMP_INV,
     CF_OUT_IDX_VALEUR_MARCHANDE, CF_OUT_IDX_VALEUR_GARANTIE, CF_OUT_IDX_DEPOT_FUTUR_SURVIE,
     CF_OUT_IDX_PASSIF_REDRESSE, CF_OUT_IDX_COUSSIN_CREDIT, CF_OUT_IDX_COUSSIN_MARCHE, CF_OUT_IDX_COUSSIN_DEPENSE,
     CF_OUT_IDX_COUSSIN_DECHEANCE, CF_OUT_IDX_COUSSIN_MORTALITE, CF_OUT_IDX_COUSSIN_DEPOT,
-    CF_OUT_IDX_VP_PASSIF_REDRESSE, CF_OUT_IDX_VP_COUSSIN_CREDIT, CF_OUT_IDX_VP_COUSSIN_MARCHE, CF_OUT_IDX_VP_COUSSIN_DEPENSE,
+    CF_OUT_IDX_VP_PASSIF_REDRESSE, CF_OUT_IDX_VP_COUSSIN_CREDIT, CF_OUT_IDX_VP_COUSSIN_MARCHE,
+    CF_OUT_IDX_VP_COUSSIN_DEPENSE,
     CF_OUT_IDX_VP_COUSSIN_DECHEANCE, CF_OUT_IDX_VP_COUSSIN_MORTALITE, CF_OUT_IDX_VP_COUSSIN_DEPOT,
 ]
 
 
 def write_cashflows_batch(
-    output_path: Path,
-    batch_mean_cashflows: np.ndarray,
-    population_ids: np.ndarray,
-    start_idx: int,
-    is_first_batch: bool = False,
+        output_path: Path,
+        batch_mean_cashflows: np.ndarray,
+        population_ids: np.ndarray,
+        start_idx: int,
+        is_first_batch: bool = False,
 ):
     """
     Write a batch of cashflows to FLUX_PROJETE_GPU.csv incrementally.
-    
+
     Uses direct numpy array operations and file writing for maximum speed.
-    
+
     Args:
         output_path: Directory to save CSV file
         batch_mean_cashflows: Pre-averaged cashflow tensor (batch_size, n_months, CF_OUT_IDX_SIZE)
@@ -1080,40 +1088,40 @@ def write_cashflows_batch(
     """
     batch_size = batch_mean_cashflows.shape[0]
     n_months_out = batch_mean_cashflows.shape[1]
-    
+
     # Limit to valid accounts
     end_idx = min(start_idx + batch_size, len(population_ids))
     actual_batch_size = end_idx - start_idx
     if actual_batch_size <= 0:
         return 0
-    
+
     # Vectorized: create meshgrid of (account_idx, month_idx)
     account_indices = np.arange(actual_batch_size)
     month_indices = np.arange(n_months_out)
     acc_grid, month_grid = np.meshgrid(account_indices, month_indices, indexing='ij')
     acc_flat = acc_grid.ravel()  # (actual_batch_size * n_months_out,)
     month_flat = month_grid.ravel()
-    
+
     # Vectorized: filter out all-zero rows
     cf_flat = batch_mean_cashflows[:actual_batch_size].reshape(-1, batch_mean_cashflows.shape[2])
     non_zero_mask = np.any(cf_flat != 0, axis=1)
-    
+
     if not np.any(non_zero_mask):
         return 0
-    
+
     acc_flat = acc_flat[non_zero_mask]
     month_flat = month_flat[non_zero_mask]
     cf_flat = cf_flat[non_zero_mask]
-    
+
     # Vectorized: compute ID_COMPTE, AN_EVAL, MOIS_EVAL
     id_compte = population_ids[start_idx + acc_flat].astype(np.int64)
     an_eval = ((month_flat // 12) + 1).astype(np.int32)
     mois_eval = ((month_flat % 12) + 1).astype(np.int32)
-    
+
     # Extract only the columns we need from cf_flat (much faster than pandas)
     n_rows = len(id_compte)
     n_cf_cols = len(FLUX_CF_INDICES)
-    
+
     # Build output array: [ID_COMPTE, AN_EVAL, MOIS_EVAL, ...cf_columns...]
     # Use object dtype for mixed int/float, then convert to strings efficiently
     output_data = np.empty((n_rows, 3 + n_cf_cols), dtype=np.float64)
@@ -1122,9 +1130,9 @@ def write_cashflows_batch(
     output_data[:, 2] = mois_eval
     for i, idx in enumerate(FLUX_CF_INDICES):
         output_data[:, 3 + i] = cf_flat[:, idx]
-    
+
     flux_path = output_path / "FLUX_PROJETE_GPU.csv"
-    
+
     # Write using numpy savetxt (much faster than pandas to_csv)
     with open(flux_path, 'a' if not is_first_batch else 'w') as f:
         if is_first_batch:
@@ -1132,7 +1140,7 @@ def write_cashflows_batch(
         # Use fmt to control precision - integers for first 3 cols, floats for rest
         fmt = ['%d', '%d', '%d'] + ['%.6g'] * n_cf_cols
         np.savetxt(f, output_data, delimiter=';', fmt=fmt)
-    
+
     return n_rows
 
 
@@ -1144,27 +1152,31 @@ VP_FLUX_COLUMNS = [
 ]
 
 VP_FLUX_INDICES = [
-    CF_OUT_IDX_VP_FRAIS_ACQUIS, CF_OUT_IDX_VP_COMM_VENTE, CF_OUT_IDX_VP_PRIMES_GARANTIES, CF_OUT_IDX_VP_PRIMES_VARIABLES,
-    CF_OUT_IDX_VP_FRAIS_FIXES, CF_OUT_IDX_VP_HON_GEST, CF_OUT_IDX_VP_COMM_MAINTIEN, CF_OUT_IDX_VP_PREST_ECH, CF_OUT_IDX_VP_PREST_MRV, CF_OUT_IDX_VP_PREST_DECES,
-    CF_OUT_IDX_VP_PASSIF_REDRESSE, CF_OUT_IDX_VP_COUSSIN_CREDIT, CF_OUT_IDX_VP_COUSSIN_MARCHE, CF_OUT_IDX_VP_COUSSIN_DEPENSE,
-    CF_OUT_IDX_VP_COUSSIN_DECHEANCE, CF_OUT_IDX_VP_COUSSIN_MORTALITE, CF_OUT_IDX_VP_COUSSIN_DEPOT, CF_OUT_IDX_VP_VALEUR_MARCHANDE,
+    CF_OUT_IDX_VP_FRAIS_ACQUIS, CF_OUT_IDX_VP_COMM_VENTE, CF_OUT_IDX_VP_PRIMES_GARANTIES,
+    CF_OUT_IDX_VP_PRIMES_VARIABLES,
+    CF_OUT_IDX_VP_FRAIS_FIXES, CF_OUT_IDX_VP_HON_GEST, CF_OUT_IDX_VP_COMM_MAINTIEN, CF_OUT_IDX_VP_PREST_ECH,
+    CF_OUT_IDX_VP_PREST_MRV, CF_OUT_IDX_VP_PREST_DECES,
+    CF_OUT_IDX_VP_PASSIF_REDRESSE, CF_OUT_IDX_VP_COUSSIN_CREDIT, CF_OUT_IDX_VP_COUSSIN_MARCHE,
+    CF_OUT_IDX_VP_COUSSIN_DEPENSE,
+    CF_OUT_IDX_VP_COUSSIN_DECHEANCE, CF_OUT_IDX_VP_COUSSIN_MORTALITE, CF_OUT_IDX_VP_COUSSIN_DEPOT,
+    CF_OUT_IDX_VP_VALEUR_MARCHANDE,
 ]
 
 
 def write_vp_flux_compte_batch(
-    output_path: Path,
-    batch_vp_flux_compte: np.ndarray,
-    population_ids: np.ndarray,
-    start_idx: int,
-    is_first_batch: bool = False,
+        output_path: Path,
+        batch_vp_flux_compte: np.ndarray,
+        population_ids: np.ndarray,
+        start_idx: int,
+        is_first_batch: bool = False,
 ):
     """
     Write a batch of VP_FLUX_COMPTE (VP by account) to CSV incrementally.
-    
+
     Uses direct numpy savetxt for maximum speed.
-    
+
     This matches SAS: PROC SUMMARY ... CLASS ID_COMPTE; VAR VP_*; OUTPUT SUM=
-    
+
     Args:
         output_path: Directory to save CSV file
         batch_vp_flux_compte: VP aggregates per account (batch_size, CF_OUT_IDX_SIZE)
@@ -1174,54 +1186,54 @@ def write_vp_flux_compte_batch(
     """
     if batch_vp_flux_compte is None:
         return 0
-    
+
     batch_size = batch_vp_flux_compte.shape[0]
     end_idx = min(start_idx + batch_size, len(population_ids))
     actual_batch_size = end_idx - start_idx
     if actual_batch_size <= 0:
         return 0
-    
+
     # Vectorized: extract account IDs
     id_compte = population_ids[start_idx:end_idx].astype(np.int64)
     vp = batch_vp_flux_compte[:actual_batch_size]
-    
+
     # Build output array
     n_vp_cols = len(VP_FLUX_INDICES)
     output_data = np.empty((actual_batch_size, 1 + n_vp_cols), dtype=np.float64)
     output_data[:, 0] = id_compte
     for i, idx in enumerate(VP_FLUX_INDICES):
         output_data[:, 1 + i] = vp[:, idx]
-    
+
     vp_path = output_path / "VP_FLUX_COMPTE_GPU.csv"
-    
+
     with open(vp_path, 'a' if not is_first_batch else 'w') as f:
         if is_first_batch:
             f.write(';'.join(VP_FLUX_COLUMNS) + '\n')
         fmt = ['%d'] + ['%.6g'] * n_vp_cols
         np.savetxt(f, output_data, delimiter=';', fmt=fmt)
-    
+
     return actual_batch_size
 
 
 def accumulate_flux_projete(
-    accumulated: Optional[np.ndarray],
-    batch_flux_projete: np.ndarray,
+        accumulated: Optional[np.ndarray],
+        batch_flux_projete: np.ndarray,
 ) -> np.ndarray:
     """
     Accumulate FLUX_PROJETE across batches (sum by year).
-    
+
     This matches SAS: PROC SUMMARY ... CLASS AN_EVAL MOIS_EVAL; OUTPUT SUM=
-    
+
     Args:
         accumulated: Previously accumulated flux (years, CF_OUT_IDX_SIZE) or None
         batch_flux_projete: This batch's flux by year (years, CF_OUT_IDX_SIZE)
-    
+
     Returns:
         Updated accumulated flux
     """
     if batch_flux_projete is None:
         return accumulated
-    
+
     if accumulated is None:
         return batch_flux_projete.copy()
     else:
@@ -1229,15 +1241,15 @@ def accumulate_flux_projete(
 
 
 def write_flux_projete(
-    output_path: Path,
-    flux_projete: np.ndarray,
-    nb_an_projection: int,
+        output_path: Path,
+        flux_projete: np.ndarray,
+        nb_an_projection: int,
 ):
     """
     Write final FLUX_PROJETE (flux by year/month) to CSV.
-    
+
     This matches SAS: PROC SUMMARY ... CLASS AN_EVAL MOIS_EVAL; OUTPUT SUM=
-    
+
     Args:
         output_path: Directory to save CSV file
         flux_projete: Aggregated flux by month (months, CF_OUT_IDX_SIZE) where months = years * 12
@@ -1245,20 +1257,20 @@ def write_flux_projete(
     """
     if flux_projete is None:
         return 0
-    
+
     rows = []
     n_months = min(flux_projete.shape[0], nb_an_projection * 12)
-    
+
     for month_idx in range(n_months):
         # Calculate year and month from monthly index
         an_eval = (month_idx // 12) + 1  # Year starts at 1
         mois_eval = (month_idx % 12) + 1  # Month 1-12
         cf = flux_projete[month_idx, :]
-        
+
         # Skip if all zeros
         if np.all(cf == 0):
             continue
-        
+
         rows.append({
             'AN_EVAL': an_eval,
             'MOIS_EVAL': mois_eval,  # Monthly output (1-12)
@@ -1287,7 +1299,7 @@ def write_flux_projete(
             'COUSSIN_MORTALITE': float(cf[CF_OUT_IDX_COUSSIN_MORTALITE]),
             'COUSSIN_DEPOT': float(cf[CF_OUT_IDX_COUSSIN_DEPOT]),
         })
-    
+
     if rows:
         df = pd.DataFrame(rows)
         flux_path = output_path / "FLUX_PROJETES_GPU.csv"
@@ -1297,26 +1309,26 @@ def write_flux_projete(
 
 
 def save_results(
-    output_path: Path,
-    results_df: pd.DataFrame,
-    results_5chocs_df: Optional[pd.DataFrame],
-    sensitivities_df: Optional[pd.DataFrame],
-    n_accounts: int,
-    ext_debug: Optional[np.ndarray] = None,
-    int_debug: Optional[np.ndarray] = None,
-    int_debug_ts_df: Optional[pd.DataFrame] = None,
-    debug_params: Optional[dict] = None,
-    population_ids: Optional[np.ndarray] = None,
-    debug_flux: Optional[np.ndarray] = None,
-    population_df: Optional[pd.DataFrame] = None,
-    lookup_data: Optional[Dict[str, pd.DataFrame]] = None,
-    total_cashflow_rows: int = 0,
-    total_vp_flux_compte_rows: int = 0,
-    total_flux_projete_rows: int = 0,
+        output_path: Path,
+        results_df: pd.DataFrame,
+        results_5chocs_df: Optional[pd.DataFrame],
+        sensitivities_df: Optional[pd.DataFrame],
+        n_accounts: int,
+        ext_debug: Optional[np.ndarray] = None,
+        int_debug: Optional[np.ndarray] = None,
+        int_debug_ts_df: Optional[pd.DataFrame] = None,
+        debug_params: Optional[dict] = None,
+        population_ids: Optional[np.ndarray] = None,
+        debug_flux: Optional[np.ndarray] = None,
+        population_df: Optional[pd.DataFrame] = None,
+        lookup_data: Optional[Dict[str, pd.DataFrame]] = None,
+        total_cashflow_rows: int = 0,
+        total_vp_flux_compte_rows: int = 0,
+        total_flux_projete_rows: int = 0,
 ):
     """
     Save all results (final simulation results and debug output) to CSV files.
-    
+
     Args:
         output_path: Directory to save CSV files
         results_df: Main results DataFrame with reserves/capital per account
@@ -1327,7 +1339,7 @@ def save_results(
         int_debug: Optional internal kernel debug array (NUM_CHOCS, INT_DEBUG_SIZE) - one row per choc
         debug_params: Optional dictionary with debug filter parameters for context
         population_ids: Optional array of real account IDs (ID_COMPTE) for mapping debug account index
-    
+
     Returns:
         Dictionary containing all created DataFrames:
         - 'saved_files': List of saved file names
@@ -1337,36 +1349,36 @@ def save_results(
         - 'int_debug_df': Internal kernel debug DataFrame (if int_debug provided)
     """
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Column names for debug CSV files
     EXT_DEBUG_COLUMNS = [
         'VM', 'AGE', 'QX', 'LAPSE_TOT', 'LAPSE_PART', 'TX_SURVIE',
         'FORWARD_RATE', 'REND_SP500', 'REND_TSX', 'REND_EAFE', 'REND_DEX',
         'RETRAIT', 'PREST_DECES', 'PRIMES_GARANTIES', 'VM_VG_RATIO'
     ]
-    
+
     INT_DEBUG_COLUMNS = [
         'START_VM', 'VM_CHOC', 'AVG_PV_FLUX', 'RESERVE', 'CAPITAL',
         'START_TX_SURVIE', 'START_AGE',
         # Values captured at specific internal scenario/year
         'INT_CURR_VM', 'INT_FEES', 'INT_PV_PATH', 'INT_R_PORTFOLIO', 'INT_FWD_RATE'
     ]
-    
+
     print("\n" + "=" * 80)
     print("SAVING OUTPUT FILES")
     print("=" * 80)
-    
+
     saved_files = []
     chocs_summary_df = None
     ext_debug_df = None
     int_debug_df = None
     int_debug_ts_saved_df = None
     flux_projetes_df = None
-    
+
     # ===========================================
     # 1. FINAL SIMULATION RESULTS
     # ===========================================
-    
+
     # 1a. VP_FLUX_TOTAL_GPU.csv - Portfolio totals
     vp_flux_total_path = output_path / "VP_FLUX_TOTAL_GPU.csv"
     vp_flux_total_df = pd.DataFrame({
@@ -1391,13 +1403,13 @@ def save_results(
         print(f"\n✓ [FLUX_PROJETE] FLUX_PROJETE_GPU.csv written incrementally during batch processing")
         print(f"  Contains {total_cashflow_rows} rows (SAS DONNEES_COMPTE equivalent - MEAN by account/year)")
         saved_files.append("FLUX_PROJETE_GPU.csv (SAS DONNEES_COMPTE - cashflows by account/year)")
-    
+
     # 1c. VP_FLUX_COMPTE_GPU.csv - already written incrementally during batch processing
     if total_vp_flux_compte_rows > 0:
         print(f"\n✓ [VP_FLUX_COMPTE] VP_FLUX_COMPTE_GPU.csv written incrementally during batch processing")
         print(f"  Contains {total_vp_flux_compte_rows} rows (SAS VP_FLUX_COMPTE equivalent - SUM VP by account)")
         saved_files.append("VP_FLUX_COMPTE_GPU.csv (SAS VP_FLUX_COMPTE - VP sums by account)")
-    
+
     # 1d. FLUX_PROJETES_GPU.csv - already written after batch processing
     if total_flux_projete_rows > 0:
         print(f"\n✓ [FLUX_PROJETES] FLUX_PROJETES_GPU.csv written after batch processing")
@@ -1408,17 +1420,17 @@ def save_results(
     if debug_flux is not None and debug_params is not None:
         debug_account_idx = debug_params.get('account', -1)
         debug_scenario_idx = debug_params.get('scenario', -1)
-        
+
         # Get ID_COMPTE for the debug account
         id_compte = -1
         if population_ids is not None and debug_account_idx >= 0 and debug_account_idx < len(population_ids):
             id_compte = int(population_ids[debug_account_idx])
-        
+
         # Build flux DataFrame from debug_flux array (n_years+1, freq_eval+1, FLUX_COMP_IDX_SIZE)
         rows = []
         n_years = debug_flux.shape[0]
         n_months = debug_flux.shape[1]
-        
+
         for an_eval in range(n_years):
             for mois_eval in range(n_months):
                 # Skip if all values are zero (no data for this period)
@@ -1477,12 +1489,13 @@ def save_results(
                     'CAT_COUSSIN_1': int(flux_row[FLUX_COMP_IDX_CAT_COUSSIN_1]),
                     'CAT_COUSSIN_2': int(flux_row[FLUX_COMP_IDX_CAT_COUSSIN_2]),
                 })
-        
+
         if rows:
             flux_projetes_df = pd.DataFrame(rows)
             flux_projetes_debug_path = output_path / "FLUX_PROJETES_GPU_DEBUG.csv"
             flux_projetes_df.to_csv(flux_projetes_debug_path, index=False, sep=';')
-            print(f"✓ Saved FLUX_PROJETES_GPU_DEBUG.csv (debug: account={debug_account_idx}, scenario={debug_scenario_idx}, ID_COMPTE={id_compte})")
+            print(
+                f"✓ Saved FLUX_PROJETES_GPU_DEBUG.csv (debug: account={debug_account_idx}, scenario={debug_scenario_idx}, ID_COMPTE={id_compte})")
             saved_files.append("FLUX_PROJETES_GPU_DEBUG.csv (single account/scenario flux)")
 
             example_header = None
@@ -1597,7 +1610,8 @@ def save_results(
                     init_row['I_RESET_FACUL_ECH'] = acc_row.get('I_RESET_FACUL_ECH', 0)
                     # Key identifiers
                     init_row['ID_COMPTE'] = id_compte
-                    init_row['scn_eval'] = int(debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
+                    init_row['scn_eval'] = int(
+                        debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
                     init_row['an_eval'] = 0
                     init_row['mois_eval'] = 12
                     # These should be NaN in init row per ground truth
@@ -1653,7 +1667,7 @@ def save_results(
                     init_row['VP_PREST_ECH'] = np.nan
                     # All other calculation/output fields should be NaN
                     wide_rows.append(init_row)
-                
+
                 prev_tx_survie = 1.0
                 prev_tx_actual = 1.0
                 prev_mt_min_ferr_proj = 0.0  # Retained value per SAS line 212
@@ -1662,7 +1676,8 @@ def save_results(
                     w = {c: np.nan for c in example_header}
 
                     w['ID_COMPTE'] = r.get('ID_COMPTE', -1)
-                    w['scn_eval'] = int(debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
+                    w['scn_eval'] = int(
+                        debug_scenario_idx) + 1 if debug_scenario_idx is not None and debug_scenario_idx >= 0 else np.nan
                     w['an_eval'] = r.get('AN_EVAL', np.nan)
                     w['mois_eval'] = r.get('MOIS_EVAL', np.nan)
                     # mois_eval_ext should be NaN per ground truth
@@ -1723,7 +1738,7 @@ def save_results(
                     w['FRAIS_FIXES'] = r.get('FRAIS_FIXES', np.nan)
                     w['HON_GEST'] = r.get('HON_GEST', np.nan)
                     w['COMM_MAINTIEN'] = r.get('COMM_MAINTIEN', np.nan)
-                    
+
                     # Additional computed/derived columns
                     w['VALEUR_MARCHANDE'] = r.get('VALEUR_MARCHANDE', np.nan)
                     w['PASSIF_REDRESSE'] = r.get('PASSIF_REDRESSE', np.nan)
@@ -1733,17 +1748,17 @@ def save_results(
                     w['COUSSIN_DECHEANCE'] = r.get('COUSSIN_DECHEANCE', np.nan)
                     w['COUSSIN_MORTALITE'] = r.get('COUSSIN_MORTALITE', np.nan)
                     w['COUSSIN_DEPOT'] = r.get('COUSSIN_DEPOT', np.nan)
-                    
+
                     # Computed fields from acc_row and current state
                     if acc_row is not None:
                         an_eval = r.get('AN_EVAL', 0)
                         mois_eval = r.get('MOIS_EVAL', 0)
                         age = r.get('AGE', 0)
-                        
+
                         # Age-related columns (SAS lines 421-422, 442)
                         # AGE_RETRAIT = AGE + 1 (SAS line 442)
                         w['AGE_RETRAIT'] = age + 1
-                        
+
                         # age_MORTALITE calculation (SAS lines 421-422)
                         # if IFN((mois_nais - mois_eval) <=0,(mois_nais - mois_eval)+12,(mois_nais - mois_eval)) <= 6 then age_MORTALITE = age +1
                         mois_nais = acc_row.get('MOIS_NAIS', 1) if acc_row is not None else 1
@@ -1754,38 +1769,41 @@ def save_results(
                             w['age_MORTALITE'] = age + 1
                         else:
                             w['age_MORTALITE'] = age
-                        
+
                         # Year calculations - SAS line 903: annee_reelle = ANNEE_EVALUATION_INI + an_eval - 1
                         annee_eval_ini = acc_row.get('ANNEE_EVALUATION_INI', 2024)
                         w['annee_reelle'] = annee_eval_ini + an_eval - 1 if pd.notna(an_eval) else np.nan
-                        
+
                         # Duration calculation - SAS line 350: duree_max10=min(10,int((annee_reelle+mois_eval/12)-(ANNEE_COTIS+MOIS_COTIS/12))+1)
                         annee_cotis = acc_row.get('ANNEE_COTIS', 2024)
                         mois_cotis = acc_row.get('MOIS_COTIS', 1)
                         mois_eval_val = r.get('MOIS_EVAL', 12)
                         if pd.notna(an_eval) and pd.notna(annee_eval_ini) and pd.notna(annee_cotis):
                             annee_reelle = annee_eval_ini + an_eval - 1
-                            duree = int((annee_reelle + mois_eval_val/12) - (annee_cotis + mois_cotis/12)) + 1
+                            duree = int((annee_reelle + mois_eval_val / 12) - (annee_cotis + mois_cotis / 12)) + 1
                             w['duree_max10'] = min(duree, 10) if duree >= 0 else 0
-                        
+
                         # VM/VG ratio - SAS line 355:
                         # VM_VG_RATIO=MIN(10,(MT_VM_PROJ+MT_VM_AV_RETRAIT_FRAIS)/2 * MIN(PC_GAR_ECH/MAX(MT_GAR_ECH_PROJ,0.01),PC_GAR_DECES_1/MAX(MT_BONI_DECES_PROJ + MT_GAR_DECES_PROJ,0.01),1/MAX(MT_SRG_PROJ,0.01)))
                         mt_vm_proj = r.get('MT_VM', 0) if pd.notna(r.get('MT_VM')) else 0
-                        mt_vm_av_retrait_frais = r.get('MT_VM_AV_RETRAIT', 0) if pd.notna(r.get('MT_VM_AV_RETRAIT')) else 0
+                        mt_vm_av_retrait_frais = r.get('MT_VM_AV_RETRAIT_FRAIS', 0) if pd.notna(
+                            r.get('MT_VM_AV_RETRAIT_FRAIS')) else 0
                         mt_gar_ech_proj = r.get('MT_GAR_ECH', 0) if pd.notna(r.get('MT_GAR_ECH')) else 0
                         mt_gar_deces_proj = r.get('MT_GAR_DECES', 0) if pd.notna(r.get('MT_GAR_DECES')) else 0
-                        mt_boni_deces_proj = acc_row.get('MT_BONI_DECES', 0) if pd.notna(acc_row.get('MT_BONI_DECES')) else 0
+                        mt_boni_deces_proj = acc_row.get('MT_BONI_DECES', 0) if pd.notna(
+                            acc_row.get('MT_BONI_DECES')) else 0
                         mt_srg_proj = r.get('MT_SRG', 0) if pd.notna(r.get('MT_SRG')) else 0
                         pc_gar_ech = acc_row.get('PC_GAR_ECH', 1.0) if pd.notna(acc_row.get('PC_GAR_ECH')) else 1.0
-                        pc_gar_deces_1 = acc_row.get('PC_GAR_DECES_1', 1.0) if pd.notna(acc_row.get('PC_GAR_DECES_1')) else 1.0
-                        
+                        pc_gar_deces_1 = acc_row.get('PC_GAR_DECES_1', 1.0) if pd.notna(
+                            acc_row.get('PC_GAR_DECES_1')) else 1.0
+
                         vm_avg = (mt_vm_proj + mt_vm_av_retrait_frais) / 2.0
                         ratio1 = pc_gar_ech / max(mt_gar_ech_proj, 0.01)
                         ratio2 = pc_gar_deces_1 / max(mt_boni_deces_proj + mt_gar_deces_proj, 0.01)
                         ratio3 = 1.0 / max(mt_srg_proj, 0.01)
                         vm_vg_ratio = min(10.0, vm_avg * min(ratio1, ratio2, ratio3))
                         w['VM_VG_RATIO'] = vm_vg_ratio
-                        
+
                         # Lapse levels - SAS lines 363-365 and 392-394
                         # if vm_vg_ratio <= 0.5 then LAPSE_NIV_TOT=1; else if vm_vg_ratio <= 0.75 then LAPSE_NIV_TOT=2; else LAPSE_NIV_TOT=3;
                         if vm_vg_ratio <= 0.5:
@@ -1799,7 +1817,7 @@ def save_results(
                             lapse_niv_part = 3
                         w['LAPSE_NIV_TOT'] = lapse_niv_tot
                         w['LAPSE_NIV_PART'] = lapse_niv_part
-                        
+
                         # Calculate LAPSE from LAPSE_TOT and LAPSE_PART using SAS formula (line 412)
                         # LAPSE = (1-(1 - LAPSE_TOT - LAPSE_PART)**(1/FREQ_EVAL * AJUST_NOUV_AFFAIRES))
                         lapse_tot = r.get('LAPSE_TOT', 0) if pd.notna(r.get('LAPSE_TOT')) else 0
@@ -1807,30 +1825,31 @@ def save_results(
                         freq_eval = 12.0  # Monthly frequency
                         ajust_nouv_affaires = 1.0
                         w['LAPSE'] = 1.0 - math.pow(1.0 - lapse_tot - lapse_part, 1.0 / freq_eval * ajust_nouv_affaires)
-                        
+
                         # Projected guarantee columns
                         w['MT_BONI_DECES_PROJ'] = mt_boni_deces_proj
                         w['MT_BCB_PROJ'] = acc_row.get('MT_BCB', 0)
                         w['MT_MRV_MRG_MRA_PROJ'] = acc_row.get('MT_MRV_MRG_MRA', 0)
                         w['TAUX_MRV_MRG_MRA_PROJ'] = acc_row.get('TAUX_MRV_MRG_MRA', 0)
                         w['MT_SRG_PROJ'] = mt_srg_proj
-                        
+
                         # Echeance projections
                         w['ANNEE_ECH_PROJ'] = acc_row.get('ANNEE_ECH', np.nan)
                         w['MOIS_ECH_PROJ'] = acc_row.get('MOIS_ECH', np.nan)
-                        
+
                         # Age factors - these are looked up from COUSSINS_ESCAP table, not calculated
                         # Will be filled later from lookup_data
                         w['FACTEUR_AGE_80'] = np.nan
                         w['FACTEUR_AGE_90'] = np.nan
-                        
+
                         # MIN_FERR_PROJ - lookup from min_ferr table by age
                         # SAS line 449: if (an_eval = 1 and mois_eval = MOIS_EVALUATION_INI) or mois_eval = 12/&FREQ_EVAL. then MT_MIN_FERR_PROJ = MT_VM_PROJ * MIN_FERR;
                         # With FREQ_EVAL=12 (monthly), 12/FREQ_EVAL = 1, so update at mois_eval=1 (January) or first month of year 1
                         mois_eval_ini = acc_row.get('MOIS_EVALUATION_INI', 1) if acc_row is not None else 1
                         freq_eval = 12  # Monthly evaluation
-                        should_update_min_ferr = (an_eval == 1 and mois_eval == mois_eval_ini) or mois_eval == (12 // freq_eval)
-                        
+                        should_update_min_ferr = (an_eval == 1 and mois_eval == mois_eval_ini) or mois_eval == (
+                                    12 // freq_eval)
+
                         if should_update_min_ferr:
                             mt_min_ferr = 0.0
                             if lookup_data is not None and 'min_ferr' in lookup_data:
@@ -1845,10 +1864,10 @@ def save_results(
                         else:
                             # Retain previous value
                             w['MT_MIN_FERR_PROJ'] = prev_mt_min_ferr_proj
-                        
+
                         # Update retained MT_VM_PROJ for next iteration
                         prev_mt_vm_proj = mt_vm_proj if pd.notna(mt_vm_proj) else prev_mt_vm_proj
-                        
+
                         # Actualization rates - calculate from forward rate
                         # SAS: TX_ACTUALISATION = TX_ACTUALISATION * EXP(-FORWARD_RATE * AJUST_NOUV_AFFAIRES)
                         # TX_ACTUALISATION_DEB is the previous period's discount factor
@@ -1868,11 +1887,11 @@ def save_results(
                         w['TX_ACTUALISATION'] = curr_tx_actual
                         w['AJUST_NOUV_AFFAIRES'] = ajust_nouv_affaires
                         prev_tx_actual = curr_tx_actual
-                        
+
                         # Internal scenario fields - should be NaN per ground truth
                         w['scn_eval_int'] = np.nan
                         w['an_eval_int'] = np.nan
-                        
+
                         # Adjustment fields
                         w['rc'] = 0.0
                         # AJUST_NOUV_AFFAIRES already set above from discount calculation
@@ -1883,84 +1902,85 @@ def save_results(
                         mt_dex = r.get('MT_DEX', 0) if pd.notna(r.get('MT_DEX')) else 0
                         mt_mm = r.get('MT_MM', 0) if pd.notna(r.get('MT_MM')) else 0
                         w['MT_VM_AV_RETRAIT_FRAIS'] = mt_sp500 + mt_tsx + mt_eafe + mt_dex + mt_mm
-                        
+
                         # Present value columns (VP_*) - calculated as base * TX_ACTUALISATION per SAS lines 736-786
                         tx_actual = w.get('TX_ACTUALISATION', 1.0)
                         if pd.isna(tx_actual):
                             tx_actual = 1.0
-                        
+
                         primes_garanties = r.get('PRIMES_GARANTIES', 0) if pd.notna(r.get('PRIMES_GARANTIES')) else 0
                         w['VP_PRIMES_GARANTIES'] = primes_garanties * tx_actual
-                        
+
                         prest_mrv = r.get('PREST_MRV', 0) if pd.notna(r.get('PREST_MRV')) else 0
                         w['VP_PREST_MRV'] = prest_mrv * tx_actual
-                        
+
                         prest_deces = r.get('PREST_DECES', 0) if pd.notna(r.get('PREST_DECES')) else 0
                         w['VP_PREST_DECES'] = prest_deces * tx_actual
-                        
+
                         prest_ech = r.get('PREST_ECH', 0) if pd.notna(r.get('PREST_ECH')) else 0
                         w['VP_PREST_ECH'] = prest_ech * tx_actual
-                        
+
                         comm_vente = r.get('COMM_VENTE', 0) if pd.notna(r.get('COMM_VENTE')) else 0
                         w['VP_COMM_VENTE'] = comm_vente * tx_actual
-                        
+
                         frais_acquis = r.get('FRAIS_ACQUIS', 0) if pd.notna(r.get('FRAIS_ACQUIS')) else 0
                         w['VP_FRAIS_ACQUIS'] = frais_acquis * tx_actual
-                        
+
                         frais_fixes = r.get('FRAIS_FIXES', 0) if pd.notna(r.get('FRAIS_FIXES')) else 0
                         w['VP_FRAIS_FIXES'] = frais_fixes * tx_actual
-                        
+
                         hon_gest = r.get('HON_GEST', 0) if pd.notna(r.get('HON_GEST')) else 0
                         w['VP_HON_GEST'] = hon_gest * tx_actual
-                        
+
                         comm_maintien = r.get('COMM_MAINTIEN', 0) if pd.notna(r.get('COMM_MAINTIEN')) else 0
                         w['VP_COMM_MAINTIEN'] = comm_maintien * tx_actual
-                        
+
                         primes_variables = r.get('PRIMES_VARIABLES', 0) if pd.notna(r.get('PRIMES_VARIABLES')) else 0
                         w['VP_PRIMES_VARIABLES'] = primes_variables * tx_actual
-                        
+
                         # VP_FLUX_TOT is sum of all VP_* cashflows (SAS line 757)
-                        w['VP_FLUX_TOT'] = (w['VP_PRIMES_GARANTIES'] + w['VP_PREST_MRV'] + w['VP_PREST_DECES'] + 
-                                           w['VP_PREST_ECH'] + w['VP_COMM_VENTE'] + w['VP_FRAIS_ACQUIS'] +
-                                           w['VP_FRAIS_FIXES'] + w['VP_HON_GEST'] + w['VP_COMM_MAINTIEN'] +
-                                           w['VP_PRIMES_VARIABLES'])
-                        
+                        w['VP_FLUX_TOT'] = (w['VP_PRIMES_GARANTIES'] + w['VP_PREST_MRV'] + w['VP_PREST_DECES'] +
+                                            w['VP_PREST_ECH'] + w['VP_COMM_VENTE'] + w['VP_FRAIS_ACQUIS'] +
+                                            w['VP_FRAIS_FIXES'] + w['VP_HON_GEST'] + w['VP_COMM_MAINTIEN'] +
+                                            w['VP_PRIMES_VARIABLES'])
+
                         # VP_VALEUR_MARCHANDE = VALEUR_MARCHANDE * TX_ACTUALISATION / FREQ_EVAL (SAS line 785)
                         valeur_marchande = r.get('VALEUR_MARCHANDE', 0) if pd.notna(r.get('VALEUR_MARCHANDE')) else 0
                         w['VP_VALEUR_MARCHANDE'] = valeur_marchande * tx_actual / 12.0  # FREQ_EVAL=12
-                        
+
                         # Cushion VP columns (SAS lines 868-873)
                         coussin_depense = r.get('COUSSIN_DEPENSE', 0) if pd.notna(r.get('COUSSIN_DEPENSE')) else 0
                         w['VP_COUSSIN_DEPENSE'] = coussin_depense * tx_actual / 12.0
-                        
+
                         coussin_decheance = r.get('COUSSIN_DECHEANCE', 0) if pd.notna(r.get('COUSSIN_DECHEANCE')) else 0
                         w['VP_COUSSIN_DECHEANCE'] = coussin_decheance * tx_actual / 12.0
-                        
+
                         coussin_mortalite = r.get('COUSSIN_MORTALITE', 0) if pd.notna(r.get('COUSSIN_MORTALITE')) else 0
                         w['VP_COUSSIN_MORTALITE'] = coussin_mortalite * tx_actual / 12.0
-                        
+
                         coussin_depot = r.get('COUSSIN_DEPOT', 0) if pd.notna(r.get('COUSSIN_DEPOT')) else 0
                         w['VP_COUSSIN_DEPOT'] = coussin_depot * tx_actual / 12.0
-                        
+
                         passif_redresse = r.get('PASSIF_REDRESSE', 0) if pd.notna(r.get('PASSIF_REDRESSE')) else 0
                         w['VP_PASSIF_REDRESSE'] = passif_redresse * tx_actual / 12.0
-                        
+
                         coussin_credit = r.get('COUSSIN_CREDIT', 0) if pd.notna(r.get('COUSSIN_CREDIT')) else 0
                         w['VP_COUSSIN_CREDIT'] = coussin_credit * tx_actual / 12.0
-                        
+
                         coussin_marche = r.get('COUSSIN_MARCHE', 0) if pd.notna(r.get('COUSSIN_MARCHE')) else 0
                         w['VP_COUSSIN_MARCHE'] = coussin_marche * tx_actual / 12.0
-                        
+
                         # Additional computed fields
                         w['MT_SRG_AV_RETRAIT'] = r.get('MT_SRG', np.nan)
                         w['MT_VM_AP_RETRAIT_DEPOT'] = r.get('MT_VM_AP_RETRAIT', np.nan)
-                        w['DEPOT_FUTUR_SURVIE'] = r.get('DEPOT_FUTUR', 0) * w.get('TX_SURVIE', 1.0) if pd.notna(r.get('DEPOT_FUTUR')) else 0.0
-                        
+                        w['DEPOT_FUTUR_SURVIE'] = r.get('DEPOT_FUTUR', 0) * w.get('TX_SURVIE', 1.0) if pd.notna(
+                            r.get('DEPOT_FUTUR')) else 0.0
+
                         # Commission/fee percentages from acquisition table (will be filled from lookup)
                         w['PC_COMMISSION_MAINTIEN'] = 0.0
                         w['PC_COMMISSION_VENTE'] = 0.0
                         w['PC_FRAIS_AN'] = 0.0
-                        
+
                         # Category and coverage fields - SAS formulas:
                         # VALEUR_GARANTIE = MT_GAR_DECES_PROJ * TX_SURVIE (line 780)
                         # UNITE_COUVERTURE = MAX(MT_VM_PROJ, MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ, RETRAIT) * TX_SURVIE (line 768)
@@ -1975,24 +1995,26 @@ def save_results(
                         valeur_garantie = mt_gar_deces_local * tx_survie
                         # UNITE_COUVERTURE = MAX(MT_VM_PROJ, MT_GAR_DECES_PROJ + MT_BONI_DECES_PROJ, RETRAIT) * TX_SURVIE
                         unite_couverture = max(mt_vm_local,
-                                              mt_gar_deces_local + mt_boni_deces_local,
-                                              retrait) * tx_survie
+                                               mt_gar_deces_local + mt_boni_deces_local,
+                                               retrait) * tx_survie
                         w['UNITE_COUVERTURE'] = unite_couverture
                         w['VALEUR_GARANTIE'] = valeur_garantie
-                        
+
                         # REM_COMP_INV calculation per SAS line 791
                         # REM_COMP_INV = ((RETRAIT - PREST_MRV) + MT_VM_AP_RETRAIT_DEPOT * (1 - TX_SURVIE/TX_SURVIE_DEB)) * TX_SURVIE_DEB
                         retrait_val = r.get('RETRAIT', 0) if pd.notna(r.get('RETRAIT')) else 0
                         prest_mrv_val = r.get('PREST_MRV', 0) if pd.notna(r.get('PREST_MRV')) else 0
-                        mt_vm_ap_retrait_depot = r.get('MT_VM_AP_RETRAIT', 0) if pd.notna(r.get('MT_VM_AP_RETRAIT')) else 0
+                        mt_vm_ap_retrait_depot = r.get('MT_VM_AP_RETRAIT', 0) if pd.notna(
+                            r.get('MT_VM_AP_RETRAIT')) else 0
                         tx_survie_deb = w.get('TX_SURVIE_DEB', 1.0) if pd.notna(w.get('TX_SURVIE_DEB')) else 1.0
                         tx_survie_val = w.get('TX_SURVIE', 1.0) if pd.notna(w.get('TX_SURVIE')) else 1.0
                         if tx_survie_deb > 0:
-                            rem_comp_inv = ((retrait_val - prest_mrv_val) + mt_vm_ap_retrait_depot * (1 - tx_survie_val / tx_survie_deb)) * tx_survie_deb
+                            rem_comp_inv = ((retrait_val - prest_mrv_val) + mt_vm_ap_retrait_depot * (
+                                        1 - tx_survie_val / tx_survie_deb)) * tx_survie_deb
                         else:
                             rem_comp_inv = 0.0
                         w['REM_COMP_INV'] = rem_comp_inv
-                        
+
                         # CODE_CAT_PRODUIT should be 1 (not ID_PRODUIT)
                         w['CODE_CAT_PRODUIT'] = 1
                         # Extract CAT_COUSSIN values from flux data
@@ -2008,7 +2030,7 @@ def save_results(
 
                 # Convert to DataFrame and fill NA columns from lookup tables
                 output_df = pd.DataFrame(wide_rows, columns=example_header)
-                
+
                 # Note: Row 0 is the init row (an_eval=0, mois_eval=12) which should NOT have lookup values
                 # Only fill lookup values for data rows (row 1 onwards)
                 if lookup_data is not None and acc_row is not None:
@@ -2017,7 +2039,7 @@ def save_results(
                     id_acqui = acc_row.get('ID_ACQUI', 0)
                     id_depot = acc_row.get('ID_DEPOT', 0)
                     i_regime_2 = acc_row.get('I_REGIME_2', 0)
-                    
+
                     # Fill MIN_FERR from min_ferr table (keyed by AGE) - skip init row
                     if 'min_ferr' in lookup_data and 'MIN_FERR' in output_df.columns:
                         min_ferr_df = lookup_data['min_ferr']
@@ -2025,7 +2047,7 @@ def save_results(
                             age_to_minferr = dict(zip(min_ferr_df['AGE'], min_ferr_df['MIN_FERR']))
                             # Only fill for data rows (skip row 0)
                             output_df.loc[1:, 'MIN_FERR'] = output_df.loc[1:, 'AGE'].map(age_to_minferr)
-                    
+
                     # Fill TX_LAPSE_TOT columns from tx_lapse_tot table - keyed by ID_LAPSE, DUREE_MAX10, LAPSE_NIV_TOT
                     if 'tx_lapse_tot' in lookup_data:
                         lapse_tot_df = lookup_data['tx_lapse_tot']
@@ -2039,12 +2061,12 @@ def save_results(
                                         (lapse_tot_df['ID_LAPSE'] == id_lapse) &
                                         (lapse_tot_df['DUREE_MAX10'] == int(duree)) &
                                         (lapse_tot_df['LAPSE_NIV_TOT'] == int(lapse_niv))
-                                    ]
+                                        ]
                                     if len(match) > 0:
                                         for col in ['TX_LAPSE_TOT_MIN', 'TX_LAPSE_TOT_MAX', 'FACT_DIM']:
                                             if col in match.columns and col in output_df.columns:
                                                 output_df.loc[idx, col] = match[col].iloc[0]
-                    
+
                     # Fill TX_LAPSE_PART columns from tx_lapse_part table - keyed by ID_LAPSE, AGE, LAPSE_NIV_PART, I_REGIME_2
                     if 'tx_lapse_part' in lookup_data:
                         lapse_part_df = lookup_data['tx_lapse_part']
@@ -2058,12 +2080,12 @@ def save_results(
                                         (lapse_part_df['AGE'] == int(age_val)) &
                                         (lapse_part_df['LAPSE_NIV_PART'] == int(lapse_niv)) &
                                         (lapse_part_df['I_REGIME_2'] == i_regime_2)
-                                    ]
+                                        ]
                                     if len(match) > 0:
                                         for col in ['TX_LAPSE_PART_MIN', 'TX_LAPSE_PART_MAX']:
                                             if col in match.columns and col in output_df.columns:
                                                 output_df.loc[idx, col] = match[col].iloc[0]
-                    
+
                     # Fill ACQUISITION columns (PC_COMMISSION_*, PC_FRAIS_AN_*) - keyed by DUREE_MAX10, ID_ACQUI
                     if 'acquisition' in lookup_data:
                         acq_df = lookup_data['acquisition']
@@ -2074,11 +2096,11 @@ def save_results(
                                     match = acq_df[
                                         (acq_df['DUREE_MAX10'] == int(duree)) &
                                         (acq_df['ID_ACQUI'] == id_acqui)
-                                    ]
+                                        ]
                                     if len(match) > 0:
-                                        for col in ['PC_COMMISSION_VENTE_RF', 'PC_COMMISSION_VENTE_AC', 
-                                                   'PC_COMMISSION_MAINTIEN_RF', 'PC_COMMISSION_MAINTIEN_AC',
-                                                   'PC_FRAIS_AN_AC', 'PC_FRAIS_AN_RF']:
+                                        for col in ['PC_COMMISSION_VENTE_RF', 'PC_COMMISSION_VENTE_AC',
+                                                    'PC_COMMISSION_MAINTIEN_RF', 'PC_COMMISSION_MAINTIEN_AC',
+                                                    'PC_FRAIS_AN_AC', 'PC_FRAIS_AN_RF']:
                                             if col in match.columns and col in output_df.columns:
                                                 val = match[col].iloc[0]
                                                 # Handle percentage strings
@@ -2088,7 +2110,7 @@ def save_results(
                                                     except:
                                                         pass
                                                 output_df.loc[idx, col] = val
-                    
+
                     # Fill DEPOTS_FUTURS columns - keyed by ID_DEPOT, DUREE_MAX10
                     if 'depots_futurs' in lookup_data:
                         depot_df = lookup_data['depots_futurs']
@@ -2099,9 +2121,10 @@ def save_results(
                                     match = depot_df[
                                         (depot_df['ID_DEPOT'] == id_depot) &
                                         (depot_df['DUREE_MAX10'] == int(duree))
-                                    ]
+                                        ]
                                     if len(match) > 0:
-                                        for col in ['PC_DEPOT_ANNUEL', 'VAR_DEPOT_FCT', 'AGE_MAX_DEPOT', 'I_EVEN_CESSE_DEPOT']:
+                                        for col in ['PC_DEPOT_ANNUEL', 'VAR_DEPOT_FCT', 'AGE_MAX_DEPOT',
+                                                    'I_EVEN_CESSE_DEPOT']:
                                             if col in match.columns and col in output_df.columns:
                                                 val = match[col].iloc[0]
                                                 # Handle percentage strings like "8.7%"
@@ -2111,7 +2134,7 @@ def save_results(
                                                     except:
                                                         pass
                                                 output_df.loc[idx, col] = val
-                    
+
                     # Fill FORWARD_RATE and AJUST_FORWARD_RATE_VM_0 from rendements - skip init row
                     if 'rendements' in lookup_data:
                         rend_df = lookup_data['rendements']
@@ -2125,32 +2148,36 @@ def save_results(
                                 if pd.notna(an_val) and pd.notna(mois_val):
                                     rend_match = rend_df[(rend_df[an_col] == an_val) & (rend_df[mois_col] == mois_val)]
                                     if len(rend_match) > 0:
-                                        if 'FORWARD_RATE' in rend_match.columns and pd.isna(output_df.loc[idx, 'FORWARD_RATE']):
+                                        if 'FORWARD_RATE' in rend_match.columns and pd.isna(
+                                                output_df.loc[idx, 'FORWARD_RATE']):
                                             output_df.loc[idx, 'FORWARD_RATE'] = rend_match['FORWARD_RATE'].iloc[0]
-                                        if 'AJUST_FORWARD_RATE_VM_0' in rend_match.columns and pd.isna(output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0']):
-                                            output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0'] = rend_match['AJUST_FORWARD_RATE_VM_0'].iloc[0]
-                    
+                                        if 'AJUST_FORWARD_RATE_VM_0' in rend_match.columns and pd.isna(
+                                                output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0']):
+                                            output_df.loc[idx, 'AJUST_FORWARD_RATE_VM_0'] = \
+                                            rend_match['AJUST_FORWARD_RATE_VM_0'].iloc[0]
+
                     # Fill FRAIS from frais_admin - keyed by ANNEE_REELLE, ID_PRODUIT
                     if 'frais_admin' in lookup_data:
                         frais_df = lookup_data['frais_admin']
                         id_produit = acc_row.get('ID_PRODUIT', 0)
-                        if all(c in frais_df.columns for c in ['ANNEE_REELLE', 'ID_PRODUIT', 'FRAIS']) and 'FRAIS' in output_df.columns:
+                        if all(c in frais_df.columns for c in
+                               ['ANNEE_REELLE', 'ID_PRODUIT', 'FRAIS']) and 'FRAIS' in output_df.columns:
                             for idx in range(1, len(output_df)):
                                 annee_reelle = output_df.loc[idx, 'annee_reelle']
                                 if pd.notna(annee_reelle):
                                     match = frais_df[
                                         (frais_df['ANNEE_REELLE'] == int(annee_reelle)) &
                                         (frais_df['ID_PRODUIT'] == id_produit)
-                                    ]
+                                        ]
                                     if len(match) > 0:
                                         output_df.loc[idx, 'FRAIS'] = match['FRAIS'].iloc[0]
-                    
+
                     # Fill COUSSINS_ESCAP columns - keyed by CODE_CAT_PRODUIT, CAT_COUSSIN_1, CAT_COUSSIN_2
                     # SAS lines 801-824 define these categories
                     if 'coussins_escap' in lookup_data:
                         coussin_df = lookup_data['coussins_escap']
                         id_produit = acc_row.get('ID_PRODUIT', 0)
-                        
+
                         # CODE_CAT_PRODUIT from ID_PRODUIT (SAS lines 801-808)
                         if id_produit == 22:
                             code_cat_produit = 0  # CPG IA
@@ -2168,22 +2195,25 @@ def save_results(
                             code_cat_produit = 6  # CIG Boursier A et B
                         else:
                             code_cat_produit = 7  # RGS
-                        
-                        coussin_cols = ['BASE_PASSIF_REDRESSE', 'TX_PASSIF_REDRESSE', 'BASE_COUSSIN_CREDIT', 
-                                       'TX_COUSSIN_CREDIT', 'BASE_COUSSIN_MARCHE', 'TX_COUSSIN_MARCHE',
-                                       'BASE_COUSSIN_DEPENSE', 'TX_COUSSIN_DEPENSE', 'BASE_COUSSIN_DECHEANCE',
-                                       'TX_COUSSIN_DECHEANCE', 'BASE_COUSSIN_MORTALITE', 'TX_COUSSIN_MORTALITE',
-                                       'BASE_COUSSIN_DEPOT', 'TX_COUSSIN_DEPOT', 'FACTEUR_AGE_80', 'FACTEUR_AGE_90']
-                        
+
+                        coussin_cols = ['BASE_PASSIF_REDRESSE', 'TX_PASSIF_REDRESSE', 'BASE_COUSSIN_CREDIT',
+                                        'TX_COUSSIN_CREDIT', 'BASE_COUSSIN_MARCHE', 'TX_COUSSIN_MARCHE',
+                                        'BASE_COUSSIN_DEPENSE', 'TX_COUSSIN_DEPENSE', 'BASE_COUSSIN_DECHEANCE',
+                                        'TX_COUSSIN_DECHEANCE', 'BASE_COUSSIN_MORTALITE', 'TX_COUSSIN_MORTALITE',
+                                        'BASE_COUSSIN_DEPOT', 'TX_COUSSIN_DEPOT', 'FACTEUR_AGE_80', 'FACTEUR_AGE_90']
+
                         if all(c in coussin_df.columns for c in ['CODE_CAT_PRODUIT', 'CAT_COUSSIN_1', 'CAT_COUSSIN_2']):
                             for idx in range(1, len(output_df)):
                                 duree = output_df.loc[idx, 'duree_max10']
                                 vm_vg = output_df.loc[idx, 'VM_VG_RATIO']
-                                mt_dex_proj = output_df.loc[idx, 'MT_DEX_PROJ'] if pd.notna(output_df.loc[idx, 'MT_DEX_PROJ']) else 0
-                                mt_mm_proj = output_df.loc[idx, 'MT_MM_PROJ'] if pd.notna(output_df.loc[idx, 'MT_MM_PROJ']) else 0
-                                mt_vm_proj = output_df.loc[idx, 'MT_VM_PROJ'] if pd.notna(output_df.loc[idx, 'MT_VM_PROJ']) else 0.01
+                                mt_dex_proj = output_df.loc[idx, 'MT_DEX_PROJ'] if pd.notna(
+                                    output_df.loc[idx, 'MT_DEX_PROJ']) else 0
+                                mt_mm_proj = output_df.loc[idx, 'MT_MM_PROJ'] if pd.notna(
+                                    output_df.loc[idx, 'MT_MM_PROJ']) else 0
+                                mt_vm_proj = output_df.loc[idx, 'MT_VM_PROJ'] if pd.notna(
+                                    output_df.loc[idx, 'MT_VM_PROJ']) else 0.01
                                 rf_ratio = (mt_dex_proj + mt_mm_proj) / max(mt_vm_proj, 0.01)
-                                
+
                                 # CAT_COUSSIN_1 (SAS lines 811-816)
                                 if code_cat_produit in [0, 6]:
                                     cat_coussin_1 = 0  # CPG IA and CIG Boursier
@@ -2191,13 +2221,13 @@ def save_results(
                                     cat_coussin_1 = 4  # RGS < 50%
                                 elif code_cat_produit == 7:
                                     cat_coussin_1 = 5  # RGS >= 50%
-                                elif rf_ratio < 1/3:
+                                elif rf_ratio < 1 / 3:
                                     cat_coussin_1 = 1  # < 1/3
-                                elif rf_ratio < 2/3:
+                                elif rf_ratio < 2 / 3:
                                     cat_coussin_1 = 2  # < 2/3
                                 else:
                                     cat_coussin_1 = 3  # >= 2/3
-                                
+
                                 # CAT_COUSSIN_2 (SAS lines 819-824)
                                 if code_cat_produit == 7 and pd.notna(vm_vg) and vm_vg < 0.7:
                                     cat_coussin_2 = 4  # RGS < 70%
@@ -2211,12 +2241,12 @@ def save_results(
                                     cat_coussin_2 = 2  # année police 4-6
                                 else:
                                     cat_coussin_2 = 3  # année police 7+
-                                
+
                                 match = coussin_df[
                                     (coussin_df['CODE_CAT_PRODUIT'] == code_cat_produit) &
                                     (coussin_df['CAT_COUSSIN_1'] == cat_coussin_1) &
                                     (coussin_df['CAT_COUSSIN_2'] == cat_coussin_2)
-                                ]
+                                    ]
                                 if len(match) > 0:
                                     for col in coussin_cols:
                                         if col in match.columns and col in output_df.columns:
@@ -2224,86 +2254,97 @@ def save_results(
                                             # Handle percentage strings like "87.15%"
                                             if isinstance(val, str) and '%' in val:
                                                 try:
-                                                    val = float(val.replace('%', '').replace('(', '').replace(')', '').strip()) / 100.0
+                                                    val = float(val.replace('%', '').replace('(', '').replace(')',
+                                                                                                              '').strip()) / 100.0
                                                 except:
                                                     pass
                                             output_df.loc[idx, col] = val
-                    
+
                     # Calculate PC_COMMISSION_MAINTIEN, PC_COMMISSION_VENTE, PC_FRAIS_AN per SAS lines 718-720
                     # PC_COMMISSION_MAINTIEN = (PC_COMMISSION_MAINTIEN_AC * (MT_VM-MT_RF)/MT_VM + PC_COMMISSION_MAINTIEN_RF * (MT_RF)/MT_VM) * Ajustement_commission
-                    ajustement_commission = acc_row.get('AJUSTEMENT_COMMISSION', 1.0) if pd.notna(acc_row.get('AJUSTEMENT_COMMISSION')) else 1.0
+                    ajustement_commission = acc_row.get('AJUSTEMENT_COMMISSION', 1.0) if pd.notna(
+                        acc_row.get('AJUSTEMENT_COMMISSION')) else 1.0
                     mt_rf = acc_row.get('MT_RF', 0) if pd.notna(acc_row.get('MT_RF')) else 0
                     mt_vm_init = acc_row.get('MT_VM', 0.01) if pd.notna(acc_row.get('MT_VM')) else 0.01
-                    
+
                     for idx in range(1, len(output_df)):
-                        pc_maintien_rf = output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_RF'] if pd.notna(output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_RF']) else 0
-                        pc_maintien_ac = output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_AC'] if pd.notna(output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_AC']) else 0
-                        pc_vente_rf = output_df.loc[idx, 'PC_COMMISSION_VENTE_RF'] if pd.notna(output_df.loc[idx, 'PC_COMMISSION_VENTE_RF']) else 0
-                        pc_vente_ac = output_df.loc[idx, 'PC_COMMISSION_VENTE_AC'] if pd.notna(output_df.loc[idx, 'PC_COMMISSION_VENTE_AC']) else 0
-                        pc_frais_rf = output_df.loc[idx, 'PC_FRAIS_AN_RF'] if pd.notna(output_df.loc[idx, 'PC_FRAIS_AN_RF']) else 0
-                        pc_frais_ac = output_df.loc[idx, 'PC_FRAIS_AN_AC'] if pd.notna(output_df.loc[idx, 'PC_FRAIS_AN_AC']) else 0
-                        
+                        pc_maintien_rf = output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_RF'] if pd.notna(
+                            output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_RF']) else 0
+                        pc_maintien_ac = output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_AC'] if pd.notna(
+                            output_df.loc[idx, 'PC_COMMISSION_MAINTIEN_AC']) else 0
+                        pc_vente_rf = output_df.loc[idx, 'PC_COMMISSION_VENTE_RF'] if pd.notna(
+                            output_df.loc[idx, 'PC_COMMISSION_VENTE_RF']) else 0
+                        pc_vente_ac = output_df.loc[idx, 'PC_COMMISSION_VENTE_AC'] if pd.notna(
+                            output_df.loc[idx, 'PC_COMMISSION_VENTE_AC']) else 0
+                        pc_frais_rf = output_df.loc[idx, 'PC_FRAIS_AN_RF'] if pd.notna(
+                            output_df.loc[idx, 'PC_FRAIS_AN_RF']) else 0
+                        pc_frais_ac = output_df.loc[idx, 'PC_FRAIS_AN_AC'] if pd.notna(
+                            output_df.loc[idx, 'PC_FRAIS_AN_AC']) else 0
+
                         if mt_vm_init > 0:
                             rf_ratio = mt_rf / mt_vm_init
                             ac_ratio = (mt_vm_init - mt_rf) / mt_vm_init
-                            output_df.loc[idx, 'PC_COMMISSION_MAINTIEN'] = (pc_maintien_ac * ac_ratio + pc_maintien_rf * rf_ratio) * ajustement_commission
-                            output_df.loc[idx, 'PC_COMMISSION_VENTE'] = (pc_vente_ac * ac_ratio + pc_vente_rf * rf_ratio) * ajustement_commission
+                            output_df.loc[idx, 'PC_COMMISSION_MAINTIEN'] = (
+                                                                                       pc_maintien_ac * ac_ratio + pc_maintien_rf * rf_ratio) * ajustement_commission
+                            output_df.loc[idx, 'PC_COMMISSION_VENTE'] = (
+                                                                                    pc_vente_ac * ac_ratio + pc_vente_rf * rf_ratio) * ajustement_commission
                             output_df.loc[idx, 'PC_FRAIS_AN'] = pc_frais_ac * ac_ratio + pc_frais_rf * rf_ratio
 
                 output_example_gpu_path = output_path / "OUTPUT_EXAMPLE_GPU.csv"
                 output_df.to_csv(output_example_gpu_path, index=False)
-                print(f"✓ Saved OUTPUT_EXAMPLE_GPU.csv (matches output_example.csv schema; debug: account={debug_account_idx}, scenario={debug_scenario_idx})")
+                print(
+                    f"✓ Saved OUTPUT_EXAMPLE_GPU.csv (matches output_example.csv schema; debug: account={debug_account_idx}, scenario={debug_scenario_idx})")
                 saved_files.append("OUTPUT_EXAMPLE_GPU.csv (output_example.csv schema; partial fill)")
-    
+
     # 1b. Five Chocs Results
     if results_5chocs_df is not None:
         print(f"\n✓ [FIVE_CHOCS] Saving five chocs results...")
-        
+
         chocs_detailed_path = output_path / "VP_FLUX_5CHOCS_DETAILED_GPU.csv"
         results_5chocs_df.to_csv(chocs_detailed_path, index=False, sep=';')
         print(f"  Saved VP_FLUX_5CHOCS_DETAILED_GPU.csv")
         print(f"  Contains {len(results_5chocs_df)} rows (5 chocs × {n_accounts} accounts)")
-        
+
         sensitivities_path = output_path / "VP_FLUX_SENSITIVITIES_GPU.csv"
         sensitivities_df.to_csv(sensitivities_path, index=False, sep=';')
         print(f"  Saved VP_FLUX_SENSITIVITIES_GPU.csv")
         print(f"  Contains {len(sensitivities_df)} rows with Greeks/Deltas")
-        
+
         chocs_summary_df = results_5chocs_df.groupby('CHOC_TYPE').agg({
             'RESERVE_BE': ['sum', 'mean'],
-            'CAPITAL_REQ': ['sum', 'mean'], 
+            'CAPITAL_REQ': ['sum', 'mean'],
             'SCR': ['sum', 'mean']
         }).round(2)
         chocs_summary_df.columns = ['_'.join(col).strip() for col in chocs_summary_df.columns]
         chocs_summary_df = chocs_summary_df.reset_index()
-        
+
         chocs_summary_path = output_path / "VP_FLUX_5CHOCS_SUMMARY_GPU.csv"
         chocs_summary_df.to_csv(chocs_summary_path, index=False, sep=';')
         print(f"  Saved VP_FLUX_5CHOCS_SUMMARY_GPU.csv")
-        
+
         print(f"\n  Key Portfolio Sensitivities (Total):")
         total_sensitivities = sensitivities_df.sum()
         print(f"    SP500 Delta (Reserve): ${total_sensitivities['DELTA_SP500_RESERVE']:,.2f}")
         print(f"    TSX Delta (Reserve):   ${total_sensitivities['DELTA_TSX_RESERVE']:,.2f}")
         print(f"    EAFE Delta (Reserve):  ${total_sensitivities['DELTA_EAFE_RESERVE']:,.2f}")
         print(f"    DEX Delta (Reserve):   ${total_sensitivities['DELTA_DEX_RESERVE']:,.2f}")
-        
+
         saved_files.extend([
             "VP_FLUX_5CHOCS_DETAILED_GPU.csv (5 chocs × accounts)",
             "VP_FLUX_SENSITIVITIES_GPU.csv (Greeks/Deltas per account)",
             "VP_FLUX_5CHOCS_SUMMARY_GPU.csv (aggregated by choc type)"
         ])
-    
+
     # ===========================================
     # 2. DEBUG OUTPUT (if enabled)
     # ===========================================
-    
+
     # Note: EXT_DEBUG_GPU.csv removed - redundant with FLUX_PROJETES_GPU_DEBUG.csv
-    
+
     if int_debug is not None:
         print(f"\n✓ [DEBUG] Saving internal kernel debug output...")
         n_chocs = int_debug.shape[0]
-        
+
         rows = []
         for choc_idx in range(n_chocs):
             choc_name = CHOC_NAMES[choc_idx] if choc_idx < len(CHOC_NAMES) else f"CHOC_{choc_idx}"
@@ -2321,32 +2362,33 @@ def save_results(
                     row['ID_COMPTE'] = -1
                 row['DEBUG_INT_SCENARIO'] = debug_params.get('int_scenario', -1)
                 row['DEBUG_INT_YEAR'] = debug_params.get('int_year', -1)
-            
+
             for col_idx, col_name in enumerate(INT_DEBUG_COLUMNS):
                 row[col_name] = int_debug[choc_idx, col_idx]
             rows.append(row)
-        
+
         int_debug_df = pd.DataFrame(rows)
         int_debug_path = output_path / "DEBUG_INTERNAL_KERNEL.csv"
         int_debug_df.to_csv(int_debug_path, index=False, sep=';')
         print(f"  Saved DEBUG_INTERNAL_KERNEL.csv ({len(int_debug_df)} rows - one per choc)")
         if debug_params:
-            print(f"  Filter: int_scenario={debug_params.get('int_scenario', -1)}, int_year={debug_params.get('int_year', -1)}")
+            print(
+                f"  Filter: int_scenario={debug_params.get('int_scenario', -1)}, int_year={debug_params.get('int_year', -1)}")
         saved_files.append("DEBUG_INTERNAL_KERNEL.csv (internal kernel debug)")
 
     # Note: INT_DEBUG_TS_GPU.csv removed - rarely needed, use INT_DEBUG_GPU.csv instead
-    
+
     # ===========================================
     # 3. SUMMARY
     # ===========================================
-    
+
     print("\n" + "=" * 80)
     print("FILE SAVING SUMMARY")
     print("=" * 80)
     for idx, file_name in enumerate(saved_files, 1):
         print(f"  {idx}. {file_name}")
     print("=" * 80)
-    
+
     # Build return dictionary with all created DataFrames
     result = {
         'saved_files': saved_files,
@@ -2357,45 +2399,46 @@ def save_results(
         'int_debug_ts_df': None,  # Removed - rarely needed
         'flux_projetes_df': flux_projetes_df,
     }
-    
+
     return result
 
 
 def create_all_lookup_tables(data: dict, nb_int_scenarios: int, nb_an_projection: int):
     """
     Create all CPU lookup tables from loaded data.
-    
+
     Args:
         data: Dictionary containing loaded DataFrames (mortalite, rendements, etc.)
         nb_int_scenarios: Number of internal scenarios for risk-neutral tables
         nb_an_projection: Number of projection years
-    
+
     Returns:
         Dictionary containing all lookup tables (CPU numpy arrays)
     """
     print("\nCreating CPU lookup tables...")
-    
+
     lookups = {}
-    
+
     lookups['mortality'] = create_gpu_mortality_lookup(data['mortalite'])
-    (lookups['forward_rate'], lookups['ajust_forward'], lookups['rend_dex'], 
-     lookups['rend_mm'], lookups['rend_tsx'], lookups['rend_sp500'], 
+    (lookups['forward_rate'], lookups['ajust_forward'], lookups['rend_dex'],
+     lookups['rend_mm'], lookups['rend_tsx'], lookups['rend_sp500'],
      lookups['rend_eafe']) = create_gpu_returns_lookup(data['rendements'])
-    
+
     lookups['min_ferr'] = create_gpu_min_ferr_lookup(data['min_ferr'])
     lookups['lapse_part_min'], lookups['lapse_part_max'] = create_gpu_lapse_part_lookup(data['tx_lapse_part'])
-    lookups['lapse_tot_min'], lookups['lapse_tot_max'], lookups['lapse_tot_fact'] = create_gpu_lapse_tot_lookup(data['tx_lapse_tot'])
+    lookups['lapse_tot_min'], lookups['lapse_tot_max'], lookups['lapse_tot_fact'] = create_gpu_lapse_tot_lookup(
+        data['tx_lapse_tot'])
     (lookups['deposits_pc'], lookups['deposits_var'], lookups['deposits_age_max'],
      lookups['deposits_i_even']) = create_gpu_deposits_lookup(data['depots_futurs'])
     lookups['fees'] = create_gpu_fees_lookup(data['frais_admin'])
-    (lookups['acq_vente_rf'], lookups['acq_vente_ac'], lookups['acq_maintien_rf'], 
-     lookups['acq_maintien_ac'], lookups['acq_frais_ac'], 
+    (lookups['acq_vente_rf'], lookups['acq_vente_ac'], lookups['acq_maintien_rf'],
+     lookups['acq_maintien_ac'], lookups['acq_frais_ac'],
      lookups['acq_frais_rf']) = create_gpu_acquisition_lookup(data['acquisition'])
 
     lookups['coussins'] = create_gpu_coussins_lookup(data['coussins_escap'])
-    
+
     print("✓ All CPU lookup tables created")
-    
+
     # Create risk-neutral scenario tables
     print("\nCreating risk-neutral scenario tables...")
     if 'rendements_int' in data and data['rendements_int'] is not None and len(data['rendements_int']) > 0:
@@ -2404,16 +2447,18 @@ def create_all_lookup_tables(data: dict, nb_int_scenarios: int, nb_an_projection
             data['rendements_int'], nb_int_scenarios, nb_an_projection
         )
     else:
-        lookups['rn_forward_rate'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_FORWARD_RATE, dtype=np.float32)
+        lookups['rn_forward_rate'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_FORWARD_RATE,
+                                             dtype=np.float32)
         lookups['rn_ajust_forward'] = np.zeros((nb_int_scenarios, nb_an_projection), dtype=np.float32)
         lookups['rn_rend_dex'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_DEX, dtype=np.float32)
         lookups['rn_rend_mm'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_MM, dtype=np.float32)
         lookups['rn_rend_tsx'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_TSX, dtype=np.float32)
-        lookups['rn_rend_sp500'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_SP500, dtype=np.float32)
+        lookups['rn_rend_sp500'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_SP500,
+                                           dtype=np.float32)
         lookups['rn_rend_eafe'] = np.full((nb_int_scenarios, nb_an_projection), RN_DEFAULT_REND_EAFE, dtype=np.float32)
-    
+
     print("✓ Risk-neutral tables created")
-    
+
     return lookups
 
 
@@ -2429,39 +2474,39 @@ def _clear_cupy_refs():
 
 def _device_array_cupy(shape, dtype=np.float32):
     """Allocate an uninitialized device array using cupy.
-    
+
     Uses cupy for allocation to work around numba-cuda bug
     where device_pointer_value incorrectly parses bytes as int.
     """
     import cupy as cp
-    
+
     # Allocate empty array on GPU using cupy
     cp_arr = cp.empty(shape, dtype=dtype)
-    
+
     # Keep reference to prevent garbage collection
     _cupy_array_refs.append(cp_arr)
-    
+
     # Convert cupy array to numba device array using __cuda_array_interface__
     return cuda.as_cuda_array(cp_arr)
 
 
 def _to_device_contiguous(arr):
     """Ensure array is C-contiguous before copying to GPU.
-    
+
     Uses cupy for array transfer to work around numba-cuda bug
     where device_pointer_value incorrectly parses bytes as int.
     """
     import cupy as cp
-    
+
     # Ensure array is C-contiguous and float32
     host_arr = np.ascontiguousarray(arr, dtype=np.float32)
-    
+
     # Use cupy to transfer to GPU, then get numba device array view
     cp_arr = cp.asarray(host_arr)
-    
+
     # Keep reference to prevent garbage collection
     _cupy_array_refs.append(cp_arr)
-    
+
     # Convert cupy array to numba device array using __cuda_array_interface__
     return cuda.as_cuda_array(cp_arr)
 
@@ -2469,23 +2514,23 @@ def _to_device_contiguous(arr):
 def copy_lookups_to_gpu(lookups: dict):
     """
     Copy all CPU lookup tables to GPU memory.
-    
+
     Args:
         lookups: Dictionary of CPU numpy arrays from create_all_lookup_tables()
-    
+
     Returns:
         Dictionary containing grouped GPU device arrays as tuples
     """
     print("\nCopying lookup tables to GPU...")
-    
+
     # Clear previous cupy references to free GPU memory
     _clear_cupy_refs()
-    
+
     gpu_lookups = {}
-    
+
     # Mortality table
     gpu_lookups['mortality'] = _to_device_contiguous(lookups['mortality'])
-    
+
     # Returns lookups (7 arrays): forward_rate, ajust_forward, rend_dex, rend_mm, rend_tsx, rend_sp500, rend_eafe
     gpu_lookups['returns'] = (
         _to_device_contiguous(lookups['forward_rate']),
@@ -2496,7 +2541,7 @@ def copy_lookups_to_gpu(lookups: dict):
         _to_device_contiguous(lookups['rend_sp500']),
         _to_device_contiguous(lookups['rend_eafe']),
     )
-    
+
     # Lapse lookups (6 arrays): min_ferr, lapse_part_min, lapse_part_max, lapse_tot_min, lapse_tot_max, lapse_tot_fact
     gpu_lookups['lapse'] = (
         _to_device_contiguous(lookups['min_ferr']),
@@ -2506,7 +2551,7 @@ def copy_lookups_to_gpu(lookups: dict):
         _to_device_contiguous(lookups['lapse_tot_max']),
         _to_device_contiguous(lookups['lapse_tot_fact']),
     )
-    
+
     # Policy lookups (5 arrays): deposits_pc, deposits_var, deposits_age_max, deposits_i_even, fees
     gpu_lookups['policy'] = (
         _to_device_contiguous(lookups['deposits_pc']),
@@ -2515,7 +2560,7 @@ def copy_lookups_to_gpu(lookups: dict):
         _to_device_contiguous(lookups['deposits_i_even']),
         _to_device_contiguous(lookups['fees']),
     )
-    
+
     # Commission lookups (6 arrays): acq_vente_rf, acq_vente_ac, acq_maintien_rf, acq_maintien_ac, acq_frais_ac, acq_frais_rf
     gpu_lookups['commission'] = (
         _to_device_contiguous(lookups['acq_vente_rf']),
@@ -2527,7 +2572,7 @@ def copy_lookups_to_gpu(lookups: dict):
     )
 
     gpu_lookups['coussins'] = tuple(_to_device_contiguous(arr) for arr in lookups['coussins'])
-    
+
     # Risk-neutral returns (7 arrays): rn_forward_rate, rn_ajust_forward, rn_rend_dex, rn_rend_mm, rn_rend_tsx, rn_rend_sp500, rn_rend_eafe
     gpu_lookups['rn_returns'] = (
         _to_device_contiguous(lookups['rn_forward_rate']),
@@ -2538,15 +2583,15 @@ def copy_lookups_to_gpu(lookups: dict):
         _to_device_contiguous(lookups['rn_rend_sp500']),
         _to_device_contiguous(lookups['rn_rend_eafe']),
     )
-    
+
     print("✓ Lookup tables on GPU")
-    
+
     return gpu_lookups
 
 
 def run_projection_gpu_nested(
-        data_path: Path, 
-        output_path: Path, 
+        data_path: Path,
+        output_path: Path,
         nb_an_projection: int,
         nb_ext_scenarios: int,
         nb_int_scenarios: int,
@@ -2578,13 +2623,13 @@ def run_projection_gpu_nested(
         write_detailed_cashflows: bool = False):
     """
     Run GPU-accelerated nested stochastic projection using Two-Pass architecture.
-    
+
     Architecture:
     - Kernel A (Generator): Runs external scenarios, outputs state tensors to VRAM
     - Kernel B (Valuator): Reads states, runs internal scenarios with 5 chocs, outputs reserves & capital
-    
+
     Args:
-        debug_only: If True and debug_account >= 0, only process the single account 
+        debug_only: If True and debug_account >= 0, only process the single account
                    specified by debug_account (filters population to that account only).
         run_nested_valuation: If True (default), run both Kernel A and Kernel B (full nested valuation).
                              If False, run only Kernel A (outer loop only - no nested valuation).
@@ -2592,7 +2637,7 @@ def run_projection_gpu_nested(
                                   If False, skip this file to save compute time.
     """
     start_time = datetime.now()
-    
+
     # Clear output directory before starting
     if output_path.exists():
         import shutil
@@ -2603,8 +2648,9 @@ def run_projection_gpu_nested(
     else:
         output_path.mkdir(parents=True, exist_ok=True)
         print(f"Created output directory: {output_path}")
-    
-    print(f"Starting {'NESTED STOCHASTIC' if run_nested_valuation else 'OUTER LOOP ONLY'} GPU projection at {start_time}")
+
+    print(
+        f"Starting {'NESTED STOCHASTIC' if run_nested_valuation else 'OUTER LOOP ONLY'} GPU projection at {start_time}")
     print("=" * 80)
     if run_nested_valuation:
         print(f"Architecture: Two-Pass (Generator → Valuator with 5 Chocs)")
@@ -2615,11 +2661,12 @@ def run_projection_gpu_nested(
         print(f"Internal scenarios per node: {nb_int_scenarios}")
     sys.stdout.flush()
     if run_nested_valuation:
-        print(f"Capital shock: {shock_capital_pct*100:.1f}%")
+        print(f"Capital shock: {shock_capital_pct * 100:.1f}%")
     sys.stdout.flush()
     enable_debug = debug_account >= 0 or debug_scenario >= 0 or debug_year >= 0 or debug_month >= 0
     if enable_debug:
-        print(f"Debug mode: ENABLED (account={debug_account}, scenario={debug_scenario}, year={debug_year}, month={debug_month})")
+        print(
+            f"Debug mode: ENABLED (account={debug_account}, scenario={debug_scenario}, year={debug_year}, month={debug_month})")
         print(f"  Internal debug: int_scenario={debug_int_scenario}, int_year={debug_int_year}")
         if debug_only and debug_account >= 0:
             print(f"  DEBUG_ONLY: Will process ONLY account {debug_account}")
@@ -2627,7 +2674,7 @@ def run_projection_gpu_nested(
         print(f"Debug mode: disabled")
     print("=" * 80)
     sys.stdout.flush()
-    
+
     # Initialize GPU
     print("Initializing GPU...")
     sys.stdout.flush()
@@ -2666,11 +2713,11 @@ def run_projection_gpu_nested(
             if debug_account < len(pop_df):
                 filtered = pop_df.iloc[[debug_account]]
             else:
-                raise ValueError(f"debug_account {debug_account} is out of range (max: {len(pop_df)-1})")
-        
+                raise ValueError(f"debug_account {debug_account} is out of range (max: {len(pop_df) - 1})")
+
         if len(filtered) == 0:
             raise ValueError(f"Account {debug_account} not found in population data")
-        
+
         data['population'] = filtered.reset_index(drop=True)
         print(f"⚠️  DEBUG_ONLY: Filtered to single account {debug_account}")
         # Override max_accounts since we're only doing one
@@ -2689,7 +2736,8 @@ def run_projection_gpu_nested(
             )
         debug_account = int(matches[0])
         enable_debug = True
-        print(f"Debug account resolved: debug_account_id={debug_account_id} -> debug_account_index={debug_account} (0-based)")
+        print(
+            f"Debug account resolved: debug_account_id={debug_account_id} -> debug_account_index={debug_account} (0-based)")
 
     n_accounts = len(data['population'])
     print(f"\nPreparing {n_accounts} accounts for GPU processing...")
@@ -2703,7 +2751,7 @@ def run_projection_gpu_nested(
 
     # Calculate batch size
     batch_size, num_batches, total_mem_per_account, _ = calculate_batch_size(
-        n_accounts, nb_ext_scenarios, nb_an_projection, 
+        n_accounts, nb_ext_scenarios, nb_an_projection,
         nb_int_scenarios, all_account_data.shape[1]
     )
 
@@ -2717,7 +2765,7 @@ def run_projection_gpu_nested(
     else:
         print("RUNNING SINGLE-PASS OUTER LOOP PROJECTION (KERNEL A ONLY)")
     print("=" * 80)
-    
+
     all_reserves = []
     all_capital = []
     all_reserves_5chocs = []
@@ -2729,21 +2777,21 @@ def run_projection_gpu_nested(
     total_cashflow_rows = 0  # Track rows written to FLUX_PROJETE_GPU.csv
     total_vp_flux_compte_rows = 0  # Track rows written to VP_FLUX_COMPTE_GPU.csv
     accumulated_flux_projete = None  # Accumulate FLUX_PROJETE across batches
-    
+
     # Extract population IDs early for incremental cashflow writing
     population_ids = data['population']['ID_COMPTE'].values
-    
+
     for i in range(num_batches):
         start_idx = i * batch_size
         end_idx = min((i + 1) * batch_size, n_accounts)
         batch_account_data = all_account_data[start_idx:end_idx]
-        
+
         # Adjust debug_account for batch offset (only debug if account is in this batch)
         batch_debug_account = -1
         if debug_account >= 0:
             if start_idx <= debug_account < end_idx:
                 batch_debug_account = debug_account - start_idx
-        
+
         batch_result = process_batch(
             batch_account_data=batch_account_data,
             nb_ext_scenarios=nb_ext_scenarios,
@@ -2763,13 +2811,13 @@ def run_projection_gpu_nested(
             debug_int_year=debug_int_year,
             run_nested_valuation=run_nested_valuation,
         )
-        
+
         # Accumulate results
         all_reserves.extend(batch_result['batch_reserves'])
         all_capital.extend(batch_result['batch_capital'])
         all_reserves_5chocs.extend(batch_result['batch_reserves_5chocs'])
         all_capital_5chocs.extend(batch_result['batch_capital_5chocs'])
-        
+
         # Write cashflows incrementally to avoid memory issues (if enabled)
         if write_detailed_cashflows and batch_result.get('batch_mean_cashflows') is not None:
             csv_start = datetime.now()
@@ -2786,7 +2834,7 @@ def run_projection_gpu_nested(
         # Free memory immediately
         if batch_result.get('batch_mean_cashflows') is not None:
             del batch_result['batch_mean_cashflows']
-        
+
         # Write VP_FLUX_COMPTE incrementally (GPU-aggregated VP by account)
         if batch_result.get('batch_vp_flux_compte') is not None:
             vp_rows_written = write_vp_flux_compte_batch(
@@ -2798,7 +2846,7 @@ def run_projection_gpu_nested(
             )
             total_vp_flux_compte_rows += vp_rows_written
             del batch_result['batch_vp_flux_compte']
-        
+
         # Accumulate FLUX_PROJETE across batches (GPU-aggregated flux by year)
         if batch_result.get('batch_flux_projete') is not None:
             accumulated_flux_projete = accumulate_flux_projete(
@@ -2806,7 +2854,7 @@ def run_projection_gpu_nested(
                 batch_result['batch_flux_projete']
             )
             del batch_result['batch_flux_projete']
-        
+
         # Store debug output (only one batch will have it if account filter is used)
         if batch_result['ext_debug'] is not None:
             ext_debug_result = batch_result['ext_debug']
@@ -2816,19 +2864,19 @@ def run_projection_gpu_nested(
             int_debug_ts_result = batch_result['int_debug_ts']
         if batch_result.get('debug_flux') is not None:
             debug_flux_result = batch_result['debug_flux']
-        
+
         # Call progress callback if provided
         if progress_callback is not None:
             progress_callback(i + 1, num_batches)
-    
+
     # Log cashflow file status
     if total_cashflow_rows > 0:
         logger.info(f"  Written {total_cashflow_rows} rows to FLUX_PROJETE_GPU.csv")
-    
+
     # Log VP_FLUX_COMPTE file status
     if total_vp_flux_compte_rows > 0:
         logger.info(f"  Written {total_vp_flux_compte_rows} rows to VP_FLUX_COMPTE_GPU.csv")
-    
+
     # Write final FLUX_PROJETE (accumulated across all batches)
     total_flux_projete_rows = 0
     if accumulated_flux_projete is not None:
@@ -2838,7 +2886,7 @@ def run_projection_gpu_nested(
             nb_an_projection=nb_an_projection,
         )
         logger.info(f"  Written {total_flux_projete_rows} rows to FLUX_PROJETES_GPU.csv")
-    
+
     # Create results DataFrames
     results_df, results_5chocs_df, sensitivities_df = create_results_dataframes(
         population_ids=population_ids,
@@ -2848,18 +2896,18 @@ def run_projection_gpu_nested(
         all_capital_5chocs=all_capital_5chocs,
         n_accounts=n_accounts
     )
-    
+
     # Print summary
     end_time = datetime.now()
     total_duration = (end_time - start_time).total_seconds()
-    
+
     print("\n" + "=" * 80)
     if run_nested_valuation:
         print("NESTED STOCHASTIC PROJECTION COMPLETE")
     else:
         print("OUTER LOOP PROJECTION COMPLETE (NO NESTED VALUATION)")
     print("=" * 80)
-    print(f"Total time: {total_duration:.2f}s ({total_duration/60:.2f} minutes)")
+    print(f"Total time: {total_duration:.2f}s ({total_duration / 60:.2f} minutes)")
     print(f"Accounts processed: {n_accounts}")
     print(f"External scenarios: {nb_ext_scenarios}")
     if run_nested_valuation:
@@ -2881,7 +2929,7 @@ def run_projection_gpu_nested(
         print(f"\n⚠️  Note: Capital is zero (requires nested valuation)")
         print(f"⚠️  Reserves are approximate (real-world PV, not risk-neutral)")
     print("=" * 80)
-    
+
     # Build debug params if debug is enabled
     debug_params = None
     if enable_debug:
@@ -2905,7 +2953,9 @@ def run_projection_gpu_nested(
                 if t_int < 0 or t_int >= max_years:
                     continue
                 # Map account index to real ID_COMPTE
-                id_compte = int(population_ids[debug_account]) if population_ids is not None and debug_account >= 0 and debug_account < len(population_ids) else -1
+                id_compte = int(population_ids[
+                                    debug_account]) if population_ids is not None and debug_account >= 0 and debug_account < len(
+                    population_ids) else -1
                 rows.append({
                     'CHOC_IDX': choc_idx,
                     'CHOC_NAME': choc_name,
@@ -2924,7 +2974,7 @@ def run_projection_gpu_nested(
                 })
         if rows:
             int_debug_ts_df = pd.DataFrame(rows)
-    
+
     # Save all results (including debug output if enabled)
     save_result = save_results(
         output_path=output_path,
@@ -2944,7 +2994,7 @@ def run_projection_gpu_nested(
         total_vp_flux_compte_rows=total_vp_flux_compte_rows,
         total_flux_projete_rows=total_flux_projete_rows,
     )
-    
+
     return ProjectionResult(
         results=results_df,
         results_5chocs=results_5chocs_df,
@@ -2973,10 +3023,10 @@ if __name__ == "__main__":
 Examples:
   # Basic nested stochastic
   python gpu.py --ext-scenarios 100 --int-scenarios 500 --max-accounts 1000
-  
+
   # Full production run
   python gpu.py --ext-scenarios 1000 --int-scenarios 1000 --years 100
-  
+
   # Debug specific account/scenario/year/month
   python gpu.py --max-accounts 10 --debug-account 0 --debug-scenario 0 --debug-year 5 --debug-month 12
         """
@@ -2996,7 +3046,7 @@ Examples:
                         help='Capital shock percentage for nested mode (default: 0.35 = 35%%)')
     parser.add_argument('--outer-loop-only', action='store_true',
                         help='Run only outer loop (Kernel A) without nested valuation (Kernel B). Faster but no reserves/capital.')
-    
+
     # Debug filter parameters
     parser.add_argument('--debug-account', type=int, default=0,
                         help='Account index (0-based row index) to debug (-1 = disabled)')
@@ -3016,14 +3066,14 @@ Examples:
                         help='Write FLUX_PROJETE_GPU.csv (per-account cashflows). Disabled by default to save compute time.')
 
     args = parser.parse_args()
-    
+
     try:
         if not cuda.is_available():
             print("ERROR: CUDA is not available. Please check your GPU setup.")
             exit(1)
 
         print(f"CUDA Device: {cuda.get_current_device().name}")
-        
+
         DATA_PATH = HERE.joinpath("data_in")
         OUTPUT_PATH = HERE.joinpath("data_out_gpu")
 
@@ -3064,4 +3114,5 @@ Examples:
     except Exception as e:
         print(f"\nAn error occurred: {e}")
         import traceback
+
         traceback.print_exc()
